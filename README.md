@@ -11,6 +11,8 @@ Weibo AI Bridge 是一个基于 Go 语言开发的中间件服务，旨在连接
 - 完整的消息收发流程
 - 多 Agent 支持（Claude、Codex）
 - 会话管理与会话上下文保持
+- 上下文记忆与多会话支持
+- 会话持久化存储
 - 异步消息处理
 - 完善的测试覆盖
 - 灵活的配置系统
@@ -22,6 +24,7 @@ Weibo AI Bridge 是一个基于 Go 语言开发的中间件服务，旨在连接
 - **微博私信桥接**: 通过微博开放平台 WebSocket API 实时接收和发送微博私信
 - **多 Agent 支持**: 支持 Claude 和 Codex 两种 AI Agent，可灵活切换
 - **会话管理**: 自动管理用户会话，保持对话上下文
+- **上下文记忆**: 支持会话持久化存储，可创建、切换、恢复多个会话
 - **消息路由**: 智能路由消息到对应的 AI Agent
 - **命令处理**: 支持切换 Agent、清除会话等命令
 - **健康检查**: 提供 HTTP 接口用于健康检查和统计信息
@@ -153,8 +156,12 @@ GET /stats
 
 用户可以在微博私信中发送以下命令：
 
-- `/agent <name>` - 切换到指定的 AI Agent（如：`/agent claude-code`）
-- `/clear` - 清除当前会话上下文
+- `/help` - 显示帮助信息
+- `/new [agent_type]` - 创建新会话（可选参数：claude/codex）
+- `/switch [agent_type]` - 切换当前会话的 Agent 类型
+- `/model` - 显示当前使用的模型
+- `/dir` - 显示当前工作目录
+- `/status` - 显示当前会话状态
 
 ## 配置说明
 
@@ -266,6 +273,7 @@ output = "stdout"
 |------|------|------|------|--------|
 | `session.timeout` | int | 会话超时时间（秒） | 否 | 3600 |
 | `session.max_size` | int | 会话最大消息数 | 否 | 1000 |
+| `session.storage_path` | string | 会话持久化存储路径 | 否 | `~/.cc-connect/sessions/` |
 
 #### Log 配置
 
@@ -274,6 +282,122 @@ output = "stdout"
 | `log.level` | string | 日志级别（debug/info/warn/error） | 否 | info |
 | `log.format` | string | 日志格式（json/text） | 否 | json |
 | `log.output` | string | 日志输出位置 | 否 | stdout |
+
+## 上下文记忆功能
+
+### 功能概述
+
+Weibo AI Bridge 支持完整的上下文记忆功能，通过会话持久化存储实现多轮对话的上下文保持。每个用户可以创建多个独立会话，并在不同会话之间切换。
+
+### 核心特性
+
+- **会话持久化**: 所有会话数据存储在本地文件系统（`~/.cc-connect/sessions/`）
+- **多会话支持**: 每个用户可以创建多个独立会话
+- **会话恢复**: 支持恢复之前的会话继续对话
+- **自动管理**: 自动创建和管理会话，无需手动干预
+
+### 会话存储机制
+
+#### 存储位置
+```
+~/.cc-connect/sessions/
+├── user_<uid>_<timestamp>.json
+├── user_<uid>_<timestamp>.json
+└── ...
+```
+
+#### 会话数据结构
+```json
+{
+  "id": "uuid-v4",
+  "user_id": "微博用户ID",
+  "agent_type": "claude",
+  "state": "active",
+  "context": {},
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-01T01:00:00Z"
+}
+```
+
+### Agent Session ID 支持
+
+#### Claude Agent
+- 使用 `--session-id` 参数传递会话标识
+- Claude Code CLI 自动管理对话历史
+- 会话数据由 Claude Code 内部存储
+
+#### Codex Agent
+- 使用 `exec resume <session-id>` 命令恢复会话
+- Codex 内部维护会话状态
+- 支持会话持久化和恢复
+
+### 使用示例
+
+#### 创建新会话
+```
+用户: /new
+Bot: 已创建新会话，使用 Claude Agent
+
+用户: /new codex
+Bot: 已创建新会话，使用 Codex Agent
+```
+
+#### 查看会话状态
+```
+用户: /status
+Bot: 当前会话 ID: abc-123-def
+     Agent 类型: claude
+     状态: active
+     创建时间: 2024-01-01 10:00:00
+     最后更新: 2024-01-01 10:30:00
+```
+
+#### 切换 Agent 类型
+```
+用户: /switch codex
+Bot: 已将当前会话切换到 Codex Agent
+```
+
+### 技术实现
+
+#### Session Manager
+- 管理所有用户会话的生命周期
+- 提供会话创建、查询、更新、删除接口
+- 自动清理过期会话
+- 线程安全的会话存储
+
+#### 命令处理器
+- 解析用户命令并执行相应操作
+- 支持 `/new`、`/switch`、`/status` 等命令
+- 与 Session Manager 和 Agent Manager 集成
+
+#### Router 集成
+- 消息路由时自动传递 Session ID
+- 确保消息发送到正确的 Agent 会话
+- 维护用户与会话的映射关系
+
+### 配置选项
+
+```toml
+[session]
+timeout = 3600           # 会话超时时间（秒）
+max_size = 1000         # 会话最大消息数
+storage_path = "~/.cc-connect/sessions/"  # 会话存储路径
+```
+
+### 测试覆盖
+
+项目包含完整的单元测试：
+- Session Manager 测试（创建、获取、更新、删除）
+- 命令处理器测试（所有命令的解析和执行）
+- Router 集成测试（Session ID 传递）
+- 持久化存储测试（文件读写）
+
+运行测试：
+```bash
+go test -v ./session
+go test -v ./router
+```
 
 ## 微博开放平台凭证说明
 
@@ -513,19 +637,22 @@ weibo-ai-bridge/
 ### 模块职责
 
 1. **Platform Layer**: 负责与微博 API 交互，接收和发送消息
-2. **Agent Layer**: 封装不同 AI Agent 的调用接口，提供统一的 Agent 抽象
-3. **Session Layer**: 管理用户会话状态，保持对话上下文
+2. **Agent Layer**: 封装不同 AI Agent 的调用接口，提供统一的 Agent 抽象，支持 Session ID 传递
+3. **Session Layer**: 管理用户会话状态，保持对话上下文，支持会话持久化存储
 4. **Router Layer**: 消息分发与路由逻辑，处理命令和消息转发
 5. **Config Layer**: 配置文件管理与加载，支持多种配置方式
 
 ### 数据流
 
 ```
-微博私信 → WebSocket → Platform → Router → Session Manager
+微博私信 → WebSocket → Platform → Router → Session Manager (带 Session ID)
                                          ↓
-                                    Agent Manager → AI Agent (Claude/Codex)
+                                    Agent Manager → AI Agent (Claude/Codex, 支持会话恢复)
                                          ↓
                                     Router → Platform → WebSocket → 微博用户
+
+会话持久化:
+Session Manager → ~/.cc-connect/sessions/ (持久化存储)
 ```
 
 ## 开发指南

@@ -77,10 +77,7 @@ func (a *CodeXAgent) buildCommand(sessionID, input, outputPath string) *exec.Cmd
 		args := []string{
 			"-a", "never",
 			"exec", "resume", sessionID,
-			"--sandbox", "workspace-write",
-			"--color", "never",
 			"--skip-git-repo-check",
-			"--ephemeral",
 			"--output-last-message", outputPath,
 		}
 		// 如果有输入内容，添加到参数
@@ -90,15 +87,12 @@ func (a *CodeXAgent) buildCommand(sessionID, input, outputPath string) *exec.Cmd
 		return exec.Command("codex", args...)
 	}
 
-	// 没有会话 ID，使用普通 exec 命令
+	// 没有会话 ID，使用普通 exec 命令（不使用 ephemeral，让 Codex 保存会话）
 	return exec.Command(
 			"codex",
 			"-a", "never",
 			"exec",
-			"--sandbox", "workspace-write",
-			"--color", "never",
 			"--skip-git-repo-check",
-			"--ephemeral",
 			"--output-last-message", outputPath,
 			input,
 	)

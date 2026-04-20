@@ -25,8 +25,8 @@ func (a *CodeXAgent) Name() string {
 	return a.name
 }
 
-// Execute 执行 AI 任务
-func (a *CodeXAgent) Execute(input string) (string, error) {
+// Execute 执行 AI 任务（带会话 ID 支持）
+func (a *CodeXAgent) Execute(sessionID string, input string) (string, error) {
 	// 检查 codex CLI 是否可用
 	if !a.IsAvailable() {
 		return "", fmt.Errorf("codex CLI is not available")
@@ -42,7 +42,7 @@ func (a *CodeXAgent) Execute(input string) (string, error) {
 	}
 	defer os.Remove(outputPath)
 
-	cmd := a.buildCommand(input, outputPath)
+	cmd := a.buildCommand(sessionID, input, outputPath)
 
 	// 捕获输出
 	var stdout, stderr bytes.Buffer
@@ -71,17 +71,36 @@ func (a *CodeXAgent) Execute(input string) (string, error) {
 	return result, nil
 }
 
-func (a *CodeXAgent) buildCommand(input, outputPath string) *exec.Cmd {
+func (a *CodeXAgent) buildCommand(sessionID, input, outputPath string) *exec.Cmd {
+	// 如果有会话 ID，使用 resume 命令
+	if sessionID != "" {
+		args := []string{
+			"-a", "never",
+			"exec", "resume", sessionID,
+			"--sandbox", "workspace-write",
+			"--color", "never",
+			"--skip-git-repo-check",
+			"--ephemeral",
+			"--output-last-message", outputPath,
+		}
+		// 如果有输入内容，添加到参数
+		if input != "" {
+			args = append(args, input)
+		}
+		return exec.Command("codex", args...)
+	}
+
+	// 没有会话 ID，使用普通 exec 命令
 	return exec.Command(
-		"codex",
-		"-a", "never",
-		"exec",
-		"--sandbox", "workspace-write",
-		"--color", "never",
-		"--skip-git-repo-check",
-		"--ephemeral",
-		"--output-last-message", outputPath,
-		input,
+			"codex",
+			"-a", "never",
+			"exec",
+			"--sandbox", "workspace-write",
+			"--color", "never",
+			"--skip-git-repo-check",
+			"--ephemeral",
+			"--output-last-message", outputPath,
+			input,
 	)
 }
 

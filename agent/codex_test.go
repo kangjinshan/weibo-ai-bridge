@@ -23,7 +23,7 @@ func TestCodeXAgent_Execute(t *testing.T) {
 	agent := NewCodeXAgent()
 	// 这个测试取决于 codex CLI 是否已安装且可用
 	// 我们只是测试方法签名
-	_, err := agent.Execute("test input")
+	_, err := agent.Execute("", "test input")
 	if err != nil {
 		// 如果 codex CLI 不可用，这是预期的
 		t.Logf("Execute failed (expected if codex CLI not installed): %v", err)
@@ -33,7 +33,7 @@ func TestCodeXAgent_Execute(t *testing.T) {
 func TestCodeXAgent_BuildCommand(t *testing.T) {
 	agent := NewCodeXAgent()
 
-	cmd := agent.buildCommand("hello", "/tmp/codex-output.txt")
+	cmd := agent.buildCommand("", "hello", "/tmp/codex-output.txt")
 
 	expectedArgs := []string{
 		"codex",

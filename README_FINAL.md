@@ -126,7 +126,7 @@ pong  // 纯文本，非 JSON
 ```toml
 [platform.weibo]
 app_id = "你的应用ID"
-app_Secret = "你的应用密钥"
+app_secret = "你的应用密钥"
 token_url = "http://open-im.api.weibo.com/open/auth/ws_token"
 ws_url = "ws://open-im.api.weibo.com/ws/stream"
 timeout = 30

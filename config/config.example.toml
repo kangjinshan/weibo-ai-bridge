@@ -8,7 +8,7 @@ app_id = "your-weibo-app-id"
 
 # 微博应用密钥（必填）
 # 从微博开放平台获取
-app_Secret = "your-weibo-app-secret"
+app_secret = "your-weibo-app-secret"
 
 # WebSocket Token 获取地址（可选，默认值）
 token_url = "http://open-im.api.weibo.com/open/auth/ws_token"

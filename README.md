@@ -206,7 +206,7 @@ export SESSION_MAX_SIZE="1000"
 ```toml
 [platform.weibo]
 app_id = "your-app-id"
-app_Secret = "your-app-secret"
+app_secret = "your-app-secret"
 token_url = "http://open-im.api.weibo.com/open/auth/ws_token"
 ws_url = "ws://open-im.api.weibo.com/ws/stream"
 server_port = "5533"
@@ -239,7 +239,7 @@ output = "stdout"
 | 字段 | 类型 | 说明 | 必填 | 默认值 |
 |------|------|------|------|--------|
 | `platform.weibo.app_id` | string | 微博应用 ID | 是 | - |
-| `platform.weibo.app_Secret` | string | 微博应用密钥 | 是 | - |
+| `platform.weibo.app_secret` | string | 微博应用密钥 | 是 | - |
 | `platform.weibo.token_url` | string | Token 获取 URL | 否 | `http://open-im.api.weibo.com/open/auth/ws_token` |
 | `platform.weibo.ws_url` | string | WebSocket 连接 URL | 否 | `ws://open-im.api.weibo.com/ws/stream` |
 | `platform.weibo.timeout` | int | HTTP 请求超时时间（秒） | 否 | 30 |

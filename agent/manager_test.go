@@ -93,6 +93,20 @@ func TestManager_GetDefaultAgent(t *testing.T) {
 	})
 }
 
+func TestManager_ResolveAgent(t *testing.T) {
+	mgr := NewManager()
+	claudeAgent := &MockAgent{name: "claude-code", available: true}
+	codexAgent := &MockAgent{name: "codex", available: true}
+	mgr.Register(claudeAgent)
+	mgr.Register(codexAgent)
+	mgr.SetDefault("claude-code")
+
+	assert.Equal(t, "claude-code", mgr.ResolveAgent("claude").Name())
+	assert.Equal(t, "codex", mgr.ResolveAgent("codex").Name())
+	assert.Equal(t, "claude-code", mgr.ResolveAgent("").Name())
+	assert.Nil(t, mgr.ResolveAgent("missing"))
+}
+
 func TestManager_ListAgents(t *testing.T) {
 	mgr := NewManager()
 	agent1 := &MockAgent{name: "agent1", available: true}

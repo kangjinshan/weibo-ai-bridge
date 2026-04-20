@@ -74,6 +74,11 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Failed to create platform: %v", err)
 	}
+	platform.Configure(
+		cfg.Platform.Weibo.TokenURL,
+		cfg.Platform.Weibo.WSURL,
+		time.Duration(cfg.Platform.Weibo.Timeout)*time.Second,
+	)
 	logger.Printf("Platform created: app_id=%s", cfg.Platform.Weibo.AppID)
 
 	// 创建消息路由器
@@ -97,7 +102,7 @@ func main() {
 	// 获取服务端口
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
-		port = "5533"  // 默认端口
+		port = "5533" // 默认端口
 	}
 
 	// 创建 HTTP 服务器
@@ -109,7 +114,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-// 启动 HTTP 服务器（在 goroutine 中）
+	// 启动 HTTP 服务器（在 goroutine 中）
 	go func() {
 		logger.Printf("HTTP server starting on %s", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

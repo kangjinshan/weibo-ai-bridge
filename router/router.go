@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/yourusername/weibo-ai-bridge/agent"
-	"github.com/yourusername/weibo-ai-bridge/session"
 	"github.com/yourusername/weibo-ai-bridge/platform/weibo"
+	"github.com/yourusername/weibo-ai-bridge/session"
 )
 
 // MessageType 消息类型
@@ -45,11 +45,11 @@ type Handler interface {
 
 // Router 消息路由器
 type Router struct {
-	handlers      map[MessageType]Handler
+	handlers       map[MessageType]Handler
 	defaultHandler Handler
-	platform      PlatformInterface
-	sessionMgr    *session.Manager
-	agentMgr      *agent.Manager
+	platform       PlatformInterface
+	sessionMgr     *session.Manager
+	agentMgr       *agent.Manager
 	commandHandler *CommandHandler
 }
 
@@ -61,18 +61,20 @@ type PlatformInterface interface {
 // NewRouter 创建路由器
 func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr *agent.Manager) *Router {
 	router := &Router{
-		handlers: make(map[MessageType]Handler),
-		platform: platform,
+		handlers:   make(map[MessageType]Handler),
+		platform:   platform,
 		sessionMgr: sessionMgr,
-		agentMgr: agentMgr,
+		agentMgr:   agentMgr,
 	}
 
 	// 创建命令处理器
 	if sessionMgr != nil && agentMgr != nil {
 		router.commandHandler = NewCommandHandler(sessionMgr, agentMgr)
-		// 注册 AI 消息处理器（处理普通文本消息）
+		// 已声明的消息类型默认都走同一套 AI/命令路由，避免非文本类型直接报无处理器。
 		router.Register(TypeText, router)
-		// 命令处理器不设为默认，只有在消息以 / 开头时才处理
+		router.Register(TypeImage, router)
+		router.Register(TypeVoice, router)
+		router.Register(TypeLocation, router)
 	}
 
 	return router
@@ -102,56 +104,7 @@ func (r *Router) Handle(msg *Message) (*Response, error) {
 	}
 
 	// 否则使用 AI 处理器
-	return r.handleAIResponse(context.Background(), msg)
-}
-
-// handleAIResponse 处理 AI 回复消息
-func (r *Router) handleAIResponse(ctx context.Context, msg *Message) (*Response, error) {
-	if r.agentMgr == nil {
-		return &Response{
-			Success: false,
-			Content: "Agent manager is not available",
-		}, nil
-	}
-
-	if r.sessionMgr == nil {
-		return &Response{
-			Success: false,
-			Content: "Session manager is not available",
-		}, nil
-	}
-
-	// 获取或创建会话
-	session := r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
-	if session == nil {
-		return &Response{
-			Success: false,
-			Content: "Failed to create or get session",
-		}, nil
-	}
-
-	// 获取 Agent
-	currentAgent := r.agentMgr.GetDefaultAgent()
-	if currentAgent == nil {
-		return &Response{
-			Success: false,
-			Content: "No agent available",
-		}, nil
-	}
-
-	// 执行 AI 任务
-	response, err := currentAgent.Execute(msg.Content)
-	if err != nil {
-		return &Response{
-			Success: false,
-			Content: fmt.Sprintf("AI execution failed: %v", err),
-		}, nil
-	}
-
-	return &Response{
-		Success: true,
-		Content: response,
-	}, nil
+	return r.handleAIMessage(context.Background(), msg)
 }
 
 // Route 路由消息
@@ -175,16 +128,23 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 	}
 
 	// 转换消息格式
+	sessionID := msg.UserID
+	if r.sessionMgr != nil {
+		if activeSessionID := r.sessionMgr.GetActiveSessionID(msg.UserID); activeSessionID != "" {
+			sessionID = activeSessionID
+		}
+	}
+
 	routerMsg := &Message{
 		ID:        msg.ID,
-		Type:      TypeText, // 默认为文本类型
+		Type:      mapWeiboMessageType(msg.Type),
 		Content:   msg.Content,
 		UserID:    msg.UserID,
-		SessionID: msg.UserID, // 使用 UserID 作为 SessionID
+		SessionID: sessionID,
 		Metadata: map[string]interface{}{
-			"user_name":  msg.UserName,
-			"timestamp":  msg.Timestamp,
-			"msg_type":   string(msg.Type),
+			"user_name": msg.UserName,
+			"timestamp": msg.Timestamp,
+			"msg_type":  string(msg.Type),
 		},
 	}
 
@@ -205,14 +165,14 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 
 	// 如果有内容，发送回复
 	if resp.Content != "" {
-		return r.sendReply(ctx, msg.ID, resp.Content)
+		return r.sendReply(ctx, msg.UserID, resp.Content)
 	}
 
 	return nil
 }
 
 // sendReply 发送回复（支持分块）
-func (r *Router) sendReply(ctx context.Context, messageID string, content string) error {
+func (r *Router) sendReply(ctx context.Context, userID string, content string) error {
 	if r.platform == nil {
 		return errors.New("platform is not set")
 	}
@@ -221,7 +181,7 @@ func (r *Router) sendReply(ctx context.Context, messageID string, content string
 	chunks := r.splitMessage(content, 1000)
 
 	for i, chunk := range chunks {
-		if err := r.platform.Reply(ctx, messageID, chunk); err != nil {
+		if err := r.platform.Reply(ctx, userID, chunk); err != nil {
 			return fmt.Errorf("send reply chunk %d failed: %w", i, err)
 		}
 	}
@@ -287,6 +247,15 @@ func (r *Router) GetHandler(msgType MessageType) (Handler, bool) {
 	return handler, exists
 }
 
+func mapWeiboMessageType(msgType weibo.MessageType) MessageType {
+	switch msgType {
+	case weibo.MessageTypeImage:
+		return TypeImage
+	default:
+		return TypeText
+	}
+}
+
 // handleAIMessage 处理 AI 消息（非命令消息）
 func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, error) {
 	if r.agentMgr == nil {
@@ -304,7 +273,12 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 	}
 
 	// 获取或创建会话
-	session := r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
+	var session *session.Session
+	if strings.TrimSpace(msg.SessionID) != "" {
+		session = r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
+	} else {
+		session = r.sessionMgr.GetOrCreateActiveSession(msg.UserID, "claude")
+	}
 	if session == nil {
 		return &Response{
 			Success: false,
@@ -313,11 +287,11 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 	}
 
 	// 获取 Agent
-	currentAgent := r.agentMgr.GetDefaultAgent()
+	currentAgent := r.agentMgr.ResolveAgent(session.AgentType)
 	if currentAgent == nil {
 		return &Response{
 			Success: false,
-			Content: "No agent available",
+			Content: fmt.Sprintf("No agent available for session type: %s", session.AgentType),
 		}, nil
 	}
 

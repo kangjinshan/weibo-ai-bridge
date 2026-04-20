@@ -25,28 +25,28 @@ func mockWebSocketServer(t *testing.T, handler func(*testing.T, http.ResponseWri
 // TestNewPlatform 测试构造函数
 func TestNewPlatform(t *testing.T) {
 	tests := []struct {
-		name           string
-		appID          string
+		name      string
+		appID     string
 		appSecret string
-		wantErr        bool
+		wantErr   bool
 	}{
 		{
-			name:           "valid config",
-			appID:          "test-app-id",
+			name:      "valid config",
+			appID:     "test-app-id",
 			appSecret: "test-Secret",
-			wantErr:        false,
+			wantErr:   false,
 		},
 		{
-			name:           "empty appID",
-			appID:          "",
+			name:      "empty appID",
+			appID:     "",
 			appSecret: "test-Secret",
-			wantErr:        true,
+			wantErr:   true,
 		},
 		{
-			name:           "empty appSecret",
-			appID:          "test-app-id",
+			name:      "empty appSecret",
+			appID:     "test-app-id",
 			appSecret: "",
-			wantErr:        true,
+			wantErr:   true,
 		},
 	}
 
@@ -65,6 +65,17 @@ func TestNewPlatform(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPlatform_Configure(t *testing.T) {
+	platform, err := NewPlatform("test-app-id", "test-secret")
+	require.NoError(t, err)
+
+	platform.Configure("http://example.com/token", "ws://example.com/stream", 45*time.Second)
+
+	assert.Equal(t, "http://example.com/token", platform.tokenURL)
+	assert.Equal(t, "ws://example.com/stream", platform.wsURL)
+	assert.Equal(t, 45*time.Second, platform.httpClient.Timeout)
 }
 
 // TestPlatform_Start 测试启动方法

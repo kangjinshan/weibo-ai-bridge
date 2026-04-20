@@ -149,7 +149,7 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 	}
 
 	// 更新会话的 Agent 类型
-	sess.AgentType = agentType
+	sess.SetAgentType(agentType)
 
 	return &Response{
 		Success: true,
@@ -169,11 +169,11 @@ func (h *CommandHandler) handleModel(userID, sessionID string, args []string) (*
 	}
 
 	// 获取当前 Agent
-	currentAgent := h.agentManager.GetDefaultAgent()
+	currentAgent := h.agentManager.ResolveAgent(sess.AgentType)
 	if currentAgent == nil {
 		return &Response{
 			Success: false,
-			Content: "No agent available.",
+			Content: fmt.Sprintf("Selected agent is not available: %s", sess.AgentType),
 		}, nil
 	}
 
@@ -221,7 +221,7 @@ func (h *CommandHandler) handleStatus(userID, sessionID string) (*Response, erro
 	}
 
 	// 获取当前 Agent
-	currentAgent := h.agentManager.GetDefaultAgent()
+	currentAgent := h.agentManager.ResolveAgent(sess.AgentType)
 
 	statusText := fmt.Sprintf(`Session Status:
 ID: %s
@@ -243,7 +243,7 @@ Total Sessions: %d`,
 	if currentAgent != nil {
 		statusText += fmt.Sprintf("\nCurrent Agent: %s", currentAgent.Name())
 	} else {
-		statusText += "\nCurrent Agent: None"
+		statusText += fmt.Sprintf("\nCurrent Agent: Unavailable (%s)", sess.AgentType)
 	}
 
 	return &Response{

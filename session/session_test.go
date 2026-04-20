@@ -76,6 +76,19 @@ func TestSession_Update(t *testing.T) {
 	assert.True(t, session.UpdatedAt.After(originalTime))
 }
 
+func TestSession_SetAgentType(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+	session := mgr.Create("test-id", "user-123", "claude")
+
+	originalTime := session.UpdatedAt
+	time.Sleep(10 * time.Millisecond)
+
+	session.SetAgentType("codex")
+
+	assert.Equal(t, "codex", session.AgentType)
+	assert.True(t, session.UpdatedAt.After(originalTime))
+}
+
 func TestManager_Close(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 3600})
 	mgr.Create("test-id", "user-123", "claude")
@@ -242,6 +255,28 @@ func TestManager_GetOrCreateSession(t *testing.T) {
 	assert.Equal(t, session1, session2)
 	assert.Equal(t, "user-123", session2.UserID) // 应该保持原来的 user
 	assert.Equal(t, 1, mgr.Count())
+}
+
+func TestManager_ActiveSessionLifecycle(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	session1 := mgr.Create("session-1", "user-1", "claude")
+	session2 := mgr.Create("session-2", "user-1", "codex")
+
+	assert.NotNil(t, session1)
+	assert.NotNil(t, session2)
+	assert.Equal(t, "session-2", mgr.GetActiveSessionID("user-1"))
+
+	activeSession, exists := mgr.GetActiveSession("user-1")
+	assert.True(t, exists)
+	assert.Equal(t, "session-2", activeSession.ID)
+
+	ok := mgr.SetActiveSession("user-1", "session-1")
+	assert.True(t, ok)
+	assert.Equal(t, "session-1", mgr.GetActiveSessionID("user-1"))
+
+	mgr.Delete("session-1")
+	assert.Equal(t, "", mgr.GetActiveSessionID("user-1"))
 }
 
 func TestManager_UpdateSession(t *testing.T) {

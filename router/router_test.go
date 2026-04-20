@@ -100,6 +100,12 @@ func TestHandleMessage(t *testing.T) {
 				MaxSize: 10,
 			})
 			agentMgr := agent.NewManager()
+			agentMgr.Register(&MockAgent{
+				name:      "claude-code",
+				response:  "AI response",
+				available: true,
+			})
+			agentMgr.SetDefault("claude-code")
 
 			router := NewRouter(platform, sessionMgr, agentMgr)
 
@@ -118,31 +124,108 @@ func TestHandleMessage(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_RepliesToUserID(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{
+		name:      "claude-code",
+		response:  "AI response",
+		available: true,
+	})
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	msg := &weibo.Message{
+		ID:        "msg-123",
+		Type:      weibo.MessageTypeText,
+		Content:   "Hello",
+		UserID:    "user-456",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	}
+
+	err := router.HandleMessage(context.Background(), msg)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 1)
+	assert.Equal(t, "user-456", platform.replies[0]["message_id"])
+}
+
+func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{
+		name:      "claude-code",
+		response:  "Claude response",
+		available: true,
+	})
+	agentMgr.Register(&MockAgent{
+		name:      "codex",
+		response:  "Codex response",
+		available: true,
+	})
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-new",
+		Type:      weibo.MessageTypeText,
+		Content:   "/new codex",
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "user-1-1", sessionMgr.GetActiveSessionID("user-1"))
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-ai",
+		Type:      weibo.MessageTypeText,
+		Content:   "Hello AI",
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567891,
+	})
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "Codex response", platform.replies[1]["content"])
+}
+
 func TestHandleAIMessage(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupAgent  bool
+		name         string
+		setupAgent   bool
 		setupSession bool
-		expectError bool
-		errorMsg    string
+		expectError  bool
+		errorMsg     string
 	}{
 		{
-			name:        "成功处理 AI 消息",
-			setupAgent:  true,
+			name:         "成功处理 AI 消息",
+			setupAgent:   true,
 			setupSession: true,
-			expectError: false,
+			expectError:  false,
 		},
 		{
-			name:        "Agent 管理器未设置",
-			setupAgent:  false,
+			name:         "Agent 管理器未设置",
+			setupAgent:   false,
 			setupSession: true,
-			expectError: false, // 不返回 error，返回错误消息
+			expectError:  false, // 不返回 error，返回错误消息
 		},
 		{
-			name:        "Session 管理器未设置",
-			setupAgent:  true,
+			name:         "Session 管理器未设置",
+			setupAgent:   true,
 			setupSession: false,
-			expectError: false,
+			expectError:  false,
 		},
 	}
 
@@ -193,29 +276,65 @@ func TestHandleAIMessage(t *testing.T) {
 	}
 }
 
+func TestHandleAIMessage_UsesSessionAgentType(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{
+		name:      "claude-code",
+		response:  "Claude response",
+		available: true,
+	})
+	agentMgr.Register(&MockAgent{
+		name:      "codex",
+		response:  "Codex response",
+		available: true,
+	})
+	agentMgr.SetDefault("claude-code")
+
+	sessionMgr.Create("session-1", "user-1", "codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	resp, err := router.handleAIMessage(context.Background(), &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "Hello AI",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, "Codex response", resp.Content)
+}
+
 func TestSendReply(t *testing.T) {
 	tests := []struct {
-		name        string
-		content     string
-		expectError bool
+		name         string
+		content      string
+		expectError  bool
 		expectChunks int
 	}{
 		{
-			name:        "发送短消息",
-			content:     "Hello",
-			expectError: false,
+			name:         "发送短消息",
+			content:      "Hello",
+			expectError:  false,
 			expectChunks: 1,
 		},
 		{
-			name:        "发送长消息（需要分块）",
-			content:     strings.Repeat("这是一条测试消息。\n", 100), // 约 900 字符，超过 1000 需要分块
-			expectError: false,
+			name:         "发送长消息（需要分块）",
+			content:      strings.Repeat("这是一条测试消息。\n", 100), // 约 900 字符，超过 1000 需要分块
+			expectError:  false,
 			expectChunks: 3,
 		},
 		{
-			name:        "平台未设置",
-			content:     "Test",
-			expectError: true,
+			name:         "平台未设置",
+			content:      "Test",
+			expectError:  true,
 			expectChunks: 0,
 		},
 	}
@@ -250,33 +369,33 @@ func TestSendReply(t *testing.T) {
 
 func TestSplitMessage(t *testing.T) {
 	tests := []struct {
-		name        string
-		content     string
-		maxSize     int
+		name         string
+		content      string
+		maxSize      int
 		expectChunks int
 	}{
 		{
-			name:        "短消息不分块",
-			content:     "Hello",
-			maxSize:     100,
+			name:         "短消息不分块",
+			content:      "Hello",
+			maxSize:      100,
 			expectChunks: 1,
 		},
 		{
-			name:        "长消息分块",
-			content:     strings.Repeat("a", 250),
-			maxSize:     100,
+			name:         "长消息分块",
+			content:      strings.Repeat("a", 250),
+			maxSize:      100,
 			expectChunks: 3,
 		},
 		{
-			name:        "按行分割",
-			content:     "line1\nline2\nline3\nline4\nline5",
-			maxSize:     10,
+			name:         "按行分割",
+			content:      "line1\nline2\nline3\nline4\nline5",
+			maxSize:      10,
 			expectChunks: 5,
 		},
 		{
-			name:        "单行超长强制分割",
-			content:     strings.Repeat("b", 300),
-			maxSize:     100,
+			name:         "单行超长强制分割",
+			content:      strings.Repeat("b", 300),
+			maxSize:      100,
 			expectChunks: 3,
 		},
 	}

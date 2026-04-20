@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"sync"
 )
 
@@ -53,6 +54,30 @@ func (m *Manager) GetDefaultAgent() Agent {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	return m.getDefaultAgentLocked()
+}
+
+// ResolveAgent 按会话中记录的 Agent 类型解析可用 Agent
+func (m *Manager) ResolveAgent(agentType string) Agent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	candidates := agentCandidates(agentType)
+	if len(candidates) == 0 {
+		return m.getDefaultAgentLocked()
+	}
+
+	for _, candidate := range candidates {
+		agent, exists := m.agents[candidate]
+		if exists && agent.IsAvailable() {
+			return agent
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) getDefaultAgentLocked() Agent {
 	// 如果设置了默认 Agent，返回它
 	if m.defaultAgent != "" {
 		if agent, exists := m.agents[m.defaultAgent]; exists {
@@ -60,6 +85,7 @@ func (m *Manager) GetDefaultAgent() Agent {
 		}
 	}
 
+	// 如果设置了默认 Agent，返回它
 	// 否则返回第一个可用的 Agent
 	for _, agent := range m.agents {
 		if agent.IsAvailable() {
@@ -69,6 +95,19 @@ func (m *Manager) GetDefaultAgent() Agent {
 
 	// 如果没有可用 Agent，返回 nil
 	return nil
+}
+
+func agentCandidates(agentType string) []string {
+	switch strings.ToLower(strings.TrimSpace(agentType)) {
+	case "":
+		return nil
+	case "claude":
+		return []string{"claude-code", "claude"}
+	case "codex":
+		return []string{"codex"}
+	default:
+		return []string{strings.TrimSpace(agentType)}
+	}
 }
 
 // SetDefault 设置默认 Agent

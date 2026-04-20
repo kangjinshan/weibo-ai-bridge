@@ -48,11 +48,16 @@ func ParseMessage(raw map[string]interface{}) (*Message, error) {
 		return nil, errors.New("missing or invalid message type")
 	}
 
-	// 只处理用户消息
-	if msgType != "message" {
-		return nil, fmt.Errorf("unsupported message type: %s", msgType)
+	// 微博 WebSocket 推送格式
+	if msgType == "message" {
+		return parseWSMessage(raw)
 	}
 
+	// 兼容测试中使用的直接消息格式
+	return parseDirectMessage(raw, MessageType(msgType))
+}
+
+func parseWSMessage(raw map[string]interface{}) (*Message, error) {
 	// 提取 payload
 	payload, ok := raw["payload"].(map[string]interface{})
 	if !ok {
@@ -82,7 +87,7 @@ func ParseMessage(raw map[string]interface{}) (*Message, error) {
 
 	msg := &Message{
 		ID:        messageID,
-		Type:      MessageType(msgType),
+		Type:      MessageTypeText,
 		UserID:    fromUserID,
 		UserName:  shortWeiboUser(fromUserID),
 		Content:   content,
@@ -90,6 +95,74 @@ func ParseMessage(raw map[string]interface{}) (*Message, error) {
 	}
 
 	return msg, nil
+}
+
+func parseDirectMessage(raw map[string]interface{}, msgType MessageType) (*Message, error) {
+	messageID, ok := raw["id"].(string)
+	if !ok {
+		return nil, errors.New("missing or invalid message id")
+	}
+
+	userID, ok := raw["user_id"].(string)
+	if !ok {
+		return nil, errors.New("missing or invalid user_id")
+	}
+
+	timestampFloat, ok := raw["timestamp"].(float64)
+	if !ok {
+		return nil, errors.New("missing or invalid timestamp")
+	}
+
+	userName, _ := raw["user_name"].(string)
+	msg := &Message{
+		ID:        messageID,
+		Type:      msgType,
+		UserID:    userID,
+		UserName:  userName,
+		Timestamp: int64(timestampFloat),
+	}
+
+	switch msgType {
+	case MessageTypeText, MessageTypeAt, MessageTypeReply:
+		msg.Content, _ = raw["text"].(string)
+	case MessageTypeImage:
+		msg.Content, _ = raw["image_url"].(string)
+	case MessageTypeLink:
+		msg.Content, _ = raw["url"].(string)
+	default:
+		return nil, fmt.Errorf("unsupported message type: %s", msgType)
+	}
+
+	if msgType == MessageTypeReply {
+		replyContext, err := parseReplyContext(raw["reply_context"])
+		if err != nil {
+			return nil, err
+		}
+		msg.ReplyContext = replyContext
+	}
+
+	return msg, nil
+}
+
+func parseReplyContext(raw interface{}) (*ReplyContext, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	replyContext, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("invalid reply_context")
+	}
+
+	originalMessageID, _ := replyContext["original_message_id"].(string)
+	originalUserID, _ := replyContext["original_user_id"].(string)
+	originalUserName, _ := replyContext["original_user_name"].(string)
+
+	return &ReplyContext{
+		OriginalMessageID: originalMessageID,
+		OriginalUserID:    originalUserID,
+		OriginalUserName:  originalUserName,
+	}, nil
 }
 
 // shortWeiboUser 生成微博用户短名称

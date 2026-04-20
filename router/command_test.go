@@ -204,6 +204,9 @@ func TestCommandHandler_Handle_Model(t *testing.T) {
 		MaxSize: 100,
 	})
 	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.SetDefault("claude-code")
 	handler := NewCommandHandler(sessionManager, agentManager)
 
 	// 创建一个会话
@@ -223,9 +226,38 @@ func TestCommandHandler_Handle_Model(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
-	// 由于没有注册 agent，会返回 "No agent available"
-	// 这是预期行为
-	assert.Contains(t, resp.Content, "No agent available")
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Model: claude-code")
+}
+
+func TestCommandHandler_Handle_Model_UsesSessionAgentType(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.SetDefault("claude-code")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "codex")
+	assert.NotNil(t, sess)
+
+	msg := &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "/model",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	}
+
+	resp, err := handler.Handle(msg)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Model: codex")
 }
 
 func TestCommandHandler_Handle_Dir(t *testing.T) {

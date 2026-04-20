@@ -22,10 +22,10 @@ const (
 
 // Platform 微博平台适配器
 type Platform struct {
-	appID          string
+	appID     string
 	appSecret string
-	tokenURL       string
-	wsURL          string
+	tokenURL  string
+	wsURL     string
 
 	httpClient *http.Client
 
@@ -59,24 +59,37 @@ func NewPlatform(appID, appSecret string) (*Platform, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Platform{
-		appID:          appID,
-		appSecret: appSecret,
-		tokenURL:       defaultTokenURL,
-		wsURL:          defaultWSURL,
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
-		messageChan:    make(chan *Message, 100),
-		ctx:            ctx,
-		cancel:         cancel,
-		logger:         log.Default(),
-		dedup:          make(map[string]time.Time),
+		appID:       appID,
+		appSecret:   appSecret,
+		tokenURL:    defaultTokenURL,
+		wsURL:       defaultWSURL,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		messageChan: make(chan *Message, 100),
+		ctx:         ctx,
+		cancel:      cancel,
+		logger:      log.Default(),
+		dedup:       make(map[string]time.Time),
 	}, nil
+}
+
+// Configure 使用外部配置覆盖默认平台参数
+func (p *Platform) Configure(tokenURL, wsURL string, timeout time.Duration) {
+	if strings.TrimSpace(tokenURL) != "" {
+		p.tokenURL = tokenURL
+	}
+	if strings.TrimSpace(wsURL) != "" {
+		p.wsURL = wsURL
+	}
+	if timeout > 0 {
+		p.httpClient.Timeout = timeout
+	}
 }
 
 // refreshToken 刷新 Token
 func (p *Platform) refreshToken(ctx context.Context) error {
 	// 构建请求体（JSON 格式）
 	payload := map[string]string{
-		"app_id":         p.appID,
+		"app_id":     p.appID,
 		"app_secret": p.appSecret,
 	}
 
@@ -122,7 +135,11 @@ func (p *Platform) refreshToken(ctx context.Context) error {
 	p.tokenMutex.Unlock()
 
 	p.logger.Printf("✅ Token refreshed successfully")
-	p.logger.Printf("   Token: %s...", p.token[:20])
+	if len(p.token) > 20 {
+		p.logger.Printf("   Token: %s...", p.token[:20])
+	} else {
+		p.logger.Printf("   Token: %s", p.token)
+	}
 	p.logger.Printf("   Expires in: %d seconds", tokenResp.Data.ExpireIn)
 	return nil
 }
@@ -291,8 +308,21 @@ func (p *Platform) messageLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+			p.connMutex.Lock()
+			conn := p.conn
+			p.connMutex.Unlock()
+
+			if conn == nil {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+					continue
+				}
+			}
+
 			var data string
-			err := websocket.Message.Receive(p.conn, &data)
+			err := websocket.Message.Receive(conn, &data)
 			if err != nil {
 				p.logger.Printf("❌ Read message error: %v", err)
 				// 尝试重连

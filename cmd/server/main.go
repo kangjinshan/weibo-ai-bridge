@@ -48,11 +48,13 @@ func main() {
 
 	// 创建 Agent 管理器并注册 Agent
 	agentMgr := agent.NewManager()
+	var defaultAgent string
 
 	// 注册 Claude Agent
 	if cfg.Agent.Claude.Enabled {
 		claudeAgent := agent.NewClaudeCodeAgent()
 		agentMgr.Register(claudeAgent)
+		defaultAgent = "claude-code"
 		agentMgr.SetDefault("claude-code")
 		logger.Printf("Claude agent registered: model=%s", cfg.Agent.Claude.Model)
 	}
@@ -61,13 +63,18 @@ func main() {
 	if cfg.Agent.Codex.Enabled {
 		codexAgent := agent.NewCodeXAgent()
 		agentMgr.Register(codexAgent)
-		if !cfg.Agent.Claude.Enabled {
+		if defaultAgent == "" {
+			defaultAgent = "codex"
 			agentMgr.SetDefault("codex")
 		}
 		logger.Printf("Codex agent registered: model=%s", cfg.Agent.Codex.Model)
 	}
 
-	logger.Printf("Agent manager initialized: count=%d, default=%s", agentMgr.Count(), "claude")
+	if defaultAgent == "" {
+		logger.Fatalf("No agent enabled, please enable at least one agent (claude or codex)")
+	}
+
+	logger.Printf("Agent manager initialized: count=%d, default=%s", agentMgr.Count(), defaultAgent)
 
 	// 创建微博平台适配器
 	platform, err := weibo.NewPlatform(cfg.Platform.Weibo.AppID, cfg.Platform.Weibo.AppSecret)

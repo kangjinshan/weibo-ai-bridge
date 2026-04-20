@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"os"
 	"sync"
 	"time"
 
@@ -285,9 +286,13 @@ func (m *Manager) saveSessionLocked(session *Session) {
 		return
 	}
 
-	// 这里简化实现，实际应该使用文件系统或数据库
-	// 由于没有文件系统权限，这里只是占位实现
-	_ = data
+	// 使用 os.WriteFile 保存到文件
+	filePath := m.storagePath + "/" + session.ID + ".json"
+	err = os.WriteFile(filePath, data, 0644)
+	if err != nil {
+		// 记录错误但不中断程序
+		return
+	}
 }
 
 // deleteSessionStorage 从存储中删除会话
@@ -296,8 +301,8 @@ func (m *Manager) deleteSessionStorage(id string) {
 		return
 	}
 
-	// 这里简化实现，实际应该使用文件系统或数据库
-	_ = id
+	filePath := m.storagePath + "/" + id + ".json"
+	os.Remove(filePath)
 }
 
 // loadSessions 从存储加载会话
@@ -306,6 +311,36 @@ func (m *Manager) loadSessions() {
 		return
 	}
 
-	// 这里简化实现，实际应该从文件系统或数据库加载
-	// 由于没有文件系统权限，这里只是占位实现
+	// 读取存储目录中的所有文件
+	entries, err := os.ReadDir(m.storagePath)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		// 只处理 .json 文件
+		if len(entry.Name()) <= 5 || entry.Name()[len(entry.Name())-5:] != ".json" {
+			continue
+		}
+
+		// 读取文件内容
+		filePath := m.storagePath + "/" + entry.Name()
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+
+		// 反序列化为 Session
+		session := &Session{}
+		if err := session.FromJSON(data); err != nil {
+			continue
+		}
+
+		// 添加到内存中
+		m.sessions[session.ID] = session
+	}
 }

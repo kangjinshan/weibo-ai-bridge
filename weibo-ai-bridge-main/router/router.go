@@ -122,8 +122,8 @@ func (r *Router) handleAIResponse(ctx context.Context, msg *Message) (*Response,
 	}
 
 	// 获取或创建会话
-	session := r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
-	if session == nil {
+	sess := r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
+	if sess == nil {
 		return &Response{
 			Success: false,
 			Content: "Failed to create or get session",
@@ -139,8 +139,8 @@ func (r *Router) handleAIResponse(ctx context.Context, msg *Message) (*Response,
 		}, nil
 	}
 
-	// 执行 AI 任务
-	response, err := currentAgent.Execute(msg.Content)
+	// 执行 AI 任务，传递 session ID
+	response, err := currentAgent.Execute(msg.Content, sess.ID)
 	if err != nil {
 		return &Response{
 			Success: false,
@@ -304,8 +304,8 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 	}
 
 	// 获取或创建会话
-	session := r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
-	if session == nil {
+	sess := r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
+	if sess == nil {
 		return &Response{
 			Success: false,
 			Content: "Failed to create or get session",
@@ -321,8 +321,8 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		}, nil
 	}
 
-	// 执行 AI 任务
-	response, err := currentAgent.Execute(msg.Content)
+	// 执行 AI 任务，传递 session ID
+	response, err := currentAgent.Execute(msg.Content, sess.ID)
 	if err != nil {
 		return &Response{
 			Success: false,

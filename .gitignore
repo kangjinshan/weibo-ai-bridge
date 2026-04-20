@@ -15,6 +15,7 @@ coverage.html
 # Build directory
 build/
 dist/
+bin/
 
 # Dependency directories
 vendor/
@@ -37,6 +38,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+config/config.toml
 
 # Logs
 *.log
@@ -44,3 +46,4 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+test-weibo

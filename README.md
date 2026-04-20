@@ -45,7 +45,7 @@ Weibo AI Bridge 是一个基于 Go 语言开发的中间件服务，旨在连接
 ### 下载源码
 
 ```bash
-git clone https://github.com/yourusername/weibo-ai-bridge.git
+git clone https://github.com/kangjinshan/weibo-ai-bridge.git
 cd weibo-ai-bridge
 ```
 
@@ -467,7 +467,7 @@ go test -v ./platform/weibo
 
 如果以上方法都无法解决问题：
 
-1. 查看项目 Issues: https://github.com/yourusername/weibo-ai-bridge/issues
+1. 查看项目 Issues: https://github.com/kangjinshan/weibo-ai-bridge/issues
 2. 创建新 Issue 并附带：
    - 错误日志
    - 配置信息（隐藏敏感信息）
@@ -582,9 +582,9 @@ make clean
 
 ## 联系方式
 
-项目维护者：Your Name
+项目维护者：kangjinshan
 
-问题反馈：https://github.com/yourusername/weibo-ai-bridge/issues
+问题反馈：https://github.com/kangjinshan/weibo-ai-bridge/issues
 
 ## 致谢
 

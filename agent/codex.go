@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // CodeXAgent CodeX CLI Agent 实现
@@ -25,77 +29,195 @@ func (a *CodeXAgent) Name() string {
 	return a.name
 }
 
+// codexSession 用于管理 Codex 会话状态
+type codexSession struct {
+	threadID atomic.Value // 存储 Codex 返回的 thread_id
+	mu       sync.Mutex
+}
+
 // Execute 执行 AI 任务（带会话 ID 支持）
+// sessionID 参数现在用于恢复会话，返回值中包含新的 session ID
 func (a *CodeXAgent) Execute(sessionID string, input string) (string, error) {
 	// 检查 codex CLI 是否可用
 	if !a.IsAvailable() {
 		return "", fmt.Errorf("codex CLI is not available")
 	}
 
-	outputFile, err := os.CreateTemp("", "weibo-ai-bridge-codex-*.txt")
+	// 创建临时会话状态
+	session := &codexSession{}
+	if sessionID != "" {
+		session.threadID.Store(sessionID)
+	}
+
+	// 执行命令并获取响应
+	response, err := a.executeCodex(session, input)
 	if err != nil {
-		return "", fmt.Errorf("failed to create codex output file: %w", err)
-	}
-	outputPath := outputFile.Name()
-	if err := outputFile.Close(); err != nil {
-		return "", fmt.Errorf("failed to prepare codex output file: %w", err)
-	}
-	defer os.Remove(outputPath)
-
-	cmd := a.buildCommand(sessionID, input, outputPath)
-
-	// 捕获输出
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// 执行命令
-	err = cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("failed to execute codex CLI: %w, stderr: %s", err, stderr.String())
+		return "", err
 	}
 
-	content, err := os.ReadFile(outputPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read codex output: %w", err)
+	// 返回响应内容，如果成功获取到 thread_id，则附加在响应中
+	// 格式: <response_content>\n\n__SESSION_ID__: <thread_id>
+	newThreadID := session.CurrentSessionID()
+	if newThreadID != "" {
+		response = response + "\n\n__SESSION_ID__: " + newThreadID
 	}
 
-	result := strings.TrimSpace(string(content))
-	if result == "" {
-		result = strings.TrimSpace(stdout.String())
-	}
-	if result == "" {
-		return "", fmt.Errorf("empty response from codex CLI")
-	}
-
-	return result, nil
+	return response, nil
 }
 
-func (a *CodeXAgent) buildCommand(sessionID, input, outputPath string) *exec.Cmd {
-	// 如果有会话 ID，使用 resume 命令
-	if sessionID != "" {
-		args := []string{
-			"-a", "never",
-			"exec", "resume", sessionID,
-			"--skip-git-repo-check",
-			"--output-last-message", outputPath,
-		}
-		// 如果有输入内容，添加到参数
-		if input != "" {
-			args = append(args, input)
-		}
-		return exec.Command("codex", args...)
+// CurrentSessionID 获取当前会话 ID
+func (cs *codexSession) CurrentSessionID() string {
+	v, _ := cs.threadID.Load().(string)
+	return v
+}
+
+func (a *CodeXAgent) executeCodex(session *codexSession, input string) (string, error) {
+	cmd := a.buildCommand(session, input)
+
+	// 获取 stdout pipe
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to get stdout pipe: %w", err)
 	}
 
-	// 没有会话 ID，使用普通 exec 命令（不使用 ephemeral，让 Codex 保存会话）
-	return exec.Command(
-			"codex",
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
+	// 启动命令
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("failed to start codex CLI: %w", err)
+	}
+
+	// 读取并解析 JSON 输出
+	response, err := a.readCodexOutput(session, stdout)
+	if err != nil {
+		return "", err
+	}
+
+	// 等待命令完成
+	if err := cmd.Wait(); err != nil {
+		return "", fmt.Errorf("codex CLI failed: %w, stderr: %s", err, stderrBuf.String())
+	}
+
+	return response, nil
+}
+
+func (a *CodeXAgent) buildCommand(session *codexSession, input string) *exec.Cmd {
+	threadID := session.CurrentSessionID()
+	isResume := threadID != ""
+
+	var args []string
+	if isResume {
+		// 恢复现有会话
+		args = []string{
+			"-a", "never",
+			"exec", "resume",
+			"--skip-git-repo-check",
+			"--json",
+			threadID,
+			"-", // 从 stdin 读取输入
+		}
+	} else {
+		// 创建新会话
+		args = []string{
 			"-a", "never",
 			"exec",
 			"--skip-git-repo-check",
-			"--output-last-message", outputPath,
-			input,
-	)
+			"--json",
+			"-", // 从 stdin 读取输入
+		}
+	}
+
+	cmd := exec.Command("codex", args...)
+	cmd.Stdin = strings.NewReader(input)
+
+	return cmd
+}
+
+func (a *CodeXAgent) readCodexOutput(session *codexSession, stdout io.ReadCloser) (string, error) {
+	reader := bufio.NewReader(stdout)
+	var responseParts []string
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return "", fmt.Errorf("failed to read output: %w", err)
+		}
+
+		line = bytes.TrimRight(line, "\r\n")
+		if len(line) == 0 {
+			continue
+		}
+
+		// 解析 JSON 行
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err != nil {
+			// 非 JSON 行，跳过
+			continue
+		}
+
+		// 处理事件
+		eventType, _ := raw["type"].(string)
+		switch eventType {
+		case "thread.started":
+			// 捕获 thread_id
+			if tid, ok := raw["thread_id"].(string); ok {
+				session.threadID.Store(tid)
+			}
+
+		case "agent_message", "message":
+			// 提取消息内容
+			if text := extractItemText(raw, "content", "text"); text != "" {
+				responseParts = append(responseParts, text)
+			}
+
+		case "turn.completed":
+			// 会话轮次完成
+			// 继续读取直到 EOF
+
+		case "error":
+			if msg, ok := raw["message"].(string); ok {
+				return "", fmt.Errorf("codex error: %s", msg)
+			}
+		}
+	}
+
+	return strings.Join(responseParts, "\n"), nil
+}
+
+// extractItemText 从 Codex 输出中提取文本内容
+func extractItemText(raw map[string]any, arrayField, elementType string) string {
+	// 尝试从数组字段中提取
+	if arr, ok := raw[arrayField].([]any); ok {
+		var parts []string
+		for _, elem := range arr {
+			m, ok := elem.(map[string]any)
+			if !ok {
+				continue
+			}
+			if elementType != "" {
+				if t, _ := m["type"].(string); t != elementType {
+					continue
+				}
+			}
+			if t, _ := m["text"].(string); t != "" {
+				parts = append(parts, t)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+
+	// 回退到顶层 text 字段
+	if text, ok := raw["text"].(string); ok {
+		return text
+	}
+
+	return ""
 }
 
 // IsAvailable 检查 Agent 是否可用

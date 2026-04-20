@@ -325,6 +325,24 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		}, nil
 	}
 
+	// 如果是 Codex Agent，解析并保存新的 session ID
+	if session.AgentType == "codex" {
+		// 检查响应中是否包含新的 session ID
+		if newSessionID := extractSessionID(response); newSessionID != "" {
+			// 更新 Session.Context 中的 codex_session_id
+			if session.Context == nil {
+				session.Context = make(map[string]interface{})
+			}
+			session.Context["codex_session_id"] = newSessionID
+
+			// 从响应中移除 session ID 标记
+			response = removeSessionIDMarker(response)
+
+			// 保存会话状态
+			r.sessionMgr.UpdateSession(session.ID, "codex_session_id", newSessionID)
+		}
+	}
+
 	return &Response{
 		Success: true,
 		Content: response,
@@ -341,4 +359,24 @@ func mapAgentName(agentName string) string {
 	default:
 		return agentName
 	}
+}
+
+// extractSessionID 从响应中提取 session ID
+func extractSessionID(response string) string {
+	prefix := "\n\n__SESSION_ID__: "
+	idx := strings.LastIndex(response, prefix)
+	if idx == -1 {
+		return ""
+	}
+	return strings.TrimSpace(response[idx+len(prefix):])
+}
+
+// removeSessionIDMarker 从响应中移除 session ID 标记
+func removeSessionIDMarker(response string) string {
+	prefix := "\n\n__SESSION_ID__: "
+	idx := strings.LastIndex(response, prefix)
+	if idx == -1 {
+		return response
+	}
+	return response[:idx]
 }

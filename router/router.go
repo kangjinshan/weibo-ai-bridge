@@ -308,7 +308,16 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 	}
 
 	// 执行 AI 任务
-	response, err := currentAgent.Execute(session.ID, msg.Content)
+	// 从 Session.Context 中获取 Codex session ID（如果有）
+	codexSessionID := ""
+	if session.AgentType == "codex" {
+		if sid, ok := session.Context["codex_session_id"].(string); ok {
+			codexSessionID = sid
+		}
+	}
+
+	// 调用 Agent，传入 codex session ID
+	response, err := currentAgent.Execute(codexSessionID, msg.Content)
 	if err != nil {
 		return &Response{
 			Success: false,

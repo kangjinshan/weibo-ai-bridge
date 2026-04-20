@@ -6,7 +6,7 @@ type Agent interface {
 	Name() string
 
 	// Execute 执行 AI 任务
-	Execute(input string) (string, error)
+	Execute(sessionID string, input string) (string, error)
 
 	// IsAvailable 检查 Agent 是否可用
 	IsAvailable() bool

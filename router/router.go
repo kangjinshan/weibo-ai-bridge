@@ -308,7 +308,7 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 	}
 
 	// 执行 AI 任务
-	response, err := currentAgent.Execute(msg.Content)
+	response, err := currentAgent.Execute(session.ID, msg.Content)
 	if err != nil {
 		return &Response{
 			Success: false,

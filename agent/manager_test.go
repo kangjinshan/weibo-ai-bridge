@@ -16,7 +16,7 @@ func (m *MockAgent) Name() string {
 	return m.name
 }
 
-func (m *MockAgent) Execute(input string) (string, error) {
+func (m *MockAgent) Execute(sessionID string, input string) (string, error) {
 	return "response: " + input, nil
 }
 

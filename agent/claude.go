@@ -25,13 +25,14 @@ func (a *ClaudeCodeAgent) Name() string {
 }
 
 // Execute 执行 AI 任务
-func (a *ClaudeCodeAgent) Execute(input string) (string, error) {
+func (a *ClaudeCodeAgent) Execute(sessionID string, input string) (string, error) {
 	// 检查 claude CLI 是否可用
 	if !a.IsAvailable() {
 		return "", fmt.Errorf("claude CLI is not available")
 	}
 
 	// 准备命令
+	// TODO: 添加 --session-id 支持（当 Claude CLI 支持时）
 	cmd := exec.Command("claude", "--print", input)
 
 	// 捕获输出

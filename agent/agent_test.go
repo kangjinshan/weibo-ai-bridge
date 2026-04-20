@@ -16,7 +16,7 @@ func TestMockAgent(t *testing.T) {
 	assert.Equal(t, "test-agent", agent.Name())
 	assert.True(t, agent.IsAvailable())
 
-	response, err := agent.Execute("test input")
+	response, err := agent.Execute("", "test input")
 	assert.NoError(t, err)
 	assert.Equal(t, "response: test input", response)
 }

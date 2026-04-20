@@ -162,25 +162,23 @@ func (a *CodeXAgent) readCodexOutput(session *codexSession, stdout io.ReadCloser
 		// 处理事件
 		eventType, _ := raw["type"].(string)
 		switch eventType {
-		case "thread.started":
-			// 捕获 thread_id
-			if tid, ok := raw["thread_id"].(string); ok {
-				session.threadID.Store(tid)
+		case "session_meta":
+			// 从 session_meta 中捕获 thread_id (payload.id)
+			if payload, ok := raw["payload"].(map[string]any); ok {
+				if tid, ok := payload["id"].(string); ok {
+					session.threadID.Store(tid)
+				}
 			}
 
-		case "agent_message", "message":
-			// 提取消息内容
-			if text := extractItemText(raw, "content", "text"); text != "" {
-				responseParts = append(responseParts, text)
-			}
-
-		case "turn.completed":
-			// 会话轮次完成
-			// 继续读取直到 EOF
-
-		case "error":
-			if msg, ok := raw["message"].(string); ok {
-				return "", fmt.Errorf("codex error: %s", msg)
+		case "event_msg":
+			// 从 event_msg 中提取消息
+			if payload, ok := raw["payload"].(map[string]any); ok {
+				msgType, _ := payload["type"].(string)
+				if msgType == "agent_message" {
+					if text, ok := payload["message"].(string); ok && text != "" {
+						responseParts = append(responseParts, text)
+					}
+				}
 			}
 		}
 	}

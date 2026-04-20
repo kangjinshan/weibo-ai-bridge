@@ -274,10 +274,22 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 
 	// 获取或创建会话
 	var session *session.Session
+	var agentType string
+
+	// 获取默认 Agent 类型
+	defaultAgent := r.agentMgr.GetDefaultAgent()
+	if defaultAgent == nil {
+		return &Response{
+			Success: false,
+			Content: "No default agent configured",
+		}, nil
+	}
+	agentType = mapAgentName(defaultAgent.Name())
+
 	if strings.TrimSpace(msg.SessionID) != "" {
-		session = r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, "claude")
+		session = r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, agentType)
 	} else {
-		session = r.sessionMgr.GetOrCreateActiveSession(msg.UserID, "claude")
+		session = r.sessionMgr.GetOrCreateActiveSession(msg.UserID, agentType)
 	}
 	if session == nil {
 		return &Response{
@@ -308,4 +320,16 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		Success: true,
 		Content: response,
 	}, nil
+}
+
+// mapAgentName 将 Agent 名称映射到会话类型
+func mapAgentName(agentName string) string {
+	switch agentName {
+	case "claude-code":
+		return "claude"
+	case "codex":
+		return "codex"
+	default:
+		return agentName
+	}
 }

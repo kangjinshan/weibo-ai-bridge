@@ -74,16 +74,20 @@ sudo npm install -g .
 ```toml
 [agent.codex]
 api_key = "your-codex-api-key"  # CodeX API 密钥
-model = "gpt-4"  # 模型名称
+model = ""  # 留空则沿用本机 codex CLI 默认 provider/model 配置
 enabled = false  # 启用此 Agent（需先安装）
 ```
 
 **环境变量**：
 ```bash
 export CODEX_API_KEY="your-codex-api-key"
-export CODEX_MODEL="gpt-4"
+export CODEX_MODEL=""
 export CODEX_ENABLED="true"
 ```
+
+**配置建议**：
+- 如果本机 `codex` CLI 已经可以直接使用，优先把 `model` 留空，避免 Bridge 额外传入 `-m` 覆盖你本地 CLI 的 provider/model 选择。
+- 只有在你确认目标 provider 上已有对应 deployment 时，才显式指定 `CODEX_MODEL`。
 
 ## Agent 自动发现机制
 

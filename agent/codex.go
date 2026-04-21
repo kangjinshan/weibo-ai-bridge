@@ -8,7 +8,6 @@ import (
 	"io"
 	"os/exec"
 	"strings"
-	"sync"
 	"sync/atomic"
 )
 
@@ -34,7 +33,11 @@ func (a *CodeXAgent) Name() string {
 // codexSession 用于管理 Codex 会话状态
 type codexSession struct {
 	threadID atomic.Value // 存储 Codex 返回的 thread_id
-	mu       sync.Mutex
+}
+
+type codexOutput struct {
+	response string
+	errors   []string
 }
 
 // Execute 执行 AI 任务（带会话 ID 支持）
@@ -91,45 +94,49 @@ func (a *CodeXAgent) executeCodex(session *codexSession, input string) (string, 
 	}
 
 	// 读取并解析 JSON 输出
-	response, err := a.readCodexOutput(session, stdout)
+	output, err := a.readCodexOutput(session, stdout)
 	if err != nil {
 		return "", err
 	}
 
 	// 等待命令完成
 	if err := cmd.Wait(); err != nil {
-		return "", fmt.Errorf("codex CLI failed: %w, stderr: %s", err, stderrBuf.String())
+		details := joinNonEmpty(output.errors, cleanCodexStderr(stderrBuf.String()))
+		if details == "" {
+			return "", fmt.Errorf("codex CLI failed: %w", err)
+		}
+		return "", fmt.Errorf("codex CLI failed: %w, details: %s", err, details)
 	}
 
-	return response, nil
+	return output.response, nil
 }
 
 func (a *CodeXAgent) buildCommand(session *codexSession, input string) *exec.Cmd {
 	threadID := session.CurrentSessionID()
 	isResume := threadID != ""
 
-	var args []string
+	args := []string{"-a", "never"}
+	if strings.TrimSpace(a.model) != "" {
+		args = append(args, "-m", strings.TrimSpace(a.model))
+	}
+
 	if isResume {
 		// 恢复现有会话，用 - 从 stdin 读取 prompt
-		args = []string{
-			"-a", "never",
-			"-m", a.model,
+		args = append(args,
 			"exec", "resume",
 			"--skip-git-repo-check",
 			"--json",
 			threadID,
 			"-",
-		}
+		)
 	} else {
 		// 创建新会话，用 - 从 stdin 读取 prompt
-		args = []string{
-			"-a", "never",
-			"-m", a.model,
+		args = append(args,
 			"exec",
 			"--skip-git-repo-check",
 			"--json",
 			"-",
-		}
+		)
 	}
 
 	cmd := exec.Command("codex", args...)
@@ -138,9 +145,10 @@ func (a *CodeXAgent) buildCommand(session *codexSession, input string) *exec.Cmd
 	return cmd
 }
 
-func (a *CodeXAgent) readCodexOutput(session *codexSession, stdout io.ReadCloser) (string, error) {
+func (a *CodeXAgent) readCodexOutput(session *codexSession, stdout io.ReadCloser) (*codexOutput, error) {
 	reader := bufio.NewReader(stdout)
 	var responseParts []string
+	var errorParts []string
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -148,7 +156,7 @@ func (a *CodeXAgent) readCodexOutput(session *codexSession, stdout io.ReadCloser
 			if err == io.EOF {
 				break
 			}
-			return "", fmt.Errorf("failed to read output: %w", err)
+			return nil, fmt.Errorf("failed to read output: %w", err)
 		}
 
 		line = bytes.TrimRight(line, "\r\n")
@@ -163,63 +171,163 @@ func (a *CodeXAgent) readCodexOutput(session *codexSession, stdout io.ReadCloser
 			continue
 		}
 
-		// 处理事件
-		eventType, _ := raw["type"].(string)
-		switch eventType {
-		case "session_meta":
-			// 从 session_meta 中捕获 thread_id (payload.id)
-			if payload, ok := raw["payload"].(map[string]any); ok {
-				if tid, ok := payload["id"].(string); ok {
-					session.threadID.Store(tid)
-				}
-			}
-
-		case "event_msg":
-			// 从 event_msg 中提取消息
-			if payload, ok := raw["payload"].(map[string]any); ok {
-				msgType, _ := payload["type"].(string)
-				if msgType == "agent_message" {
-					if text, ok := payload["message"].(string); ok && text != "" {
-						responseParts = append(responseParts, text)
-					}
-				}
-			}
+		responseText, errorText := parseCodexEvent(session, raw)
+		if responseText != "" {
+			responseParts = append(responseParts, responseText)
+		}
+		if errorText != "" {
+			errorParts = append(errorParts, errorText)
 		}
 	}
 
-	return strings.Join(responseParts, "\n"), nil
+	return &codexOutput{
+		response: strings.Join(responseParts, "\n"),
+		errors:   uniqueNonEmpty(errorParts),
+	}, nil
 }
 
-// extractItemText 从 Codex 输出中提取文本内容
-func extractItemText(raw map[string]any, arrayField, elementType string) string {
-	// 尝试从数组字段中提取
-	if arr, ok := raw[arrayField].([]any); ok {
-		var parts []string
-		for _, elem := range arr {
-			m, ok := elem.(map[string]any)
-			if !ok {
-				continue
-			}
-			if elementType != "" {
-				if t, _ := m["type"].(string); t != elementType {
-					continue
-				}
-			}
-			if t, _ := m["text"].(string); t != "" {
-				parts = append(parts, t)
+func parseCodexEvent(session *codexSession, raw map[string]any) (string, string) {
+	eventType, _ := raw["type"].(string)
+
+	switch eventType {
+	case "thread.started":
+		if tid, ok := raw["thread_id"].(string); ok && tid != "" {
+			session.threadID.Store(tid)
+		}
+
+	case "session_meta":
+		if payload, ok := raw["payload"].(map[string]any); ok {
+			if tid, ok := payload["id"].(string); ok && tid != "" {
+				session.threadID.Store(tid)
 			}
 		}
-		if len(parts) > 0 {
-			return strings.Join(parts, "\n")
+
+	case "item.completed":
+		if item, ok := raw["item"].(map[string]any); ok {
+			return extractMessageText(item), ""
+		}
+
+	case "event_msg":
+		if payload, ok := raw["payload"].(map[string]any); ok {
+			msgType, _ := payload["type"].(string)
+			if msgType == "agent_message" {
+				if text, ok := payload["message"].(string); ok && text != "" {
+					return text, ""
+				}
+			}
+		}
+
+	case "error":
+		if message, ok := raw["message"].(string); ok && message != "" {
+			return "", message
+		}
+
+	case "turn.failed":
+		if turnErr, ok := raw["error"].(map[string]any); ok {
+			if message, ok := turnErr["message"].(string); ok && message != "" {
+				return "", message
+			}
 		}
 	}
 
-	// 回退到顶层 text 字段
-	if text, ok := raw["text"].(string); ok {
+	return "", ""
+}
+
+func extractMessageText(item map[string]any) string {
+	itemType, _ := item["type"].(string)
+	switch itemType {
+	case "agent_message", "assistant_message", "message":
+	default:
+		return ""
+	}
+
+	if text, ok := item["text"].(string); ok && text != "" {
+		return text
+	}
+
+	if text := extractItemText(item, "content", "output_text"); text != "" {
+		return text
+	}
+
+	if text := extractItemText(item, "content", "text"); text != "" {
+		return text
+	}
+
+	if text := extractItemText(item, "parts", "text"); text != "" {
+		return text
+	}
+
+	if text, ok := item["message"].(string); ok && text != "" {
 		return text
 	}
 
 	return ""
+}
+
+// extractItemText 从 Codex 输出中提取文本内容
+func extractItemText(raw map[string]any, arrayField, elementType string) string {
+	arr, ok := raw[arrayField].([]any)
+	if !ok {
+		return ""
+	}
+
+	var parts []string
+	for _, elem := range arr {
+		m, ok := elem.(map[string]any)
+		if !ok {
+			continue
+		}
+		if elementType != "" {
+			if t, _ := m["type"].(string); t != elementType {
+				continue
+			}
+		}
+		if t, _ := m["text"].(string); t != "" {
+			parts = append(parts, t)
+		}
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func cleanCodexStderr(stderr string) string {
+	var lines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "Reading additional input from stdin..." {
+			continue
+		}
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func joinNonEmpty(parts []string, extra string) string {
+	combined := append([]string{}, parts...)
+	if extra != "" {
+		combined = append(combined, extra)
+	}
+
+	return strings.Join(uniqueNonEmpty(combined), "\n")
+}
+
+func uniqueNonEmpty(parts []string) []string {
+	seen := make(map[string]struct{}, len(parts))
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, ok := seen[part]; ok {
+			continue
+		}
+		seen[part] = struct{}{}
+		result = append(result, part)
+	}
+
+	return result
 }
 
 // IsAvailable 检查 Agent 是否可用

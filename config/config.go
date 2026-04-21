@@ -25,11 +25,11 @@ type PlatformConfig struct {
 
 // WeiboConfig 微博配置
 type WeiboConfig struct {
-	AppID          string `toml:"app_id"`
+	AppID     string `toml:"app_id"`
 	AppSecret string `toml:"app_secret"`
-	TokenURL       string `toml:"token_url"`
-	WSURL          string `toml:"ws_url"`
-	Timeout        int    `toml:"timeout"`
+	TokenURL  string `toml:"token_url"`
+	WSURL     string `toml:"ws_url"`
+	Timeout   int    `toml:"timeout"`
 }
 
 // AgentConfig AI Agent 配置
@@ -147,7 +147,7 @@ func defaultConfig() *Config {
 				Enabled: true,
 			},
 			Codex: CodexConfig{
-				Model:   "gpt-4",
+				Model:   "",
 				Enabled: false,
 			},
 		},

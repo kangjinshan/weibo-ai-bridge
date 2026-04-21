@@ -34,8 +34,8 @@ enabled = true
 # Codex API Key（启用 Codex 时必填）
 api_key = "your-codex-api-key"
 
-# Codex 模型
-model = "gpt-4"
+# Codex 模型（留空则沿用本机 codex CLI 默认配置）
+model = ""
 
 # 是否启用 Codex Agent
 enabled = false

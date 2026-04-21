@@ -308,16 +308,15 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 	}
 
 	// 执行 AI 任务
-	// 从 Session.Context 中获取 Codex session ID（如果有）
-	codexSessionID := ""
-	if session.AgentType == "codex" {
-		if sid, ok := session.Context["codex_session_id"].(string); ok {
-			codexSessionID = sid
+	agentSessionID := ""
+	if sessionKey := agentSessionContextKey(session.AgentType); sessionKey != "" {
+		if sid, ok := session.Context[sessionKey].(string); ok {
+			agentSessionID = sid
 		}
 	}
 
-	// 调用 Agent，传入 codex session ID
-	response, err := currentAgent.Execute(codexSessionID, msg.Content)
+	// 调用 Agent，传入 agent session ID
+	response, err := currentAgent.Execute(agentSessionID, msg.Content)
 	if err != nil {
 		return &Response{
 			Success: false,
@@ -325,21 +324,15 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		}, nil
 	}
 
-	// 如果是 Codex Agent，解析并保存新的 session ID
-	if session.AgentType == "codex" {
-		// 检查响应中是否包含新的 session ID
+	// 如果 Agent 返回了新的 session ID，保存到会话上下文
+	if sessionKey := agentSessionContextKey(session.AgentType); sessionKey != "" {
 		if newSessionID := extractSessionID(response); newSessionID != "" {
-			// 更新 Session.Context 中的 codex_session_id
 			if session.Context == nil {
 				session.Context = make(map[string]interface{})
 			}
-			session.Context["codex_session_id"] = newSessionID
-
-			// 从响应中移除 session ID 标记
+			session.Context[sessionKey] = newSessionID
 			response = removeSessionIDMarker(response)
-
-			// 保存会话状态
-			r.sessionMgr.UpdateSession(session.ID, "codex_session_id", newSessionID)
+			r.sessionMgr.UpdateSession(session.ID, sessionKey, newSessionID)
 		}
 	}
 
@@ -358,6 +351,17 @@ func mapAgentName(agentName string) string {
 		return "codex"
 	default:
 		return agentName
+	}
+}
+
+func agentSessionContextKey(agentType string) string {
+	switch strings.ToLower(strings.TrimSpace(agentType)) {
+	case "claude":
+		return "claude_session_id"
+	case "codex":
+		return "codex_session_id"
+	default:
+		return ""
 	}
 }
 

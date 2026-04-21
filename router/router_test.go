@@ -33,6 +33,9 @@ type MockAgent struct {
 	name      string
 	response  string
 	available bool
+	executeFn func(sessionID string, input string) (string, error)
+	lastInput string
+	lastSID   string
 }
 
 func (m *MockAgent) Name() string {
@@ -40,6 +43,11 @@ func (m *MockAgent) Name() string {
 }
 
 func (m *MockAgent) Execute(sessionID string, input string) (string, error) {
+	m.lastSID = sessionID
+	m.lastInput = input
+	if m.executeFn != nil {
+		return m.executeFn(sessionID, input)
+	}
 	return m.response, nil
 }
 
@@ -310,6 +318,113 @@ func TestHandleAIMessage_UsesSessionAgentType(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
 	assert.Equal(t, "Codex response", resp.Content)
+}
+
+func TestHandleAIMessage_PersistsClaudeSessionID(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	mockAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		response:  "Claude response\n\n__SESSION_ID__: claude-session-1",
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("claude-code")
+
+	sessionMgr.Create("session-1", "user-1", "claude")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	resp, err := router.handleAIMessage(context.Background(), &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "Hello Claude",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, "Claude response", resp.Content)
+	assert.Equal(t, "", mockAgent.lastSID)
+
+	sess, ok := sessionMgr.Get("session-1")
+	assert.True(t, ok)
+	assert.Equal(t, "claude-session-1", sess.Context["claude_session_id"])
+}
+
+func TestHandleAIMessage_ResumesClaudeSessionID(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	mockAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		response:  "Claude response",
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("claude-code")
+
+	sess := sessionMgr.Create("session-1", "user-1", "claude")
+	sess.Context["claude_session_id"] = "claude-session-1"
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	resp, err := router.handleAIMessage(context.Background(), &Message{
+		ID:        "msg-2",
+		Type:      TypeText,
+		Content:   "Continue",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, "claude-session-1", mockAgent.lastSID)
+}
+
+func TestHandleAIMessage_PersistsCodexSessionID(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	mockAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		response:  "Codex response\n\n__SESSION_ID__: codex-thread-1",
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("codex")
+
+	sessionMgr.Create("session-1", "user-1", "codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	resp, err := router.handleAIMessage(context.Background(), &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "Hello Codex",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, "Codex response", resp.Content)
+	assert.Equal(t, "", mockAgent.lastSID)
+
+	sess, ok := sessionMgr.Get("session-1")
+	assert.True(t, ok)
+	assert.Equal(t, "codex-thread-1", sess.Context["codex_session_id"])
 }
 
 func TestSendReply(t *testing.T) {

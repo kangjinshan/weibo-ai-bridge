@@ -14,13 +14,15 @@ import (
 
 // CodeXAgent CodeX CLI Agent 实现
 type CodeXAgent struct {
-	name string
+	name  string
+	model string
 }
 
 // NewCodeXAgent 创建新的 CodeX Agent
-func NewCodeXAgent() *CodeXAgent {
+func NewCodeXAgent(model string) *CodeXAgent {
 	return &CodeXAgent{
-		name: "codex",
+		name:  "codex",
+		model: model,
 	}
 }
 
@@ -108,27 +110,30 @@ func (a *CodeXAgent) buildCommand(session *codexSession, input string) *exec.Cmd
 
 	var args []string
 	if isResume {
-		// 恢复现有会话，prompt 作为命令行参数传入
+		// 恢复现有会话，用 - 从 stdin 读取 prompt
 		args = []string{
 			"-a", "never",
+			"-m", a.model,
 			"exec", "resume",
 			"--skip-git-repo-check",
 			"--json",
 			threadID,
-			input,
+			"-",
 		}
 	} else {
-		// 创建新会话，prompt 作为命令行参数传入
+		// 创建新会话，用 - 从 stdin 读取 prompt
 		args = []string{
 			"-a", "never",
+			"-m", a.model,
 			"exec",
 			"--skip-git-repo-check",
 			"--json",
-			input,
+			"-",
 		}
 	}
 
 	cmd := exec.Command("codex", args...)
+	cmd.Stdin = strings.NewReader(input)
 
 	return cmd
 }

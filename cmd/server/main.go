@@ -61,7 +61,7 @@ func main() {
 
 	// 注册 Codex Agent（如果启用）
 	if cfg.Agent.Codex.Enabled {
-		codexAgent := agent.NewCodeXAgent()
+		codexAgent := agent.NewCodeXAgent(cfg.Agent.Codex.Model)
 		agentMgr.Register(codexAgent)
 		if defaultAgent == "" {
 			defaultAgent = "codex"

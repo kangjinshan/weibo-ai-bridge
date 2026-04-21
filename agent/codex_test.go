@@ -5,21 +5,21 @@ import (
 )
 
 func TestCodeXAgent_Name(t *testing.T) {
-	agent := NewCodeXAgent()
+	agent := NewCodeXAgent("gpt-4.5")
 	if agent.Name() != "codex" {
 		t.Errorf("Expected name 'codex', got '%s'", agent.Name())
 	}
 }
 
 func TestCodeXAgent_IsAvailable(t *testing.T) {
-	agent := NewCodeXAgent()
+	agent := NewCodeXAgent("gpt-4.5")
 	// 这个测试取决于 codex CLI 是否已安装
 	// 我们只是测试方法不会 panic
 	_ = agent.IsAvailable()
 }
 
 func TestCodeXAgent_Execute(t *testing.T) {
-	agent := NewCodeXAgent()
+	agent := NewCodeXAgent("gpt-4.5")
 	// 这个测试取决于 codex CLI 是否已安装且可用
 	// 我们只是测试方法签名
 	_, err := agent.Execute("", "test input")

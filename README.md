@@ -52,6 +52,17 @@ git clone https://github.com/kangjinshan/weibo-ai-bridge.git
 cd weibo-ai-bridge
 ```
 
+### 直接使用预编译二进制
+
+仓库根目录已包含预编译的 `server` 可执行文件，适用于 Linux x86_64。
+
+```bash
+chmod +x ./server
+./server
+```
+
+如果你的环境不是 Linux x86_64，或希望自行重新编译，请继续参考下面的源码构建步骤。
+
 ### 安装依赖
 
 ```bash
@@ -64,7 +75,7 @@ make deps
 make build
 ```
 
-构建产物位于 `bin/weibo-ai-bridge`
+构建产物位于 `build/weibo-ai-bridge`
 
 ### 运行测试
 
@@ -91,8 +102,8 @@ make lint
 ### 快速开始
 
 1. 配置环境变量或配置文件（详见配置说明）
-2. 构建项目：`make build`
-3. 运行服务：`./bin/weibo-ai-bridge`
+2. 使用预编译二进制 `./server`，或自行构建：`make build`
+3. 运行服务：`./server` 或 `./build/weibo-ai-bridge`
 
 ### 运行模式
 
@@ -111,7 +122,7 @@ make dev
 make build-linux
 
 # 运行服务
-./bin/weibo-ai-bridge
+./build/weibo-ai-bridge
 ```
 
 ### HTTP 接口

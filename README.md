@@ -125,6 +125,42 @@ make build-linux
 ./build/weibo-ai-bridge
 ```
 
+#### systemd 部署
+
+仓库内提供了 `systemd` service 模板：[deploy/weibo-ai-bridge.service](/home/azureuser/weibo-ai-bridge/deploy/weibo-ai-bridge.service)。
+
+部署步骤：
+
+```bash
+# 1. 按机器实际情况修改 service 文件里的以下字段
+#    User=
+#    WorkingDirectory=
+#    ExecStart=
+#    Environment=PATH=...
+
+# 2. 安装到 systemd
+sudo cp deploy/weibo-ai-bridge.service /etc/systemd/system/weibo-ai-bridge.service
+sudo systemctl daemon-reload
+
+# 3. 设置开机自启并启动
+sudo systemctl enable --now weibo-ai-bridge.service
+```
+
+常用命令：
+
+```bash
+sudo systemctl status weibo-ai-bridge.service
+sudo systemctl restart weibo-ai-bridge.service
+sudo systemctl stop weibo-ai-bridge.service
+journalctl -u weibo-ai-bridge.service -f
+```
+
+说明：
+
+- 如果你使用仓库自带的 Linux x86_64 预编译二进制，`ExecStart` 可以直接指向仓库根目录的 `./server`。
+- 如果你依赖用户级安装的 CLI（例如 `claude` 在 `~/.local/bin`），请确保 service 文件里的 `PATH` 包含该目录。
+- `Restart=always` 和 `RestartSec=5` 会让服务异常退出后自动重启。
+
 ### HTTP 接口
 
 服务启动后，会监听 5533 端口（可通过环境变量 `SERVER_PORT` 修改），提供以下接口：

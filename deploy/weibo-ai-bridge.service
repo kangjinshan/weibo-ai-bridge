@@ -1,0 +1,15 @@
+[Unit]
+Description=Weibo AI Bridge Service
+After=network.target
+
+[Service]
+Type=simple
+User=azureuser
+WorkingDirectory=/home/azureuser/weibo-ai-bridge
+ExecStart=/home/azureuser/weibo-ai-bridge/server
+Restart=always
+RestartSec=5
+Environment=PATH=/home/azureuser/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

@@ -159,6 +159,8 @@ journalctl -u weibo-ai-bridge.service -f
 
 - 如果你使用仓库自带的 Linux x86_64 预编译二进制，`ExecStart` 可以直接指向仓库根目录的 `./server`。
 - 如果你依赖用户级安装的 CLI（例如 `claude` 在 `~/.local/bin`），请确保 service 文件里的 `PATH` 包含该目录。
+- service 模板默认会读取仓库根目录的 `.env`：`EnvironmentFile=-/home/azureuser/weibo-ai-bridge/.env`
+- 如果 `codex` CLI 依赖 Azure/OpenAI/Anthropic 等环境变量，必须把这些变量写进 `.env`，不能只存在于你当前 shell。
 - `Restart=always` 和 `RestartSec=5` 会让服务异常退出后自动重启。
 
 ### HTTP 接口

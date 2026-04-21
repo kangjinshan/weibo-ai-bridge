@@ -108,28 +108,27 @@ func (a *CodeXAgent) buildCommand(session *codexSession, input string) *exec.Cmd
 
 	var args []string
 	if isResume {
-		// 恢复现有会话
+		// 恢复现有会话，prompt 作为命令行参数传入
 		args = []string{
 			"-a", "never",
 			"exec", "resume",
 			"--skip-git-repo-check",
 			"--json",
 			threadID,
-			"-", // 从 stdin 读取输入
+			input,
 		}
 	} else {
-		// 创建新会话
+		// 创建新会话，prompt 作为命令行参数传入
 		args = []string{
 			"-a", "never",
 			"exec",
 			"--skip-git-repo-check",
 			"--json",
-			"-", // 从 stdin 读取输入
+			input,
 		}
 	}
 
 	cmd := exec.Command("codex", args...)
-	cmd.Stdin = strings.NewReader(input)
 
 	return cmd
 }

@@ -87,6 +87,15 @@ func (a *CodeXAgent) ExecuteStream(ctx context.Context, sessionID string, input 
 		session.threadID.Store(sessionID)
 	}
 
+	if events, err := a.executeViaAppServer(ctx, session, input); err == nil {
+		return events, nil
+	}
+
+	return a.executeViaJSONCLI(ctx, session, input)
+}
+
+func (a *CodeXAgent) executeViaJSONCLI(ctx context.Context, session *codexSession, input string) (<-chan Event, error) {
+
 	cmd := a.buildCommand(ctx, session, input)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

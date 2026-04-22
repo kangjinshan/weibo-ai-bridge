@@ -201,3 +201,69 @@ func TestJoinNonEmpty(t *testing.T) {
 		t.Fatalf("unexpected joined output: %q", got)
 	}
 }
+
+func TestParseCodexAppServerMessage_Delta(t *testing.T) {
+	session := &codexSession{}
+	deltaSeen := make(map[string]bool)
+
+	events := parseCodexAppServerMessage(session, map[string]any{
+		"method": "item/agentMessage/delta",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"itemId":   "msg-1",
+			"delta":    "你好",
+		},
+	}, deltaSeen)
+
+	if len(events) != 1 || events[0].Type != EventTypeDelta || events[0].Content != "你好" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if !deltaSeen["msg-1"] {
+		t.Fatalf("expected deltaSeen to track item id")
+	}
+}
+
+func TestParseCodexAppServerMessage_FinalMessageSkippedAfterDelta(t *testing.T) {
+	session := &codexSession{}
+	deltaSeen := map[string]bool{"msg-1": true}
+
+	events := parseCodexAppServerMessage(session, map[string]any{
+		"method": "item/completed",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"item": map[string]any{
+				"type": "agentMessage",
+				"id":   "msg-1",
+				"text": "完整正文",
+			},
+		},
+	}, deltaSeen)
+
+	if len(events) != 0 {
+		t.Fatalf("expected no events, got %+v", events)
+	}
+}
+
+func TestParseCodexAppServerMessage_FinalMessageWithoutDelta(t *testing.T) {
+	session := &codexSession{}
+	deltaSeen := make(map[string]bool)
+
+	events := parseCodexAppServerMessage(session, map[string]any{
+		"method": "item/completed",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"item": map[string]any{
+				"type": "agentMessage",
+				"id":   "msg-2",
+				"text": "完整正文",
+			},
+		},
+	}, deltaSeen)
+
+	if len(events) != 1 || events[0].Type != EventTypeMessage || events[0].Content != "完整正文" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}

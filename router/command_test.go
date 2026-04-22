@@ -53,6 +53,9 @@ func TestCommandHandler_Handle_New(t *testing.T) {
 		MaxSize: 100,
 	})
 	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.SetDefault("claude-code")
 	handler := NewCommandHandler(sessionManager, agentManager)
 
 	tests := []struct {
@@ -124,6 +127,9 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 		MaxSize: 100,
 	})
 	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.SetDefault("claude-code")
 	handler := NewCommandHandler(sessionManager, agentManager)
 
 	// 先创建一个会话
@@ -196,6 +202,36 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCommandHandler_Handle_Switch_RejectsUnavailableAgent(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.SetDefault("claude-code")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	resp, err := handler.Handle(&Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "/switch codex",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Content, "Requested agent is not available: codex")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.Equal(t, "claude", sess.AgentType)
 }
 
 func TestCommandHandler_Handle_Model(t *testing.T) {

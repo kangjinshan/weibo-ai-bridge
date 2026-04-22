@@ -174,10 +174,7 @@ func (c *Config) Validate() error {
 	}
 
 	// 验证 Agent 配置
-	// Claude 的 API Key 由 Claude Code CLI 管理，不需要在这里验证
-	if c.Agent.Codex.Enabled && strings.TrimSpace(c.Agent.Codex.APIKey) == "" {
-		return errors.New("agent.codex.api_key is required when codex is enabled")
-	}
+	// Claude 和 Codex 的认证都可以由本地 CLI 自行管理，因此这里不强制要求 API Key。
 
 	// 至少启用一个 Agent
 	if !c.Agent.Claude.Enabled && !c.Agent.Codex.Enabled {

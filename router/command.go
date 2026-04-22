@@ -102,6 +102,12 @@ func (h *CommandHandler) handleNew(userID string, args []string) (*Response, err
 			Content: "Invalid agent type. Use claude or codex.",
 		}, nil
 	}
+	if !h.isAgentTypeAvailable(agentType) {
+		return &Response{
+			Success: false,
+			Content: fmt.Sprintf("Requested agent is not available: %s", agentType),
+		}, nil
+	}
 
 	// 创建新会话
 	sessionID := fmt.Sprintf("%s-%d", userID, h.sessionManager.Count()+1)
@@ -138,6 +144,12 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 			Content: "Invalid agent type. Use claude or codex.",
 		}, nil
 	}
+	if !h.isAgentTypeAvailable(agentType) {
+		return &Response{
+			Success: false,
+			Content: fmt.Sprintf("Requested agent is not available: %s", agentType),
+		}, nil
+	}
 
 	// 获取会话
 	sess, exists := h.sessionManager.Get(sessionID)
@@ -155,6 +167,14 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 		Success: true,
 		Content: fmt.Sprintf("Switched to %s agent", agentType),
 	}, nil
+}
+
+func (h *CommandHandler) isAgentTypeAvailable(agentType string) bool {
+	if h.agentManager == nil {
+		return false
+	}
+
+	return h.agentManager.ResolveAgent(agentType) != nil
 }
 
 // handleModel 处理显示模型命令

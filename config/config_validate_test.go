@@ -128,7 +128,7 @@ func TestValidateNoEnabledAgent(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent")
 }
 
-func TestValidateCodexEnabledNoAPIKey(t *testing.T) {
+func TestValidateCodexEnabledWithoutAPIKey(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
@@ -158,8 +158,7 @@ func TestValidateCodexEnabledNoAPIKey(t *testing.T) {
 	}
 
 	err := cfg.Validate()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "codex.api_key")
+	assert.NoError(t, err)
 }
 
 func TestValidateInvalidLogLevel(t *testing.T) {

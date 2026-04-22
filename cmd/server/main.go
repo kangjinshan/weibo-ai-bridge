@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,6 +23,62 @@ import (
 var (
 	logger *log.Logger
 )
+
+const (
+	busyNoticeCooldown        = 10 * time.Second
+	processingAckMessage      = "已收到消息，正在处理中，请稍候。"
+	messageAlreadyRunningHint = "上一条消息还在处理中，这条消息先不排队处理；请等当前回复结束后再发送。"
+)
+
+type messageSource interface {
+	Messages() <-chan *weibo.Message
+}
+
+type replyPlatform interface {
+	Reply(ctx context.Context, userID string, content string) error
+}
+
+type messagePlatform interface {
+	messageSource
+	replyPlatform
+}
+
+type messageHandler interface {
+	HandleMessage(ctx context.Context, msg *weibo.Message) error
+}
+
+type chatStreamRequest struct {
+	UserID    string `json:"user_id"`
+	Content   string `json:"content"`
+	SessionID string `json:"session_id"`
+}
+
+type messageProcessor struct {
+	platform replyPlatform
+	router   messageHandler
+	logger   *log.Logger
+
+	busyCooldown time.Duration
+
+	mu             sync.Mutex
+	inFlightUsers  map[string]struct{}
+	lastBusyNotice map[string]time.Time
+}
+
+func newMessageProcessor(platform replyPlatform, router messageHandler, logger *log.Logger) *messageProcessor {
+	if logger == nil {
+		logger = log.Default()
+	}
+
+	return &messageProcessor{
+		platform:       platform,
+		router:         router,
+		logger:         logger,
+		busyCooldown:   busyNoticeCooldown,
+		inFlightUsers:  make(map[string]struct{}),
+		lastBusyNotice: make(map[string]time.Time),
+	}
+}
 
 func main() {
 	// 初始化日志
@@ -105,6 +163,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/stats", statsHandler(sessionMgr, agentMgr))
+	mux.HandleFunc("/chat/stream", chatStreamHandler(msgRouter))
 
 	// 获取服务端口
 	port := os.Getenv("SERVER_PORT")
@@ -163,7 +222,9 @@ func initLogger() {
 }
 
 // processMessages 处理消息循环
-func processMessages(ctx context.Context, platform *weibo.Platform, msgRouter *router.Router) {
+func processMessages(ctx context.Context, platform messagePlatform, msgRouter messageHandler) {
+	processor := newMessageProcessor(platform, msgRouter, logger)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -175,16 +236,83 @@ func processMessages(ctx context.Context, platform *weibo.Platform, msgRouter *r
 				return
 			}
 
-			logger.Printf("Processing message: id=%s, type=%s, user=%s", msg.ID, msg.Type, msg.UserID)
-
-			// 处理消息
-			if err := msgRouter.HandleMessage(ctx, msg); err != nil {
-				logger.Printf("Failed to handle message: id=%s, error=%v", msg.ID, err)
-			} else {
-				logger.Printf("Message processed successfully: id=%s", msg.ID)
-			}
+			processor.dispatch(ctx, msg)
 		}
 	}
+}
+
+func (p *messageProcessor) dispatch(ctx context.Context, msg *weibo.Message) {
+	if msg == nil {
+		return
+	}
+
+	if !p.tryStart(msg.UserID) {
+		p.sendBusyNotice(ctx, msg.UserID, msg.ID)
+		return
+	}
+
+	go p.handle(ctx, msg)
+}
+
+func (p *messageProcessor) tryStart(userID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, exists := p.inFlightUsers[userID]; exists {
+		return false
+	}
+
+	p.inFlightUsers[userID] = struct{}{}
+	return true
+}
+
+func (p *messageProcessor) finish(userID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	delete(p.inFlightUsers, userID)
+}
+
+func (p *messageProcessor) handle(ctx context.Context, msg *weibo.Message) {
+	defer p.finish(msg.UserID)
+
+	p.logger.Printf("Processing message: id=%s, type=%s, user=%s", msg.ID, msg.Type, msg.UserID)
+
+	if p.platform != nil {
+		if err := p.platform.Reply(ctx, msg.UserID, processingAckMessage); err != nil {
+			p.logger.Printf("Failed to send processing ack: id=%s, user=%s, error=%v", msg.ID, msg.UserID, err)
+		}
+	}
+
+	if err := p.router.HandleMessage(ctx, msg); err != nil {
+		p.logger.Printf("Failed to handle message: id=%s, error=%v", msg.ID, err)
+		return
+	}
+
+	p.logger.Printf("Message processed successfully: id=%s", msg.ID)
+}
+
+func (p *messageProcessor) sendBusyNotice(ctx context.Context, userID, messageID string) {
+	if p.platform == nil {
+		return
+	}
+
+	now := time.Now()
+
+	p.mu.Lock()
+	lastNoticeAt := p.lastBusyNotice[userID]
+	if !lastNoticeAt.IsZero() && now.Sub(lastNoticeAt) < p.busyCooldown {
+		p.mu.Unlock()
+		return
+	}
+	p.lastBusyNotice[userID] = now
+	p.mu.Unlock()
+
+	go func() {
+		if err := p.platform.Reply(ctx, userID, messageAlreadyRunningHint); err != nil {
+			p.logger.Printf("Failed to send busy notice: id=%s, user=%s, error=%v", messageID, userID, err)
+		}
+	}()
 }
 
 // healthHandler 健康检查处理器
@@ -227,6 +355,105 @@ func statsHandler(sessionMgr *session.Manager, agentMgr *agent.Manager) http.Han
 			logger.Printf("Failed to encode stats: %v", err)
 		}
 	}
+}
+
+func chatStreamHandler(msgRouter *router.Router) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		req, err := parseChatStreamRequest(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if strings.TrimSpace(req.UserID) == "" {
+			http.Error(w, "user_id is required", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.Content) == "" {
+			http.Error(w, "content is required", http.StatusBadRequest)
+			return
+		}
+
+		stream, err := msgRouter.Stream(r.Context(), &router.Message{
+			ID:        generateHTTPMessageID(),
+			Type:      router.TypeText,
+			Content:   req.Content,
+			UserID:    req.UserID,
+			SessionID: req.SessionID,
+			Metadata: map[string]interface{}{
+				"source": "http_sse",
+			},
+		})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to start stream: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+
+		for event := range stream {
+			if err := writeSSEEvent(w, event); err != nil {
+				logger.Printf("Failed to write SSE event: %v", err)
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func parseChatStreamRequest(r *http.Request) (*chatStreamRequest, error) {
+	switch r.Method {
+	case http.MethodGet:
+		query := r.URL.Query()
+		return &chatStreamRequest{
+			UserID:    query.Get("user_id"),
+			Content:   query.Get("content"),
+			SessionID: query.Get("session_id"),
+		}, nil
+	case http.MethodPost:
+		defer r.Body.Close()
+		var req chatStreamRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, fmt.Errorf("invalid request body: %w", err)
+		}
+		return &req, nil
+	default:
+		return nil, fmt.Errorf("unsupported method")
+	}
+}
+
+func writeSSEEvent(w http.ResponseWriter, event agent.Event) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprintf(w, "event: %s\n", event.Type); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func generateHTTPMessageID() string {
+	return fmt.Sprintf("http_%d", time.Now().UnixNano())
 }
 
 // getAgentNames 获取所有 Agent 名称

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -32,63 +33,121 @@ func (a *ClaudeCodeAgent) Name() string {
 }
 
 // Execute 执行 AI 任务
-func (a *ClaudeCodeAgent) Execute(sessionID string, input string) (string, error) {
-	command, err := resolveClaudeCommand()
+func (a *ClaudeCodeAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
+	events, err := a.ExecuteStream(ctx, sessionID, input)
 	if err != nil {
-		return "", fmt.Errorf("claude CLI is not available")
+		return "", err
 	}
 
-	cmd := exec.Command(command, a.buildArgs(sessionID, input)...)
+	var responseParts []string
+	var errorParts []string
+	var latestSessionID string
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	runErr := cmd.Run()
-	result, parseErr := parseClaudePrintOutput(stdout.String())
-	if parseErr != nil {
-		if runErr != nil {
-			return "", fmt.Errorf("failed to execute claude CLI: %w, stderr: %s", runErr, strings.TrimSpace(stderr.String()))
+	for event := range events {
+		switch event.Type {
+		case EventTypeSession:
+			if strings.TrimSpace(event.SessionID) != "" {
+				latestSessionID = strings.TrimSpace(event.SessionID)
+			}
+		case EventTypeDelta, EventTypeMessage:
+			if strings.TrimSpace(event.Content) != "" {
+				responseParts = append(responseParts, event.Content)
+			}
+		case EventTypeError:
+			if strings.TrimSpace(event.Error) != "" {
+				errorParts = append(errorParts, event.Error)
+			}
 		}
-
-		text := strings.TrimSpace(stdout.String())
-		if text == "" {
-			return "", fmt.Errorf("empty response from claude CLI")
-		}
-		return text, nil
 	}
 
-	if runErr != nil || result.IsError {
-		details := strings.TrimSpace(result.Result)
-		if details == "" {
-			details = strings.TrimSpace(stderr.String())
-		}
-		if details == "" {
-			details = "unknown claude CLI error"
-		}
-		if runErr != nil {
-			return "", fmt.Errorf("failed to execute claude CLI: %w, stderr: %s", runErr, details)
-		}
-		return "", fmt.Errorf("claude CLI returned error: %s", details)
+	if len(errorParts) > 0 {
+		return "", fmt.Errorf("%s", strings.Join(uniqueNonEmpty(errorParts), "\n"))
 	}
 
-	response := strings.TrimSpace(result.Result)
-	if response == "" {
-		return "", fmt.Errorf("empty response from claude CLI")
-	}
-	if strings.TrimSpace(result.SessionID) != "" {
-		response += "\n\n__SESSION_ID__: " + strings.TrimSpace(result.SessionID)
+	response := strings.Join(responseParts, "\n")
+	if latestSessionID != "" {
+		response += "\n\n__SESSION_ID__: " + latestSessionID
 	}
 
 	return response, nil
 }
 
+// ExecuteStream 执行 AI 任务并返回事件流。
+func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan Event, error) {
+	command, err := resolveClaudeCommand()
+	if err != nil {
+		return nil, fmt.Errorf("claude CLI is not available")
+	}
+
+	cmd := exec.CommandContext(ctx, command, a.buildArgs(sessionID, input)...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	events := make(chan Event, 8)
+
+	go func() {
+		defer close(events)
+
+		runErr := cmd.Run()
+		result, parseErr := parseClaudePrintOutput(stdout.String())
+		if parseErr != nil {
+			if runErr != nil {
+				sendEvent(events, Event{
+					Type:  EventTypeError,
+					Error: fmt.Sprintf("failed to execute claude CLI: %v, stderr: %s", runErr, strings.TrimSpace(stderr.String())),
+				})
+				return
+			}
+
+			text := strings.TrimSpace(stdout.String())
+			if text == "" {
+				sendEvent(events, Event{Type: EventTypeError, Error: "empty response from claude CLI"})
+				return
+			}
+
+			sendEvent(events, Event{Type: EventTypeMessage, Content: text})
+			sendEvent(events, Event{Type: EventTypeDone})
+			return
+		}
+
+		if runErr != nil || result.IsError {
+			details := strings.TrimSpace(result.Result)
+			if details == "" {
+				details = strings.TrimSpace(stderr.String())
+			}
+			if details == "" {
+				details = "unknown claude CLI error"
+			}
+			sendEvent(events, Event{Type: EventTypeError, Error: details})
+			return
+		}
+
+		response := strings.TrimSpace(result.Result)
+		if response == "" {
+			sendEvent(events, Event{Type: EventTypeError, Error: "empty response from claude CLI"})
+			return
+		}
+
+		if sid := strings.TrimSpace(result.SessionID); sid != "" {
+			sendEvent(events, Event{Type: EventTypeSession, SessionID: sid})
+		}
+		sendEvent(events, Event{Type: EventTypeMessage, Content: response})
+		sendEvent(events, Event{Type: EventTypeDone})
+	}()
+
+	return events, nil
+}
+
 func (a *ClaudeCodeAgent) buildArgs(sessionID string, input string) []string {
+	prompt := wrapUserPrompt(input)
+
 	args := []string{"--print", "--output-format", "json"}
 	if strings.TrimSpace(sessionID) != "" {
 		args = append(args, "--resume", strings.TrimSpace(sessionID))
 	}
-	args = append(args, input)
+	args = append(args, prompt)
 	return args
 }
 

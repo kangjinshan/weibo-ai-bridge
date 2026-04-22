@@ -2,6 +2,7 @@ package weibo
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -243,5 +244,40 @@ func TestPlatform_ContextCancellation(t *testing.T) {
 	// 尝试启动（应该快速失败）
 	err = platform.Start(ctx)
 	// 由于上下文已取消或连接失败，应该返回错误
+	assert.Error(t, err)
+}
+
+func TestBuildSendMessageFrame(t *testing.T) {
+	data, err := buildSendMessageFrame("user-1", "hello", "msg-1", 2, false)
+
+	require.NoError(t, err)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &parsed))
+	assert.Equal(t, "send_message", parsed["type"])
+
+	payload, ok := parsed["payload"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "user-1", payload["toUserId"])
+	assert.Equal(t, "hello", payload["text"])
+	assert.Equal(t, "msg-1", payload["messageId"])
+	assert.Equal(t, float64(2), payload["chunkId"])
+	assert.Equal(t, false, payload["done"])
+}
+
+func TestBuildSendMessageFrame_AllowsEmptyFinalChunk(t *testing.T) {
+	data, err := buildSendMessageFrame("user-1", "", "msg-1", 3, true)
+
+	require.NoError(t, err)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &parsed))
+	payload := parsed["payload"].(map[string]interface{})
+	assert.Equal(t, "", payload["text"])
+	assert.Equal(t, true, payload["done"])
+}
+
+func TestBuildSendMessageFrame_RejectsEmptyNonFinalChunk(t *testing.T) {
+	_, err := buildSendMessageFrame("user-1", "", "msg-1", 1, false)
 	assert.Error(t, err)
 }

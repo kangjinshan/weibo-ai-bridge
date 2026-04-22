@@ -2,18 +2,138 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/yourusername/weibo-ai-bridge/config"
 	"github.com/yourusername/weibo-ai-bridge/agent"
+	"github.com/yourusername/weibo-ai-bridge/config"
+	"github.com/yourusername/weibo-ai-bridge/platform/weibo"
+	"github.com/yourusername/weibo-ai-bridge/router"
 	"github.com/yourusername/weibo-ai-bridge/session"
 )
+
+type processorTestPlatform struct {
+	messages chan *weibo.Message
+
+	mu      sync.Mutex
+	replies []string
+}
+
+func newProcessorTestPlatform() *processorTestPlatform {
+	return &processorTestPlatform{
+		messages: make(chan *weibo.Message, 10),
+	}
+}
+
+func (p *processorTestPlatform) Messages() <-chan *weibo.Message {
+	return p.messages
+}
+
+func (p *processorTestPlatform) Reply(ctx context.Context, userID string, content string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.replies = append(p.replies, userID+":"+content)
+	return nil
+}
+
+func (p *processorTestPlatform) Replies() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]string(nil), p.replies...)
+}
+
+type processorTestRouter struct {
+	delay   time.Duration
+	started chan string
+	release <-chan struct{}
+}
+
+type sseTestAgent struct {
+	name      string
+	available bool
+	streamFn  func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error)
+}
+
+func (a *sseTestAgent) Name() string {
+	return a.name
+}
+
+func (a *sseTestAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
+	stream, err := a.ExecuteStream(ctx, sessionID, input)
+	if err != nil {
+		return "", err
+	}
+
+	var parts []string
+	var latestSessionID string
+	for event := range stream {
+		switch event.Type {
+		case agent.EventTypeSession:
+			latestSessionID = event.SessionID
+		case agent.EventTypeMessage:
+			parts = append(parts, event.Content)
+		case agent.EventTypeError:
+			return "", assert.AnError
+		}
+	}
+
+	response := strings.Join(parts, "\n")
+	if latestSessionID != "" {
+		response += "\n\n__SESSION_ID__: " + latestSessionID
+	}
+	return response, nil
+}
+
+func (a *sseTestAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+	if a.streamFn != nil {
+		return a.streamFn(ctx, sessionID, input)
+	}
+
+	events := make(chan agent.Event, 2)
+	go func() {
+		defer close(events)
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: "ok"}
+		events <- agent.Event{Type: agent.EventTypeDone}
+	}()
+	return events, nil
+}
+
+func (a *sseTestAgent) IsAvailable() bool {
+	return a.available
+}
+
+func (r *processorTestRouter) HandleMessage(ctx context.Context, msg *weibo.Message) error {
+	if r.started != nil {
+		r.started <- msg.UserID + ":" + msg.ID
+	}
+
+	if r.release != nil {
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	if r.delay > 0 {
+		select {
+		case <-time.After(r.delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return nil
+}
 
 func TestMainInitialization(t *testing.T) {
 	// 设置测试环境变量
@@ -220,4 +340,185 @@ func TestLogLevels(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMessageProcessor_SendsBusyNoticeForRepeatedUser(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	release := make(chan struct{})
+	router := &processorTestRouter{
+		started: make(chan string, 2),
+		release: release,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+	processor.busyCooldown = time.Millisecond
+
+	ctx := context.Background()
+	processor.dispatch(ctx, &weibo.Message{ID: "msg-1", UserID: "user-1"})
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-1:msg-1", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first message did not start")
+	}
+
+	processor.dispatch(ctx, &weibo.Message{ID: "msg-2", UserID: "user-1"})
+
+	assert.Eventually(t, func() bool {
+		replies := platform.Replies()
+		return len(replies) >= 2 &&
+			strings.Contains(replies[0], processingAckMessage) &&
+			strings.Contains(replies[len(replies)-1], messageAlreadyRunningHint)
+	}, time.Second, 20*time.Millisecond)
+
+	select {
+	case started := <-router.started:
+		t.Fatalf("second message should not be handled, got %s", started)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+}
+
+func TestMessageProcessor_SendsImmediateAckForSlowRequests(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	router := &processorTestRouter{
+		delay: 120 * time.Millisecond,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+
+	processor.dispatch(context.Background(), &weibo.Message{ID: "msg-slow", UserID: "user-slow"})
+
+	assert.Eventually(t, func() bool {
+		replies := platform.Replies()
+		return len(replies) == 1 && strings.Contains(replies[0], processingAckMessage)
+	}, 200*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestMessageProcessor_SendsImmediateAckForFastRequests(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	router := &processorTestRouter{
+		delay: 20 * time.Millisecond,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+
+	processor.dispatch(context.Background(), &weibo.Message{ID: "msg-fast", UserID: "user-fast"})
+
+	assert.Eventually(t, func() bool {
+		replies := platform.Replies()
+		return len(replies) == 1 && strings.Contains(replies[0], processingAckMessage)
+	}, 200*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestMessageProcessor_AllowsDifferentUsersInParallel(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	router := &processorTestRouter{
+		started: make(chan string, 2),
+		release: make(chan struct{}),
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+
+	processor.dispatch(context.Background(), &weibo.Message{ID: "msg-1", UserID: "user-1"})
+	processor.dispatch(context.Background(), &weibo.Message{ID: "msg-2", UserID: "user-2"})
+
+	var started []string
+	assert.Eventually(t, func() bool {
+		for len(started) < 2 {
+			select {
+			case event := <-router.started:
+				started = append(started, event)
+			default:
+				return false
+			}
+		}
+		return true
+	}, time.Second, 20*time.Millisecond)
+
+	assert.ElementsMatch(t, []string{"user-1:msg-1", "user-2:msg-2"}, started)
+}
+
+func TestParseChatStreamRequest_GET(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/chat/stream?user_id=user-1&content=hello&session_id=session-1", nil)
+
+	parsed, err := parseChatStreamRequest(req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "user-1", parsed.UserID)
+	assert.Equal(t, "hello", parsed.Content)
+	assert.Equal(t, "session-1", parsed.SessionID)
+}
+
+func TestParseChatStreamRequest_POST(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/chat/stream", strings.NewReader(`{"user_id":"user-1","content":"hello","session_id":"session-1"}`))
+
+	parsed, err := parseChatStreamRequest(req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "user-1", parsed.UserID)
+	assert.Equal(t, "hello", parsed.Content)
+	assert.Equal(t, "session-1", parsed.SessionID)
+}
+
+func TestChatStreamHandler_StreamsEvents(t *testing.T) {
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&sseTestAgent{
+		name:      "codex",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			events := make(chan agent.Event, 4)
+			go func() {
+				defer close(events)
+				events <- agent.Event{Type: agent.EventTypeSession, SessionID: "thread-1"}
+				events <- agent.Event{Type: agent.EventTypeMessage, Content: "hello"}
+				events <- agent.Event{Type: agent.EventTypeDone}
+			}()
+			return events, nil
+		},
+	})
+	agentMgr.SetDefault("codex")
+
+	msgRouter := router.NewRouter(nil, sessionMgr, agentMgr)
+	handler := chatStreamHandler(msgRouter)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/stream?user_id=user-1&content=hello&session_id=session-1", nil)
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	resp := w.Result()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	body := w.Body.String()
+	assert.Contains(t, body, "event: session")
+	assert.Contains(t, body, `"session_id":"thread-1"`)
+	assert.Contains(t, body, "event: message")
+	assert.Contains(t, body, `"content":"hello"`)
+
+	sess, ok := sessionMgr.Get("session-1")
+	assert.True(t, ok)
+	assert.Equal(t, "thread-1", sess.Context["codex_session_id"])
+}
+
+func TestChatStreamHandler_RejectsMissingContent(t *testing.T) {
+	msgRouter := router.NewRouter(nil, session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	}), agent.NewManager())
+	handler := chatStreamHandler(msgRouter)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/stream?user_id=user-1", nil)
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "content is required")
 }

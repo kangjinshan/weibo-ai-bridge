@@ -15,6 +15,7 @@ import (
 type MockPlatform struct {
 	replies []map[string]interface{}
 	err     error
+	streams []*MockReplyStream
 }
 
 func (m *MockPlatform) Reply(ctx context.Context, messageID string, content string) error {
@@ -28,12 +29,47 @@ func (m *MockPlatform) Reply(ctx context.Context, messageID string, content stri
 	return nil
 }
 
+func (m *MockPlatform) OpenReplyStream(ctx context.Context, userID string) (weibo.ChunkSender, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+
+	stream := &MockReplyStream{platform: m, userID: userID, messageID: "stream-msg-" + userID}
+	m.streams = append(m.streams, stream)
+	return stream, nil
+}
+
+type MockReplyStream struct {
+	platform  *MockPlatform
+	userID    string
+	messageID string
+	chunks    []map[string]interface{}
+}
+
+func (s *MockReplyStream) SendChunk(ctx context.Context, content string, done bool) error {
+	record := map[string]interface{}{
+		"user_id":    s.userID,
+		"message_id": s.messageID,
+		"chunk_id":   len(s.chunks),
+		"content":    content,
+		"done":       done,
+	}
+	s.chunks = append(s.chunks, record)
+	s.platform.replies = append(s.platform.replies, map[string]interface{}{
+		"message_id": s.userID,
+		"content":    content,
+		"done":       done,
+	})
+	return nil
+}
+
 // MockAgent 模拟 Agent
 type MockAgent struct {
 	name      string
 	response  string
 	available bool
-	executeFn func(sessionID string, input string) (string, error)
+	executeFn func(ctx context.Context, sessionID string, input string) (string, error)
+	streamFn  func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error)
 	lastInput string
 	lastSID   string
 }
@@ -42,13 +78,37 @@ func (m *MockAgent) Name() string {
 	return m.name
 }
 
-func (m *MockAgent) Execute(sessionID string, input string) (string, error) {
+func (m *MockAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
 	m.lastSID = sessionID
 	m.lastInput = input
 	if m.executeFn != nil {
-		return m.executeFn(sessionID, input)
+		return m.executeFn(ctx, sessionID, input)
 	}
 	return m.response, nil
+}
+
+func (m *MockAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+	m.lastSID = sessionID
+	m.lastInput = input
+	if m.streamFn != nil {
+		return m.streamFn(ctx, sessionID, input)
+	}
+
+	events := make(chan agent.Event, 2)
+	go func() {
+		defer close(events)
+		if strings.TrimSpace(m.response) != "" {
+			response := m.response
+			if newSessionID := extractSessionID(response); newSessionID != "" {
+				events <- agent.Event{Type: agent.EventTypeSession, SessionID: newSessionID}
+				response = removeSessionIDMarker(response)
+			}
+			events <- agent.Event{Type: agent.EventTypeMessage, Content: response}
+		}
+		events <- agent.Event{Type: agent.EventTypeDone}
+	}()
+
+	return events, nil
 }
 
 func (m *MockAgent) IsAvailable() bool {
@@ -534,4 +594,70 @@ func TestSplitMessage(t *testing.T) {
 			assert.Equal(t, tt.content, reconstructed)
 		})
 	}
+}
+
+func TestForwardStreamToPlatform_UsesSingleMessageIDForPartialSnapshots(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 5)
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "a"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "ab"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "abc"}
+	stream <- agent.Event{Type: agent.EventTypeMessage, Content: "abc"}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-1", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 4)
+	assert.Equal(t, "a", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, 0, platform.streams[0].chunks[0]["chunk_id"])
+	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, "b", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, 1, platform.streams[0].chunks[1]["chunk_id"])
+	assert.Equal(t, "c", platform.streams[0].chunks[2]["content"])
+	assert.Equal(t, 2, platform.streams[0].chunks[2]["chunk_id"])
+	assert.Equal(t, "", platform.streams[0].chunks[3]["content"])
+	assert.Equal(t, 3, platform.streams[0].chunks[3]["chunk_id"])
+	assert.Equal(t, true, platform.streams[0].chunks[3]["done"])
+}
+
+func TestForwardStreamToPlatform_SendsFinalMessageAsSingleDoneChunk(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 2)
+	stream <- agent.Event{Type: agent.EventTypeMessage, Content: "final answer"}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-2", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 1)
+	assert.Equal(t, "final answer", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
+}
+
+func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 3)
+	stream <- agent.Event{Type: agent.EventTypeMessage, Content: "first final"}
+	stream <- agent.Event{Type: agent.EventTypeMessage, Content: "duplicate final"}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-3", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 1)
+	assert.Equal(t, "first final", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
 }

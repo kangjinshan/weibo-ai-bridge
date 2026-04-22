@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,8 +17,18 @@ func (m *MockAgent) Name() string {
 	return m.name
 }
 
-func (m *MockAgent) Execute(sessionID string, input string) (string, error) {
+func (m *MockAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
 	return "response: " + input, nil
+}
+
+func (m *MockAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan Event, error) {
+	events := make(chan Event, 2)
+	go func() {
+		defer close(events)
+		events <- Event{Type: EventTypeMessage, Content: "response: " + input}
+		events <- Event{Type: EventTypeDone}
+	}()
+	return events, nil
 }
 
 func (m *MockAgent) IsAvailable() bool {

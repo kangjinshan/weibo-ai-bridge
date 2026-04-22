@@ -11,6 +11,10 @@ import (
 	"github.com/yourusername/weibo-ai-bridge/session"
 )
 
+const (
+	streamReplyChunkSize = 1000
+)
+
 // MessageType 消息类型
 type MessageType string
 
@@ -58,6 +62,14 @@ type PlatformInterface interface {
 	Reply(ctx context.Context, messageID string, content string) error
 }
 
+type streamReplyWriter interface {
+	SendChunk(ctx context.Context, content string, done bool) error
+}
+
+type streamingPlatformInterface interface {
+	OpenReplyStream(ctx context.Context, userID string) (weibo.ChunkSender, error)
+}
+
 // NewRouter 创建路由器
 func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr *agent.Manager) *Router {
 	router := &Router{
@@ -67,10 +79,8 @@ func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr
 		agentMgr:   agentMgr,
 	}
 
-	// 创建命令处理器
 	if sessionMgr != nil && agentMgr != nil {
 		router.commandHandler = NewCommandHandler(sessionMgr, agentMgr)
-		// 已声明的消息类型默认都走同一套 AI/命令路由，避免非文本类型直接报无处理器。
 		router.Register(TypeText, router)
 		router.Register(TypeImage, router)
 		router.Register(TypeVoice, router)
@@ -98,12 +108,10 @@ func (r *Router) Handle(msg *Message) (*Response, error) {
 
 	content := strings.TrimSpace(msg.Content)
 
-	// 如果消息以 / 开头，使用命令处理器
 	if strings.HasPrefix(content, "/") && r.commandHandler != nil {
 		return r.commandHandler.Handle(msg)
 	}
 
-	// 否则使用 AI 处理器
 	return r.handleAIMessage(context.Background(), msg)
 }
 
@@ -121,13 +129,39 @@ func (r *Router) Route(msg *Message) (*Response, error) {
 	return handler.Handle(msg)
 }
 
+// StreamMessage 处理消息并返回结构化事件流。
+func (r *Router) StreamMessage(ctx context.Context, msg *weibo.Message) (<-chan agent.Event, error) {
+	if msg == nil {
+		return nil, errors.New("message cannot be nil")
+	}
+
+	return r.Stream(ctx, r.toRouterMessage(msg))
+}
+
+// Stream 处理路由层消息并返回结构化事件流。
+func (r *Router) Stream(ctx context.Context, msg *Message) (<-chan agent.Event, error) {
+	if msg == nil {
+		return nil, errors.New("message cannot be nil")
+	}
+
+	return r.streamRouterMessage(ctx, msg)
+}
+
 // HandleMessage 处理消息（主入口）
 func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 	if msg == nil {
 		return errors.New("message cannot be nil")
 	}
 
-	// 转换消息格式
+	stream, err := r.StreamMessage(ctx, msg)
+	if err != nil {
+		return err
+	}
+
+	return r.forwardStreamToPlatform(ctx, msg.UserID, stream)
+}
+
+func (r *Router) toRouterMessage(msg *weibo.Message) *Message {
 	sessionID := msg.UserID
 	if r.sessionMgr != nil {
 		if activeSessionID := r.sessionMgr.GetActiveSessionID(msg.UserID); activeSessionID != "" {
@@ -135,7 +169,7 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 		}
 	}
 
-	routerMsg := &Message{
+	return &Message{
 		ID:        msg.ID,
 		Type:      mapWeiboMessageType(msg.Type),
 		Content:   msg.Content,
@@ -147,28 +181,120 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 			"msg_type":  string(msg.Type),
 		},
 	}
+}
 
-	// 路由消息
-	resp, err := r.Route(routerMsg)
+func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan agent.Event, error) {
+	if msg == nil {
+		return nil, errors.New("message cannot be nil")
+	}
+
+	events := make(chan agent.Event, 32)
+
+	go func() {
+		defer close(events)
+
+		content := strings.TrimSpace(msg.Content)
+		if strings.HasPrefix(content, "/") && r.commandHandler != nil {
+			r.emitCommandEvents(events, msg)
+			return
+		}
+
+		if err := r.streamAIMessage(ctx, msg, events); err != nil {
+			events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
+		}
+
+		events <- agent.Event{Type: agent.EventTypeDone}
+	}()
+
+	return events, nil
+}
+
+func (r *Router) emitCommandEvents(events chan<- agent.Event, msg *Message) {
+	resp, err := r.commandHandler.Handle(msg)
 	if err != nil {
-		return fmt.Errorf("route message failed: %w", err)
+		events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
+		events <- agent.Event{Type: agent.EventTypeDone}
+		return
 	}
 
 	if resp == nil {
-		return errors.New("response is nil")
+		events <- agent.Event{Type: agent.EventTypeError, Error: "response is nil"}
+		events <- agent.Event{Type: agent.EventTypeDone}
+		return
 	}
 
-	// 如果有错误，返回错误消息
-	if !resp.Success && resp.Error != nil {
-		return resp.Error
-	}
-
-	// 如果有内容，发送回复
 	if resp.Content != "" {
-		return r.sendReply(ctx, msg.UserID, resp.Content)
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: resp.Content}
+	}
+	if !resp.Success && resp.Error != nil {
+		events <- agent.Event{Type: agent.EventTypeError, Error: resp.Error.Error()}
+	}
+	events <- agent.Event{Type: agent.EventTypeDone}
+}
+
+func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, stream <-chan agent.Event) error {
+	if r.platform == nil {
+		return errors.New("platform is not set")
 	}
 
-	return nil
+	writer, err := r.openStreamWriter(ctx, userID)
+	if err != nil {
+		return err
+	}
+	sender := newStreamReplySender(writer, r.splitMessage)
+
+	var streamErr error
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event, ok := <-stream:
+			if !ok {
+				if err := sender.Settle(ctx); err != nil {
+					return err
+				}
+				return streamErr
+			}
+
+			switch event.Type {
+			case agent.EventTypeDelta:
+				if err := sender.PushPartialSnapshot(ctx, event.Content); err != nil {
+					return err
+				}
+			case agent.EventTypeMessage:
+				if err := sender.PushDeliverText(ctx, event.Content, true); err != nil {
+					return err
+				}
+			case agent.EventTypeError:
+				if err := sender.Settle(ctx); err != nil {
+					return err
+				}
+				if strings.TrimSpace(event.Error) != "" {
+					if err := r.sendReply(ctx, userID, "AI execution failed: "+event.Error); err != nil {
+						return err
+					}
+					streamErr = errors.New(event.Error)
+				}
+			case agent.EventTypeDone:
+				if err := sender.Settle(ctx); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+func (r *Router) openStreamWriter(ctx context.Context, userID string) (streamReplyWriter, error) {
+	if streamer, ok := r.platform.(streamingPlatformInterface); ok {
+		return streamer.OpenReplyStream(ctx, userID)
+	}
+
+	return &legacyStreamReplyWriter{
+		send: func(content string) error {
+			return r.sendReply(ctx, userID, content)
+		},
+	}, nil
 }
 
 // sendReply 发送回复（支持分块）
@@ -177,7 +303,6 @@ func (r *Router) sendReply(ctx context.Context, userID string, content string) e
 		return errors.New("platform is not set")
 	}
 
-	// 分块发送（每块最大 1000 字符）
 	chunks := r.splitMessage(content, 1000)
 
 	for i, chunk := range chunks {
@@ -198,19 +323,15 @@ func (r *Router) splitMessage(content string, maxSize int) []string {
 	var chunks []string
 	var buffer strings.Builder
 
-	// 按行分割，确保不超过最大长度
 	lines := strings.Split(content, "\n")
 
 	for _, line := range lines {
-		// 如果当前行本身就超过最大长度，需要强制分割
 		if len(line) > maxSize {
-			// 先将缓冲区内容加入 chunks
 			if buffer.Len() > 0 {
 				chunks = append(chunks, buffer.String())
 				buffer.Reset()
 			}
 
-			// 强制分割长行
 			for len(line) > maxSize {
 				chunks = append(chunks, line[:maxSize])
 				line = line[maxSize:]
@@ -222,9 +343,7 @@ func (r *Router) splitMessage(content string, maxSize int) []string {
 			continue
 		}
 
-		// 检查加入当前行是否会超过限制
 		if buffer.Len()+len(line)+1 > maxSize {
-			// 保存当前缓冲区
 			chunks = append(chunks, buffer.String())
 			buffer.Reset()
 		}
@@ -233,7 +352,6 @@ func (r *Router) splitMessage(content string, maxSize int) []string {
 		buffer.WriteString("\n")
 	}
 
-	// 保存剩余内容
 	if buffer.Len() > 0 {
 		chunks = append(chunks, strings.TrimSuffix(buffer.String(), "\n"))
 	}
@@ -272,51 +390,15 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		}, nil
 	}
 
-	// 获取或创建会话
-	var session *session.Session
-	var agentType string
-
-	// 获取默认 Agent 类型
-	defaultAgent := r.agentMgr.GetDefaultAgent()
-	if defaultAgent == nil {
+	session, sessionKey, agentSessionID, currentAgent, err := r.resolveAgentExecution(msg)
+	if err != nil {
 		return &Response{
 			Success: false,
-			Content: "No default agent configured",
-		}, nil
-	}
-	agentType = mapAgentName(defaultAgent.Name())
-
-	if strings.TrimSpace(msg.SessionID) != "" {
-		session = r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, agentType)
-	} else {
-		session = r.sessionMgr.GetOrCreateActiveSession(msg.UserID, agentType)
-	}
-	if session == nil {
-		return &Response{
-			Success: false,
-			Content: "Failed to create or get session",
+			Content: err.Error(),
 		}, nil
 	}
 
-	// 获取 Agent
-	currentAgent := r.agentMgr.ResolveAgent(session.AgentType)
-	if currentAgent == nil {
-		return &Response{
-			Success: false,
-			Content: fmt.Sprintf("No agent available for session type: %s", session.AgentType),
-		}, nil
-	}
-
-	// 执行 AI 任务
-	agentSessionID := ""
-	if sessionKey := agentSessionContextKey(session.AgentType); sessionKey != "" {
-		if sid, ok := session.Context[sessionKey].(string); ok {
-			agentSessionID = sid
-		}
-	}
-
-	// 调用 Agent，传入 agent session ID
-	response, err := currentAgent.Execute(agentSessionID, msg.Content)
+	response, err := currentAgent.Execute(ctx, agentSessionID, msg.Content)
 	if err != nil {
 		return &Response{
 			Success: false,
@@ -324,8 +406,7 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		}, nil
 	}
 
-	// 如果 Agent 返回了新的 session ID，保存到会话上下文
-	if sessionKey := agentSessionContextKey(session.AgentType); sessionKey != "" {
+	if sessionKey != "" {
 		if newSessionID := extractSessionID(response); newSessionID != "" {
 			if session.Context == nil {
 				session.Context = make(map[string]interface{})
@@ -340,6 +421,78 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		Success: true,
 		Content: response,
 	}, nil
+}
+
+func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<- agent.Event) error {
+	if r.agentMgr == nil {
+		return errors.New("Agent manager is not available")
+	}
+	if r.sessionMgr == nil {
+		return errors.New("Session manager is not available")
+	}
+
+	session, sessionKey, agentSessionID, currentAgent, err := r.resolveAgentExecution(msg)
+	if err != nil {
+		return err
+	}
+
+	stream, err := currentAgent.ExecuteStream(ctx, agentSessionID, msg.Content)
+	if err != nil {
+		return err
+	}
+
+	for event := range stream {
+		if event.Type == agent.EventTypeDone {
+			continue
+		}
+
+		if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
+			if session.Context == nil {
+				session.Context = make(map[string]interface{})
+			}
+			session.Context[sessionKey] = event.SessionID
+			r.sessionMgr.UpdateSession(session.ID, sessionKey, event.SessionID)
+		}
+
+		events <- event
+	}
+
+	return nil
+}
+
+func (r *Router) resolveAgentExecution(msg *Message) (*session.Session, string, string, agent.Agent, error) {
+	var currentSession *session.Session
+	var agentType string
+
+	defaultAgent := r.agentMgr.GetDefaultAgent()
+	if defaultAgent == nil {
+		return nil, "", "", nil, errors.New("No default agent configured")
+	}
+	agentType = mapAgentName(defaultAgent.Name())
+
+	if strings.TrimSpace(msg.SessionID) != "" {
+		currentSession = r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, agentType)
+	} else {
+		currentSession = r.sessionMgr.GetOrCreateActiveSession(msg.UserID, agentType)
+	}
+	if currentSession == nil {
+		return nil, "", "", nil, errors.New("Failed to create or get session")
+	}
+
+	currentAgent := r.agentMgr.ResolveAgent(currentSession.AgentType)
+	if currentAgent == nil {
+		return nil, "", "", nil, fmt.Errorf("No agent available for session type: %s", currentSession.AgentType)
+	}
+
+	sessionKey := agentSessionContextKey(currentSession.AgentType)
+	agentSessionID := ""
+	if sessionKey != "" {
+		if sid, ok := currentSession.Context[sessionKey].(string); ok {
+			agentSessionID = sid
+		}
+	}
+
+	return currentSession, sessionKey, agentSessionID, currentAgent, nil
 }
 
 // mapAgentName 将 Agent 名称映射到会话类型
@@ -383,4 +536,145 @@ func removeSessionIDMarker(response string) string {
 		return response
 	}
 	return response[:idx]
+}
+
+type streamReplySender struct {
+	writer              streamReplyWriter
+	splitter            func(content string, maxSize int) []string
+	lastPartialSnapshot string
+	hasSeenPartial      bool
+	hasEmittedChunks    bool
+	hasEmittedDone      bool
+}
+
+func newStreamReplySender(writer streamReplyWriter, splitter func(content string, maxSize int) []string) *streamReplySender {
+	return &streamReplySender{
+		writer:   writer,
+		splitter: splitter,
+	}
+}
+
+func (s *streamReplySender) PushPartialSnapshot(ctx context.Context, snapshot string) error {
+	if s.hasEmittedDone {
+		return nil
+	}
+	if snapshot == "" {
+		return nil
+	}
+
+	s.hasSeenPartial = true
+	delta, nextSnapshot := resolveDeltaFromSnapshot(s.lastPartialSnapshot, snapshot)
+	s.lastPartialSnapshot = nextSnapshot
+	if delta == "" {
+		return nil
+	}
+
+	return s.emitText(ctx, delta, false)
+}
+
+func (s *streamReplySender) PushDeliverText(ctx context.Context, text string, isFinal bool) error {
+	if s.hasEmittedDone {
+		return nil
+	}
+	if !isFinal {
+		return nil
+	}
+
+	if s.hasSeenPartial {
+		if text != "" {
+			if err := s.PushPartialSnapshot(ctx, text); err != nil {
+				return err
+			}
+		}
+		return s.finalize(ctx)
+	}
+
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	if err := s.emitText(ctx, text, true); err != nil {
+		return err
+	}
+	return s.finalize(ctx)
+}
+
+func (s *streamReplySender) Settle(ctx context.Context) error {
+	return s.finalize(ctx)
+}
+
+func (s *streamReplySender) finalize(ctx context.Context) error {
+	if s.hasEmittedDone {
+		return nil
+	}
+	if !s.hasEmittedChunks {
+		return nil
+	}
+	if err := s.writer.SendChunk(ctx, "", true); err != nil {
+		return err
+	}
+	s.hasEmittedDone = true
+	return nil
+}
+
+func (s *streamReplySender) emitText(ctx context.Context, content string, markLastDone bool) error {
+	chunks := s.splitter(content, streamReplyChunkSize)
+	normalized := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		normalized = append(normalized, chunk)
+	}
+
+	for idx, chunk := range normalized {
+		done := markLastDone && idx == len(normalized)-1
+		if err := s.writer.SendChunk(ctx, chunk, done); err != nil {
+			return err
+		}
+		s.hasEmittedChunks = true
+		if done {
+			s.hasEmittedDone = true
+		}
+	}
+
+	return nil
+}
+
+type legacyStreamReplyWriter struct {
+	send func(content string) error
+}
+
+func (w *legacyStreamReplyWriter) SendChunk(ctx context.Context, content string, done bool) error {
+	if done && content == "" {
+		return nil
+	}
+	if content == "" {
+		return nil
+	}
+
+	return w.send(content)
+}
+
+func resolveDeltaFromSnapshot(previous, next string) (string, string) {
+	if next == "" || next == previous {
+		return "", next
+	}
+	if strings.HasPrefix(next, previous) {
+		return next[len(previous):], next
+	}
+	if strings.HasPrefix(previous, next) {
+		return "", next
+	}
+
+	prefixLen := 0
+	maxLen := len(previous)
+	if len(next) < maxLen {
+		maxLen = len(next)
+	}
+	for prefixLen < maxLen && previous[prefixLen] == next[prefixLen] {
+		prefixLen++
+	}
+
+	return next[prefixLen:], next
 }

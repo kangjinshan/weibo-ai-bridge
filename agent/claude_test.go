@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestClaudeCodeAgent_Name(t *testing.T) {
 	agent := NewClaudeCodeAgent()
@@ -16,7 +19,7 @@ func TestClaudeCodeAgent_IsAvailable(t *testing.T) {
 
 func TestClaudeCodeAgent_Execute(t *testing.T) {
 	agent := NewClaudeCodeAgent()
-	_, err := agent.Execute("", "test input")
+	_, err := agent.Execute(context.Background(), "", "test input")
 	if err != nil {
 		t.Logf("Execute failed (expected if claude CLI is not logged in or not installed): %v", err)
 	}
@@ -25,14 +28,14 @@ func TestClaudeCodeAgent_Execute(t *testing.T) {
 func TestClaudeCodeAgent_buildArgs_NewSession(t *testing.T) {
 	agent := NewClaudeCodeAgent()
 	got := agent.buildArgs("", "hello")
-	want := []string{"--print", "--output-format", "json", "hello"}
+	want := []string{"--print", "--output-format", "json", wrapUserPrompt("hello")}
 	assertSliceEqual(t, got, want)
 }
 
 func TestClaudeCodeAgent_buildArgs_ResumeSession(t *testing.T) {
 	agent := NewClaudeCodeAgent()
 	got := agent.buildArgs("11111111-1111-1111-1111-111111111111", "hello again")
-	want := []string{"--print", "--output-format", "json", "--resume", "11111111-1111-1111-1111-111111111111", "hello again"}
+	want := []string{"--print", "--output-format", "json", "--resume", "11111111-1111-1111-1111-111111111111", wrapUserPrompt("hello again")}
 	assertSliceEqual(t, got, want)
 }
 

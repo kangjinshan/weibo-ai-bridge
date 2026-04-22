@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ func TestCodeXAgent_IsAvailable(t *testing.T) {
 
 func TestCodeXAgent_Execute(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
-	_, err := agent.Execute("", "test input")
+	_, err := agent.Execute(context.Background(), "", "test input")
 	if err != nil {
 		t.Logf("Execute failed (expected if codex CLI is not configured): %v", err)
 	}
@@ -29,7 +30,7 @@ func TestCodeXAgent_Execute(t *testing.T) {
 func TestCodeXAgent_buildCommand_NewSession(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 
-	cmd := agent.buildCommand(&codexSession{}, "hello")
+	cmd := agent.buildCommand(context.Background(), &codexSession{}, "hello")
 
 	want := []string{"codex", "-a", "never", "-m", "gpt-4.5", "exec", "--skip-git-repo-check", "--json", "-"}
 	if strings.Join(cmd.Args, "\x00") != strings.Join(want, "\x00") {
@@ -38,12 +39,19 @@ func TestCodeXAgent_buildCommand_NewSession(t *testing.T) {
 	if cmd.Stdin == nil {
 		t.Fatal("expected stdin to be set")
 	}
+	stdinBytes, err := io.ReadAll(cmd.Stdin)
+	if err != nil {
+		t.Fatalf("failed to read stdin: %v", err)
+	}
+	if got := string(stdinBytes); got != wrapUserPrompt("hello") {
+		t.Fatalf("unexpected stdin: got %q", got)
+	}
 }
 
 func TestCodeXAgent_buildCommand_NewSessionWithoutModelOverride(t *testing.T) {
 	agent := NewCodeXAgent("")
 
-	cmd := agent.buildCommand(&codexSession{}, "hello")
+	cmd := agent.buildCommand(context.Background(), &codexSession{}, "hello")
 
 	want := []string{"codex", "-a", "never", "exec", "--skip-git-repo-check", "--json", "-"}
 	if strings.Join(cmd.Args, "\x00") != strings.Join(want, "\x00") {
@@ -56,15 +64,22 @@ func TestCodeXAgent_buildCommand_ResumeSession(t *testing.T) {
 	session := &codexSession{}
 	session.threadID.Store("thread-123")
 
-	cmd := agent.buildCommand(session, "hello again")
+	cmd := agent.buildCommand(context.Background(), session, "hello again")
 
 	want := []string{"codex", "-a", "never", "-m", "gpt-4.5", "exec", "resume", "--skip-git-repo-check", "--json", "thread-123", "-"}
 	if strings.Join(cmd.Args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected args: got %v want %v", cmd.Args, want)
 	}
+	stdinBytes, err := io.ReadAll(cmd.Stdin)
+	if err != nil {
+		t.Fatalf("failed to read stdin: %v", err)
+	}
+	if got := string(stdinBytes); got != wrapUserPrompt("hello again") {
+		t.Fatalf("unexpected stdin: got %q", got)
+	}
 }
 
-func TestCodeXAgent_readCodexOutput_CurrentJSONL(t *testing.T) {
+func TestCodeXAgent_streamCodexOutput_CurrentJSONL(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 	session := &codexSession{}
 	stdout := io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -74,22 +89,34 @@ func TestCodeXAgent_readCodexOutput_CurrentJSONL(t *testing.T) {
 		"",
 	}, "\n")))
 
-	output, err := agent.readCodexOutput(session, stdout)
+	events := make(chan Event, 8)
+	errorParts, err := agent.streamCodexOutput(session, stdout, events)
+	close(events)
 	if err != nil {
-		t.Fatalf("readCodexOutput returned error: %v", err)
+		t.Fatalf("streamCodexOutput returned error: %v", err)
 	}
-	if output.response != "hello from codex" {
-		t.Fatalf("unexpected response: %q", output.response)
+	if len(errorParts) != 0 {
+		t.Fatalf("unexpected errors: %v", errorParts)
 	}
-	if len(output.errors) != 0 {
-		t.Fatalf("unexpected errors: %v", output.errors)
+	var got []Event
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 {
+		t.Fatalf("unexpected events: %+v", got)
+	}
+	if got[0].Type != EventTypeSession || got[0].SessionID != "thread-123" {
+		t.Fatalf("unexpected session event: %+v", got[0])
+	}
+	if got[1].Type != EventTypeMessage || got[1].Content != "hello from codex" {
+		t.Fatalf("unexpected message event: %+v", got[1])
 	}
 	if session.CurrentSessionID() != "thread-123" {
 		t.Fatalf("unexpected session id: %q", session.CurrentSessionID())
 	}
 }
 
-func TestCodeXAgent_readCodexOutput_CurrentJSONLContentArray(t *testing.T) {
+func TestCodeXAgent_streamCodexOutput_CurrentJSONLContentArray(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 	session := &codexSession{}
 	stdout := io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -98,16 +125,22 @@ func TestCodeXAgent_readCodexOutput_CurrentJSONLContentArray(t *testing.T) {
 		"",
 	}, "\n")))
 
-	output, err := agent.readCodexOutput(session, stdout)
+	events := make(chan Event, 8)
+	_, err := agent.streamCodexOutput(session, stdout, events)
+	close(events)
 	if err != nil {
-		t.Fatalf("readCodexOutput returned error: %v", err)
+		t.Fatalf("streamCodexOutput returned error: %v", err)
 	}
-	if output.response != "line 1\nline 2" {
-		t.Fatalf("unexpected response: %q", output.response)
+	var got []Event
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 || got[1].Content != "line 1\nline 2" {
+		t.Fatalf("unexpected events: %+v", got)
 	}
 }
 
-func TestCodeXAgent_readCodexOutput_LegacyJSONL(t *testing.T) {
+func TestCodeXAgent_streamCodexOutput_LegacyJSONL(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 	session := &codexSession{}
 	stdout := io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -116,19 +149,25 @@ func TestCodeXAgent_readCodexOutput_LegacyJSONL(t *testing.T) {
 		"",
 	}, "\n")))
 
-	output, err := agent.readCodexOutput(session, stdout)
+	events := make(chan Event, 8)
+	_, err := agent.streamCodexOutput(session, stdout, events)
+	close(events)
 	if err != nil {
-		t.Fatalf("readCodexOutput returned error: %v", err)
+		t.Fatalf("streamCodexOutput returned error: %v", err)
 	}
-	if output.response != "legacy response" {
-		t.Fatalf("unexpected response: %q", output.response)
+	var got []Event
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 || got[1].Content != "legacy response" {
+		t.Fatalf("unexpected events: %+v", got)
 	}
 	if session.CurrentSessionID() != "legacy-thread" {
 		t.Fatalf("unexpected session id: %q", session.CurrentSessionID())
 	}
 }
 
-func TestCodeXAgent_readCodexOutput_CapturesCLIErrorEvents(t *testing.T) {
+func TestCodeXAgent_streamCodexOutput_CapturesCLIErrorEvents(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 	session := &codexSession{}
 	stdout := io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -138,12 +177,14 @@ func TestCodeXAgent_readCodexOutput_CapturesCLIErrorEvents(t *testing.T) {
 		"",
 	}, "\n")))
 
-	output, err := agent.readCodexOutput(session, stdout)
+	events := make(chan Event, 8)
+	errorParts, err := agent.streamCodexOutput(session, stdout, events)
+	close(events)
 	if err != nil {
-		t.Fatalf("readCodexOutput returned error: %v", err)
+		t.Fatalf("streamCodexOutput returned error: %v", err)
 	}
-	if len(output.errors) != 1 || output.errors[0] != "upstream failed" {
-		t.Fatalf("unexpected errors: %v", output.errors)
+	if len(errorParts) != 1 || errorParts[0] != "upstream failed" {
+		t.Fatalf("unexpected errors: %v", errorParts)
 	}
 }
 

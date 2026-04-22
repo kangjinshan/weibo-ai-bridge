@@ -2,6 +2,7 @@ package weibo
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ const (
 	defaultTokenURL = "http://open-im.api.weibo.com/open/auth/ws_token"
 	defaultWSURL    = "ws://open-im.api.weibo.com/ws/stream"
 	maxWeiboChunk   = 4000
+	sendChunkDelay  = 100 * time.Millisecond
 )
 
 // Platform 微博平台适配器
@@ -45,6 +47,21 @@ type Platform struct {
 
 	dedupMu sync.Mutex
 	dedup   map[string]time.Time
+}
+
+// ReplyStream 表示一轮微博回复流，整轮复用同一个 messageId。
+type ReplyStream struct {
+	platform   *Platform
+	userID     string
+	messageID  string
+	nextChunk  int
+	closed     bool
+	streamLock sync.Mutex
+}
+
+// ChunkSender 定义微博流式分片发送能力。
+type ChunkSender interface {
+	SendChunk(ctx context.Context, content string, done bool) error
 }
 
 // NewPlatform 创建微博平台实例
@@ -225,11 +242,89 @@ func (p *Platform) Messages() <-chan *Message {
 
 // Reply 回复消息
 func (p *Platform) Reply(ctx context.Context, userID string, content string) error {
-	return p.sendChunks(ctx, userID, content)
+	stream, err := p.OpenReplyStream(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	chunks := splitContent(content, maxWeiboChunk)
+	if len(chunks) == 0 {
+		chunks = []string{""}
+	}
+
+	for i, chunk := range chunks {
+		done := i == len(chunks)-1
+		if err := stream.SendChunk(ctx, chunk, done); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-// sendChunks 分块发送消息
-func (p *Platform) sendChunks(ctx context.Context, userID string, content string) error {
+// OpenReplyStream 打开一轮流式回复。
+func (p *Platform) OpenReplyStream(ctx context.Context, userID string) (ChunkSender, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("userID is required")
+	}
+
+	p.connMutex.Lock()
+	if p.conn == nil {
+		p.connMutex.Unlock()
+		return nil, fmt.Errorf("connection not established")
+	}
+	p.connMutex.Unlock()
+
+	return &ReplyStream{
+		platform:  p,
+		userID:    userID,
+		messageID: generateMessageID(),
+	}, nil
+}
+
+// SendChunk 发送一个流式分片；最后一片需带 done=true。
+func (s *ReplyStream) SendChunk(ctx context.Context, content string, done bool) error {
+	s.streamLock.Lock()
+	defer s.streamLock.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("reply stream already closed")
+	}
+	if strings.TrimSpace(s.userID) == "" {
+		return fmt.Errorf("userID is required")
+	}
+	if !done && content == "" {
+		return fmt.Errorf("non-final chunk content cannot be empty")
+	}
+
+	chunkID := s.nextChunk
+	s.nextChunk++
+
+	if err := s.platform.sendChunk(ctx, s.userID, s.messageID, chunkID, content, done); err != nil {
+		return err
+	}
+
+	if done {
+		s.closed = true
+	}
+
+	return nil
+}
+
+func (p *Platform) sendChunk(ctx context.Context, userID, messageID string, chunkID int, content string, done bool) error {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+
+	data, err := buildSendMessageFrame(userID, content, messageID, chunkID, done)
+	if err != nil {
+		return err
+	}
+
 	p.connMutex.Lock()
 	defer p.connMutex.Unlock()
 
@@ -237,43 +332,49 @@ func (p *Platform) sendChunks(ctx context.Context, userID string, content string
 		return fmt.Errorf("connection not established")
 	}
 
-	// 分块发送（微博限制 4000 字符）
-	chunks := splitContent(content, maxWeiboChunk)
-
-	for i, chunk := range chunks {
-		done := i == len(chunks)-1
-
-		// 使用微博要求的格式
-		msg := map[string]interface{}{
-			"type": "send_message",
-			"payload": map[string]interface{}{
-				"toUserId":  userID,
-				"text":      chunk,
-				"messageId": generateMessageID(),
-				"chunkId":   i,
-				"done":      done,
-			},
-		}
-
-		data, err := json.Marshal(msg)
-		if err != nil {
-			return err
-		}
-
-		if err := websocket.Message.Send(p.conn, string(data)); err != nil {
-			return err
-		}
-
-		// 避免发送太快
-		time.Sleep(100 * time.Millisecond)
+	if err := websocket.Message.Send(p.conn, string(data)); err != nil {
+		return err
 	}
 
+	time.Sleep(sendChunkDelay)
 	return nil
+}
+
+func buildSendMessageFrame(userID, content, messageID string, chunkID int, done bool) ([]byte, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("userID is required")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return nil, fmt.Errorf("messageID is required")
+	}
+	if chunkID < 0 {
+		return nil, fmt.Errorf("chunkID must be non-negative")
+	}
+	if !done && content == "" {
+		return nil, fmt.Errorf("non-final chunk content cannot be empty")
+	}
+
+	msg := map[string]interface{}{
+		"type": "send_message",
+		"payload": map[string]interface{}{
+			"toUserId":  userID,
+			"text":      content,
+			"messageId": messageID,
+			"chunkId":   chunkID,
+			"done":      done,
+		},
+	}
+
+	return json.Marshal(msg)
 }
 
 // generateMessageID 生成消息 ID
 func generateMessageID() string {
-	return fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("msg_%d_%x", time.Now().UnixNano(), suffix[:])
 }
 
 // heartbeatLoop 心跳循环
@@ -345,9 +446,15 @@ func (p *Platform) messageLoop(ctx context.Context) {
 				continue
 			}
 
-			// 跳过系统消息
+			// 跳过/处理系统消息与应用层心跳
 			if msgType, ok := rawMsg["type"].(string); ok {
-				if msgType == "connected" {
+				switch msgType {
+				case "connected", "pong":
+					continue
+				case "ping":
+					if err := p.sendJSONPong(); err != nil {
+						p.logger.Printf("❌ Send pong failed: %v", err)
+					}
 					continue
 				}
 			}
@@ -373,6 +480,22 @@ func (p *Platform) messageLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (p *Platform) sendJSONPong() error {
+	p.connMutex.Lock()
+	defer p.connMutex.Unlock()
+
+	if p.conn == nil {
+		return fmt.Errorf("connection not established")
+	}
+
+	data, err := json.Marshal(map[string]string{"type": "pong"})
+	if err != nil {
+		return err
+	}
+
+	return websocket.Message.Send(p.conn, string(data))
 }
 
 // isDuplicate 检查消息是否重复

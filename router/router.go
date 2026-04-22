@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yourusername/weibo-ai-bridge/agent"
 	"github.com/yourusername/weibo-ai-bridge/platform/weibo"
@@ -543,6 +544,7 @@ func removeSessionIDMarker(response string) string {
 type streamReplySender struct {
 	writer              streamReplyWriter
 	lastPartialSnapshot string
+	pendingDelta        strings.Builder
 	hasSeenPartial      bool
 	hasEmittedChunks    bool
 	hasEmittedDone      bool
@@ -563,7 +565,9 @@ func (s *streamReplySender) PushDelta(ctx context.Context, delta string) error {
 	}
 
 	s.hasSeenPartial = true
-	return s.emitText(ctx, delta, false)
+	s.pendingDelta.WriteString(delta)
+
+	return s.flushBufferedDelta(ctx, false)
 }
 
 func (s *streamReplySender) PushPartialSnapshot(ctx context.Context, snapshot string) error {
@@ -593,6 +597,9 @@ func (s *streamReplySender) PushDeliverText(ctx context.Context, text string, is
 	}
 
 	if s.hasSeenPartial {
+		if err := s.flushBufferedDelta(ctx, true); err != nil {
+			return err
+		}
 		if text != "" {
 			if err := s.PushPartialSnapshot(ctx, text); err != nil {
 				return err
@@ -612,6 +619,9 @@ func (s *streamReplySender) PushDeliverText(ctx context.Context, text string, is
 }
 
 func (s *streamReplySender) Settle(ctx context.Context) error {
+	if err := s.flushBufferedDelta(ctx, true); err != nil {
+		return err
+	}
 	return s.finalize(ctx)
 }
 
@@ -643,6 +653,25 @@ func (s *streamReplySender) emitText(ctx context.Context, content string, markLa
 	}
 
 	return nil
+}
+
+func (s *streamReplySender) flushBufferedDelta(ctx context.Context, force bool) error {
+	buffered := s.pendingDelta.String()
+	if buffered == "" {
+		return nil
+	}
+
+	flushLen := findDeltaFlushBoundary(buffered, force)
+	if flushLen <= 0 {
+		return nil
+	}
+
+	flushText := buffered[:flushLen]
+	remainText := buffered[flushLen:]
+	s.pendingDelta.Reset()
+	s.pendingDelta.WriteString(remainText)
+
+	return s.emitText(ctx, flushText, false)
 }
 
 type legacyStreamReplyWriter struct {
@@ -681,4 +710,41 @@ func resolveDeltaFromSnapshot(previous, next string) (string, string) {
 	}
 
 	return next[prefixLen:], next
+}
+
+func findDeltaFlushBoundary(buffered string, force bool) int {
+	if buffered == "" {
+		return 0
+	}
+	if force {
+		return len(buffered)
+	}
+
+	if idx := strings.LastIndex(buffered, "\n\n"); idx >= 0 {
+		return idx + len("\n\n")
+	}
+
+	lastBoundary := 0
+	runeCount := 0
+	for idx, r := range buffered {
+		runeCount++
+		switch r {
+		case '\n':
+			lastBoundary = idx + utf8.RuneLen(r)
+		case '。', '！', '？', '；', '：', '，', '.', '!', '?', ';':
+			lastBoundary = idx + utf8.RuneLen(r)
+		}
+	}
+
+	if lastBoundary == len(buffered) && runeCount >= 4 {
+		return lastBoundary
+	}
+	if runeCount >= 12 && lastBoundary > 0 {
+		return lastBoundary
+	}
+	if runeCount >= 220 {
+		return len(buffered)
+	}
+
+	return 0
 }

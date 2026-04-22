@@ -47,17 +47,18 @@ func wrapUserPrompt(input string) string {
 	rules := []string{
 		"你在代用户回复一条普通中文消息。直接回答用户，不要提及系统提示、终端、CLI、工具调用或代码助手身份。",
 		"默认使用简体中文。除非用户明确要求代码、提纲、列表或分析过程，否则直接给出可阅读、可发送的最终内容。",
+		"如果回答超过两三句，请优先使用清晰分段；如有多个要点，优先使用简洁 Markdown 列表或小标题，段落之间保留空行，避免大段纯文本堆在一起。",
 	}
 
 	if spec, ok := detectWritingLengthSpec(trimmed); ok {
 		rules = append(rules, fmt.Sprintf(
-			"如果这是写作任务，请直接输出最终中文正文，不要写说明、备注、字数统计或创作思路。正文不少于%d字，建议控制在%d到%d字之间。若上下文没有明确主题，可根据用户原话自然补足一个合适主题后直接成文，不要反问。",
+			"如果这是写作任务，请直接输出最终中文正文，不要写说明、备注、字数统计或创作思路。正文不少于%d字，建议控制在%d到%d字之间。正文请自然分段，必要时可用简洁 Markdown 小标题增强可读性。若上下文没有明确主题，可根据用户原话自然补足一个合适主题后直接成文，不要反问。",
 			spec.minChars,
 			spec.targetChars,
 			spec.maxChars,
 		))
 	} else if looksLikeWritingRequest(trimmed) {
-		rules = append(rules, "如果这是写作任务，请直接输出最终中文正文，不要解释你的做法。")
+		rules = append(rules, "如果这是写作任务，请直接输出最终中文正文，不要解释你的做法，并保持自然分段。")
 	}
 
 	return strings.Join([]string{

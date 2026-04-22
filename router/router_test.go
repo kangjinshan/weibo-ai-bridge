@@ -636,14 +636,35 @@ func TestForwardStreamToPlatform_DoesNotDropRepeatedDelta(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.Equal(t, "哈哈", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
+}
+
+func TestForwardStreamToPlatform_BuffersDeltaUntilSentenceBoundary(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 4)
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "第一句"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "。"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "第二句"}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-boundary", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
 	assert.Len(t, platform.streams[0].chunks, 3)
-	assert.Equal(t, "哈", platform.streams[0].chunks[0]["content"])
-	assert.Equal(t, "哈", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, "第一句。", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, "第二句", platform.streams[0].chunks[1]["content"])
 	assert.Equal(t, "", platform.streams[0].chunks[2]["content"])
 	assert.Equal(t, true, platform.streams[0].chunks[2]["done"])
 }
 
-func TestForwardStreamToPlatform_UsesSingleMessageIDForDeltas(t *testing.T) {
+func TestForwardStreamToPlatform_UsesSingleMessageIDForBufferedDeltas(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)
 
@@ -658,17 +679,13 @@ func TestForwardStreamToPlatform_UsesSingleMessageIDForDeltas(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Len(t, platform.streams, 1)
-	assert.Len(t, platform.streams[0].chunks, 4)
-	assert.Equal(t, "a", platform.streams[0].chunks[0]["content"])
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.Equal(t, "abc", platform.streams[0].chunks[0]["content"])
 	assert.Equal(t, 0, platform.streams[0].chunks[0]["chunk_id"])
 	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
-	assert.Equal(t, "b", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
 	assert.Equal(t, 1, platform.streams[0].chunks[1]["chunk_id"])
-	assert.Equal(t, "c", platform.streams[0].chunks[2]["content"])
-	assert.Equal(t, 2, platform.streams[0].chunks[2]["chunk_id"])
-	assert.Equal(t, "", platform.streams[0].chunks[3]["content"])
-	assert.Equal(t, 3, platform.streams[0].chunks[3]["chunk_id"])
-	assert.Equal(t, true, platform.streams[0].chunks[3]["done"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
 func TestForwardStreamToPlatform_SendsFinalMessageAsSingleDoneChunk(t *testing.T) {

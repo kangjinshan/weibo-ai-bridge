@@ -39,6 +39,20 @@ func TestClaudeCodeAgent_buildArgs_ResumeSession(t *testing.T) {
 	assertSliceEqual(t, got, want)
 }
 
+func TestClaudeCodeAgent_buildStreamArgs_NewSession(t *testing.T) {
+	agent := NewClaudeCodeAgent()
+	got := agent.buildStreamArgs("", "hello")
+	want := []string{"--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", wrapUserPrompt("hello")}
+	assertSliceEqual(t, got, want)
+}
+
+func TestClaudeCodeAgent_buildStreamArgs_ResumeSession(t *testing.T) {
+	agent := NewClaudeCodeAgent()
+	got := agent.buildStreamArgs("11111111-1111-1111-1111-111111111111", "hello again")
+	want := []string{"--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--resume", "11111111-1111-1111-1111-111111111111", wrapUserPrompt("hello again")}
+	assertSliceEqual(t, got, want)
+}
+
 func TestParseClaudePrintOutput_Success(t *testing.T) {
 	result, err := parseClaudePrintOutput(`{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc-123"}`)
 	if err != nil {
@@ -71,6 +85,114 @@ func TestParseClaudePrintOutput_Error(t *testing.T) {
 func TestParseClaudePrintOutput_InvalidJSON(t *testing.T) {
 	if _, err := parseClaudePrintOutput("not json"); err == nil {
 		t.Fatal("expected parse error for invalid json")
+	}
+}
+
+func TestParseClaudeStreamEvent_AssistantPartial(t *testing.T) {
+	state := &claudeStreamState{messageSnapshot: make(map[string]string)}
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "assistant",
+		"session_id": "session-1",
+		"message": map[string]any{
+			"id": "msg-1",
+			"content": []any{
+				map[string]any{"type": "text", "text": "你好"},
+			},
+		},
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeDelta || events[0].Content != "你好" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if state.sessionID != "session-1" {
+		t.Fatalf("unexpected session id: %q", state.sessionID)
+	}
+}
+
+func TestParseClaudeStreamEvent_AssistantGrowingSnapshot(t *testing.T) {
+	state := &claudeStreamState{
+		sessionID:       "session-1",
+		messageSnapshot: map[string]string{"msg-1": "你好"},
+		lastMessageID:   "msg-1",
+	}
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "assistant",
+		"session_id": "session-1",
+		"message": map[string]any{
+			"id": "msg-1",
+			"content": []any{
+				map[string]any{"type": "text", "text": "你好呀"},
+			},
+		},
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeDelta || events[0].Content != "呀" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestParseClaudeStreamEvent_ResultAvoidsDuplicateFinal(t *testing.T) {
+	state := &claudeStreamState{
+		sessionID:       "session-1",
+		messageSnapshot: map[string]string{"msg-1": "你好呀"},
+		lastMessageID:   "msg-1",
+	}
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "result",
+		"session_id": "session-1",
+		"is_error":   false,
+		"result":     "你好呀",
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeDone {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestParseClaudeStreamEvent_ResultEmitsRemainingSuffix(t *testing.T) {
+	state := &claudeStreamState{
+		sessionID:       "session-1",
+		messageSnapshot: map[string]string{"msg-1": "你好"},
+		lastMessageID:   "msg-1",
+	}
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "result",
+		"session_id": "session-1",
+		"is_error":   false,
+		"result":     "你好呀",
+	})
+
+	if len(events) != 2 {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if events[0].Type != EventTypeMessage || events[0].Content != "呀" {
+		t.Fatalf("unexpected message event: %+v", events[0])
+	}
+	if events[1].Type != EventTypeDone {
+		t.Fatalf("unexpected done event: %+v", events[1])
+	}
+}
+
+func TestParseClaudeStreamEvent_ResultError(t *testing.T) {
+	state := &claudeStreamState{messageSnapshot: make(map[string]string)}
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "result",
+		"session_id": "session-1",
+		"is_error":   true,
+		"result":     "Not logged in · Please run /login",
+	})
+
+	if len(events) != 3 {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if events[0].Type != EventTypeSession || events[0].SessionID != "session-1" {
+		t.Fatalf("unexpected first event: %+v", events[0])
+	}
+	if events[1].Type != EventTypeError {
+		t.Fatalf("unexpected second event: %+v", events[1])
+	}
+	if events[2].Type != EventTypeDone {
+		t.Fatalf("unexpected third event: %+v", events[2])
 	}
 }
 

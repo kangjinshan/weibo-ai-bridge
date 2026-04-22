@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 )
@@ -18,6 +20,12 @@ type claudePrintResult struct {
 	Result    string `json:"result"`
 	SessionID string `json:"session_id"`
 	IsError   bool   `json:"is_error"`
+}
+
+type claudeStreamState struct {
+	sessionID       string
+	messageSnapshot map[string]string
+	lastMessageID   string
 }
 
 // NewClaudeCodeAgent 创建新的 Claude Code Agent
@@ -79,10 +87,14 @@ func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, i
 		return nil, fmt.Errorf("claude CLI is not available")
 	}
 
-	cmd := exec.CommandContext(ctx, command, a.buildArgs(sessionID, input)...)
+	cmd := exec.CommandContext(ctx, command, a.buildStreamArgs(sessionID, input)...)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	events := make(chan Event, 8)
@@ -90,51 +102,37 @@ func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, i
 	go func() {
 		defer close(events)
 
-		runErr := cmd.Run()
-		result, parseErr := parseClaudePrintOutput(stdout.String())
+		if err := cmd.Start(); err != nil {
+			sendEvent(events, Event{
+				Type:  EventTypeError,
+				Error: fmt.Sprintf("failed to start claude CLI: %v", err),
+			})
+			return
+		}
+
+		state := &claudeStreamState{
+			messageSnapshot: make(map[string]string),
+		}
+
+		parseErr := a.streamClaudeOutput(stdout, state, events)
+
+		runErr := cmd.Wait()
 		if parseErr != nil {
-			if runErr != nil {
-				sendEvent(events, Event{
-					Type:  EventTypeError,
-					Error: fmt.Sprintf("failed to execute claude CLI: %v, stderr: %s", runErr, strings.TrimSpace(stderr.String())),
-				})
-				return
-			}
-
-			text := strings.TrimSpace(stdout.String())
-			if text == "" {
-				sendEvent(events, Event{Type: EventTypeError, Error: "empty response from claude CLI"})
-				return
-			}
-
-			sendEvent(events, Event{Type: EventTypeMessage, Content: text})
-			sendEvent(events, Event{Type: EventTypeDone})
+			sendEvent(events, Event{
+				Type:  EventTypeError,
+				Error: parseErr.Error(),
+			})
 			return
 		}
 
-		if runErr != nil || result.IsError {
-			details := strings.TrimSpace(result.Result)
+		if runErr != nil {
+			details := strings.TrimSpace(stderr.String())
 			if details == "" {
-				details = strings.TrimSpace(stderr.String())
+				details = runErr.Error()
 			}
-			if details == "" {
-				details = "unknown claude CLI error"
-			}
-			sendEvent(events, Event{Type: EventTypeError, Error: details})
+			sendEvent(events, Event{Type: EventTypeError, Error: fmt.Sprintf("failed to execute claude CLI: %s", details)})
 			return
 		}
-
-		response := strings.TrimSpace(result.Result)
-		if response == "" {
-			sendEvent(events, Event{Type: EventTypeError, Error: "empty response from claude CLI"})
-			return
-		}
-
-		if sid := strings.TrimSpace(result.SessionID); sid != "" {
-			sendEvent(events, Event{Type: EventTypeSession, SessionID: sid})
-		}
-		sendEvent(events, Event{Type: EventTypeMessage, Content: response})
-		sendEvent(events, Event{Type: EventTypeDone})
 	}()
 
 	return events, nil
@@ -151,12 +149,180 @@ func (a *ClaudeCodeAgent) buildArgs(sessionID string, input string) []string {
 	return args
 }
 
+func (a *ClaudeCodeAgent) buildStreamArgs(sessionID string, input string) []string {
+	prompt := wrapUserPrompt(input)
+
+	args := []string{
+		"--print",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		args = append(args, "--resume", strings.TrimSpace(sessionID))
+	}
+	args = append(args, prompt)
+	return args
+}
+
 func parseClaudePrintOutput(output string) (*claudePrintResult, error) {
 	var result claudePrintResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (a *ClaudeCodeAgent) streamClaudeOutput(stdout io.ReadCloser, state *claudeStreamState, events chan<- Event) error {
+	reader := bufio.NewReader(stdout)
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("failed to read claude output: %w", err)
+		}
+
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err != nil {
+			continue
+		}
+
+		for _, event := range parseClaudeStreamEvent(state, raw) {
+			sendEvent(events, event)
+		}
+	}
+
+	return nil
+}
+
+func parseClaudeStreamEvent(state *claudeStreamState, raw map[string]any) []Event {
+	eventType, _ := raw["type"].(string)
+
+	switch eventType {
+	case "system":
+		if sid, _ := raw["session_id"].(string); sid != "" && state.sessionID != sid {
+			state.sessionID = sid
+			return []Event{{Type: EventTypeSession, SessionID: sid}}
+		}
+		return nil
+
+	case "assistant":
+		if sid, _ := raw["session_id"].(string); sid != "" && state.sessionID != sid {
+			state.sessionID = sid
+		}
+		message, _ := raw["message"].(map[string]any)
+		messageID, _ := message["id"].(string)
+		text := extractClaudeMessageText(message)
+		if text == "" {
+			return nil
+		}
+
+		if messageID != "" {
+			state.lastMessageID = messageID
+		}
+		previous := state.messageSnapshot[messageID]
+		delta, next := resolveTextDelta(previous, text)
+		state.messageSnapshot[messageID] = next
+		if delta == "" {
+			return nil
+		}
+		return []Event{{Type: EventTypeDelta, Content: delta}}
+
+	case "result":
+		result, _ := raw["result"].(string)
+		sid, _ := raw["session_id"].(string)
+		isError, _ := raw["is_error"].(bool)
+
+		var events []Event
+		if sid != "" && state.sessionID != sid {
+			state.sessionID = sid
+			events = append(events, Event{Type: EventTypeSession, SessionID: sid})
+		}
+		if isError {
+			if strings.TrimSpace(result) != "" {
+				events = append(events, Event{Type: EventTypeError, Error: strings.TrimSpace(result)})
+			}
+			events = append(events, Event{Type: EventTypeDone})
+			return events
+		}
+
+		finalDelta := result
+		if state.lastMessageID != "" {
+			lastSnapshot := state.messageSnapshot[state.lastMessageID]
+			if delta, _ := resolveTextDelta(lastSnapshot, result); delta != "" {
+				finalDelta = delta
+			} else {
+				finalDelta = ""
+			}
+		}
+
+		if strings.TrimSpace(finalDelta) != "" {
+			events = append(events, Event{Type: EventTypeMessage, Content: finalDelta})
+		}
+		events = append(events, Event{Type: EventTypeDone})
+		return events
+	}
+
+	return nil
+}
+
+func extractClaudeMessageText(message map[string]any) string {
+	if message == nil {
+		return ""
+	}
+
+	content, ok := message["content"].([]any)
+	if !ok {
+		return ""
+	}
+
+	var parts []string
+	for _, item := range content {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType, _ := m["type"].(string)
+		if itemType != "text" {
+			continue
+		}
+		if text, _ := m["text"].(string); text != "" {
+			parts = append(parts, text)
+		}
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func resolveTextDelta(previous, next string) (string, string) {
+	if next == "" || next == previous {
+		return "", next
+	}
+	if strings.HasPrefix(next, previous) {
+		return next[len(previous):], next
+	}
+	if strings.HasPrefix(previous, next) {
+		return "", next
+	}
+
+	prefixLen := 0
+	maxLen := len(previous)
+	if len(next) < maxLen {
+		maxLen = len(next)
+	}
+	for prefixLen < maxLen && previous[prefixLen] == next[prefixLen] {
+		prefixLen++
+	}
+
+	return next[prefixLen:], next
 }
 
 func resolveClaudeCommand() (string, error) {

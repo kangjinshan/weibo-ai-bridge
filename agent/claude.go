@@ -207,6 +207,9 @@ func parseClaudeStreamEvent(state *claudeStreamState, raw map[string]any) []Even
 	eventType, _ := raw["type"].(string)
 
 	switch eventType {
+	case "stream_event":
+		return parseClaudeStructuredStreamEvent(state, raw)
+
 	case "system":
 		if sid, _ := raw["session_id"].(string); sid != "" && state.sessionID != sid {
 			state.sessionID = sid
@@ -272,6 +275,58 @@ func parseClaudeStreamEvent(state *claudeStreamState, raw map[string]any) []Even
 	}
 
 	return nil
+}
+
+func parseClaudeStructuredStreamEvent(state *claudeStreamState, raw map[string]any) []Event {
+	var events []Event
+
+	if sid, _ := raw["session_id"].(string); sid != "" && state.sessionID != sid {
+		state.sessionID = sid
+		events = append(events, Event{Type: EventTypeSession, SessionID: sid})
+	}
+
+	event, _ := raw["event"].(map[string]any)
+	if event == nil {
+		return events
+	}
+
+	switch event["type"] {
+	case "message_start":
+		message, _ := event["message"].(map[string]any)
+		if messageID, _ := message["id"].(string); messageID != "" {
+			state.lastMessageID = messageID
+			if _, ok := state.messageSnapshot[messageID]; !ok {
+				state.messageSnapshot[messageID] = ""
+			}
+		}
+
+	case "content_block_start":
+		contentBlock, _ := event["content_block"].(map[string]any)
+		text, _ := contentBlock["text"].(string)
+		if text == "" || state.lastMessageID == "" {
+			return events
+		}
+		state.messageSnapshot[state.lastMessageID] += text
+		events = append(events, Event{Type: EventTypeDelta, Content: text})
+
+	case "content_block_delta":
+		delta, _ := event["delta"].(map[string]any)
+		deltaType, _ := delta["type"].(string)
+		if deltaType != "text_delta" {
+			return events
+		}
+
+		text, _ := delta["text"].(string)
+		if text == "" {
+			return events
+		}
+		if state.lastMessageID != "" {
+			state.messageSnapshot[state.lastMessageID] += text
+		}
+		events = append(events, Event{Type: EventTypeDelta, Content: text})
+	}
+
+	return events
 }
 
 func extractClaudeMessageText(message map[string]any) string {

@@ -131,6 +131,115 @@ func TestParseClaudeStreamEvent_AssistantGrowingSnapshot(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamEvent_StreamEventTextDelta(t *testing.T) {
+	state := &claudeStreamState{messageSnapshot: make(map[string]string)}
+
+	startEvents := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "stream_event",
+		"session_id": "session-1",
+		"event": map[string]any{
+			"type": "message_start",
+			"message": map[string]any{
+				"id": "msg-1",
+			},
+		},
+	})
+
+	if len(startEvents) != 1 || startEvents[0].Type != EventTypeSession || startEvents[0].SessionID != "session-1" {
+		t.Fatalf("unexpected start events: %+v", startEvents)
+	}
+
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "stream_event",
+		"session_id": "session-1",
+		"event": map[string]any{
+			"type": "content_block_delta",
+			"delta": map[string]any{
+				"type": "text_delta",
+				"text": "春天的早晨，",
+			},
+		},
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeDelta || events[0].Content != "春天的早晨，" {
+		t.Fatalf("unexpected delta events: %+v", events)
+	}
+	if state.lastMessageID != "msg-1" {
+		t.Fatalf("unexpected last message id: %q", state.lastMessageID)
+	}
+	if got := state.messageSnapshot["msg-1"]; got != "春天的早晨，" {
+		t.Fatalf("unexpected snapshot: %q", got)
+	}
+}
+
+func TestParseClaudeStreamEvent_StreamEventThinkingDeltaIgnored(t *testing.T) {
+	state := &claudeStreamState{
+		sessionID:       "session-1",
+		messageSnapshot: map[string]string{"msg-1": ""},
+		lastMessageID:   "msg-1",
+	}
+
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "stream_event",
+		"session_id": "session-1",
+		"event": map[string]any{
+			"type": "content_block_delta",
+			"delta": map[string]any{
+				"type":     "thinking_delta",
+				"thinking": "internal",
+			},
+		},
+	})
+
+	if len(events) != 0 {
+		t.Fatalf("expected no events, got %+v", events)
+	}
+	if got := state.messageSnapshot["msg-1"]; got != "" {
+		t.Fatalf("unexpected snapshot: %q", got)
+	}
+}
+
+func TestParseClaudeStreamEvent_StreamEventDeltaAvoidsDuplicateAssistantSnapshot(t *testing.T) {
+	state := &claudeStreamState{messageSnapshot: make(map[string]string)}
+
+	parseClaudeStreamEvent(state, map[string]any{
+		"type":       "stream_event",
+		"session_id": "session-1",
+		"event": map[string]any{
+			"type": "message_start",
+			"message": map[string]any{
+				"id": "msg-1",
+			},
+		},
+	})
+	parseClaudeStreamEvent(state, map[string]any{
+		"type":       "stream_event",
+		"session_id": "session-1",
+		"event": map[string]any{
+			"type": "content_block_delta",
+			"delta": map[string]any{
+				"type": "text_delta",
+				"text": "你好",
+			},
+		},
+	})
+
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "assistant",
+		"session_id": "session-1",
+		"message": map[string]any{
+			"id": "msg-1",
+			"content": []any{
+				map[string]any{"type": "text", "text": "你好呀"},
+			},
+		},
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeDelta || events[0].Content != "呀" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
 func TestParseClaudeStreamEvent_ResultAvoidsDuplicateFinal(t *testing.T) {
 	state := &claudeStreamState{
 		sessionID:       "session-1",

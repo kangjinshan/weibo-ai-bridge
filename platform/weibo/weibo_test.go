@@ -281,3 +281,14 @@ func TestBuildSendMessageFrame_RejectsEmptyNonFinalChunk(t *testing.T) {
 	_, err := buildSendMessageFrame("user-1", "", "msg-1", 1, false)
 	assert.Error(t, err)
 }
+
+func TestSplitContent_KeepsUTF8RunesIntact(t *testing.T) {
+	content := strings.Repeat("你好", 2500)
+
+	chunks := splitContent(content, 4000)
+
+	require.Len(t, chunks, 2)
+	assert.Equal(t, 4000, len([]rune(chunks[0])))
+	assert.Equal(t, 1000, len([]rune(chunks[1])))
+	assert.Equal(t, content, chunks[0]+chunks[1])
+}

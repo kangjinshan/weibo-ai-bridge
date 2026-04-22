@@ -297,15 +297,23 @@ func (s *ReplyStream) SendChunk(ctx context.Context, content string, done bool) 
 		return fmt.Errorf("non-final chunk content cannot be empty")
 	}
 
-	chunkID := s.nextChunk
-	s.nextChunk++
-
-	if err := s.platform.sendChunk(ctx, s.userID, s.messageID, chunkID, content, done); err != nil {
-		return err
+	chunks := splitContent(content, maxWeiboChunk)
+	if len(chunks) == 0 {
+		chunks = []string{""}
 	}
 
-	if done {
-		s.closed = true
+	for idx, chunk := range chunks {
+		chunkDone := done && idx == len(chunks)-1
+		chunkID := s.nextChunk
+		s.nextChunk++
+
+		if err := s.platform.sendChunk(ctx, s.userID, s.messageID, chunkID, chunk, chunkDone); err != nil {
+			return err
+		}
+
+		if chunkDone {
+			s.closed = true
+		}
 	}
 
 	return nil
@@ -533,28 +541,29 @@ func (p *Platform) reconnect(ctx context.Context) error {
 
 // splitContent 分割内容
 func splitContent(content string, maxLen int) []string {
-	if len(content) <= maxLen {
+	runes := []rune(content)
+	if len(runes) <= maxLen {
 		return []string{content}
 	}
 
 	var chunks []string
-	for len(content) > 0 {
-		if len(content) <= maxLen {
-			chunks = append(chunks, content)
+	for len(runes) > 0 {
+		if len(runes) <= maxLen {
+			chunks = append(chunks, string(runes))
 			break
 		}
 
 		// 尝试在合适的点分割（如换行符）
 		split := maxLen
 		for i := maxLen - 1; i > maxLen-100 && i >= 0; i-- {
-			if content[i] == '\n' {
+			if runes[i] == '\n' {
 				split = i + 1
 				break
 			}
 		}
 
-		chunks = append(chunks, content[:split])
-		content = content[split:]
+		chunks = append(chunks, string(runes[:split]))
+		runes = runes[split:]
 	}
 
 	return chunks

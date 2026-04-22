@@ -501,10 +501,10 @@ func TestSendReply(t *testing.T) {
 			expectChunks: 1,
 		},
 		{
-			name:         "发送长消息（需要分块）",
+			name:         "发送长消息（按字符限制分块）",
 			content:      strings.Repeat("这是一条测试消息。\n", 100), // 约 900 字符，超过 1000 需要分块
 			expectError:  false,
-			expectChunks: 3,
+			expectChunks: 1,
 		},
 		{
 			name:         "平台未设置",
@@ -573,6 +573,12 @@ func TestSplitMessage(t *testing.T) {
 			maxSize:      100,
 			expectChunks: 3,
 		},
+		{
+			name:         "中文按字符分割不乱码",
+			content:      strings.Repeat("你好", 120),
+			maxSize:      100,
+			expectChunks: 3,
+		},
 	}
 
 	for _, tt := range tests {
@@ -584,8 +590,8 @@ func TestSplitMessage(t *testing.T) {
 
 			// 验证每个块都不超过最大长度
 			for i, chunk := range chunks {
-				if len(chunk) > tt.maxSize {
-					t.Errorf("chunk %d exceeds max size: %d > %d", i, len(chunk), tt.maxSize)
+				if len([]rune(chunk)) > tt.maxSize {
+					t.Errorf("chunk %d exceeds max size: %d > %d", i, len([]rune(chunk)), tt.maxSize)
 				}
 			}
 
@@ -596,15 +602,55 @@ func TestSplitMessage(t *testing.T) {
 	}
 }
 
-func TestForwardStreamToPlatform_UsesSingleMessageIDForPartialSnapshots(t *testing.T) {
+func TestForwardStreamToPlatform_DoesNotArtificiallySplitDelta(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	delta := strings.Repeat("你", 500)
+	stream := make(chan agent.Event, 2)
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: delta}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-delta", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.Equal(t, delta, platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
+}
+
+func TestForwardStreamToPlatform_DoesNotDropRepeatedDelta(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 3)
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "哈"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "哈"}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-repeat", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 3)
+	assert.Equal(t, "哈", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, "哈", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, "", platform.streams[0].chunks[2]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[2]["done"])
+}
+
+func TestForwardStreamToPlatform_UsesSingleMessageIDForDeltas(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)
 
 	stream := make(chan agent.Event, 5)
 	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "a"}
-	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "ab"}
-	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "abc"}
-	stream <- agent.Event{Type: agent.EventTypeMessage, Content: "abc"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "b"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "c"}
 	stream <- agent.Event{Type: agent.EventTypeDone}
 	close(stream)
 

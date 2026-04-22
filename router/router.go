@@ -11,10 +11,6 @@ import (
 	"github.com/yourusername/weibo-ai-bridge/session"
 )
 
-const (
-	streamReplyChunkSize = 1000
-)
-
 // MessageType 消息类型
 type MessageType string
 
@@ -241,7 +237,7 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 	if err != nil {
 		return err
 	}
-	sender := newStreamReplySender(writer, r.splitMessage)
+	sender := newStreamReplySender(writer)
 
 	var streamErr error
 
@@ -259,7 +255,7 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 
 			switch event.Type {
 			case agent.EventTypeDelta:
-				if err := sender.PushPartialSnapshot(ctx, event.Content); err != nil {
+				if err := sender.PushDelta(ctx, event.Content); err != nil {
 					return err
 				}
 			case agent.EventTypeMessage:
@@ -316,7 +312,8 @@ func (r *Router) sendReply(ctx context.Context, userID string, content string) e
 
 // splitMessage 分割消息为多个块
 func (r *Router) splitMessage(content string, maxSize int) []string {
-	if len(content) <= maxSize {
+	runes := []rune(content)
+	if len(runes) <= maxSize {
 		return []string{content}
 	}
 
@@ -326,24 +323,25 @@ func (r *Router) splitMessage(content string, maxSize int) []string {
 	lines := strings.Split(content, "\n")
 
 	for _, line := range lines {
-		if len(line) > maxSize {
+		lineRunes := []rune(line)
+		if len(lineRunes) > maxSize {
 			if buffer.Len() > 0 {
 				chunks = append(chunks, buffer.String())
 				buffer.Reset()
 			}
 
-			for len(line) > maxSize {
-				chunks = append(chunks, line[:maxSize])
-				line = line[maxSize:]
+			for len(lineRunes) > maxSize {
+				chunks = append(chunks, string(lineRunes[:maxSize]))
+				lineRunes = lineRunes[maxSize:]
 			}
-			if len(line) > 0 {
-				buffer.WriteString(line)
+			if len(lineRunes) > 0 {
+				buffer.WriteString(string(lineRunes))
 				buffer.WriteString("\n")
 			}
 			continue
 		}
 
-		if buffer.Len()+len(line)+1 > maxSize {
+		if utf8RuneCount(buffer.String())+len(lineRunes)+1 > maxSize {
 			chunks = append(chunks, buffer.String())
 			buffer.Reset()
 		}
@@ -357,6 +355,10 @@ func (r *Router) splitMessage(content string, maxSize int) []string {
 	}
 
 	return chunks
+}
+
+func utf8RuneCount(value string) int {
+	return len([]rune(value))
 }
 
 // GetHandler 获取处理器
@@ -540,18 +542,28 @@ func removeSessionIDMarker(response string) string {
 
 type streamReplySender struct {
 	writer              streamReplyWriter
-	splitter            func(content string, maxSize int) []string
 	lastPartialSnapshot string
 	hasSeenPartial      bool
 	hasEmittedChunks    bool
 	hasEmittedDone      bool
 }
 
-func newStreamReplySender(writer streamReplyWriter, splitter func(content string, maxSize int) []string) *streamReplySender {
+func newStreamReplySender(writer streamReplyWriter) *streamReplySender {
 	return &streamReplySender{
-		writer:   writer,
-		splitter: splitter,
+		writer: writer,
 	}
+}
+
+func (s *streamReplySender) PushDelta(ctx context.Context, delta string) error {
+	if s.hasEmittedDone {
+		return nil
+	}
+	if delta == "" {
+		return nil
+	}
+
+	s.hasSeenPartial = true
+	return s.emitText(ctx, delta, false)
 }
 
 func (s *streamReplySender) PushPartialSnapshot(ctx context.Context, snapshot string) error {
@@ -618,24 +630,16 @@ func (s *streamReplySender) finalize(ctx context.Context) error {
 }
 
 func (s *streamReplySender) emitText(ctx context.Context, content string, markLastDone bool) error {
-	chunks := s.splitter(content, streamReplyChunkSize)
-	normalized := make([]string, 0, len(chunks))
-	for _, chunk := range chunks {
-		if chunk == "" {
-			continue
-		}
-		normalized = append(normalized, chunk)
+	if content == "" {
+		return nil
 	}
 
-	for idx, chunk := range normalized {
-		done := markLastDone && idx == len(normalized)-1
-		if err := s.writer.SendChunk(ctx, chunk, done); err != nil {
-			return err
-		}
-		s.hasEmittedChunks = true
-		if done {
-			s.hasEmittedDone = true
-		}
+	if err := s.writer.SendChunk(ctx, content, markLastDone); err != nil {
+		return err
+	}
+	s.hasEmittedChunks = true
+	if markLastDone {
+		s.hasEmittedDone = true
 	}
 
 	return nil

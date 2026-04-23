@@ -963,7 +963,7 @@ func (s *streamReplySender) PushDeliverText(ctx context.Context, text string, is
 		return nil
 	}
 
-	if err := s.emitText(ctx, text, true); err != nil {
+	if err := s.emitText(ctx, text, false); err != nil {
 		return err
 	}
 	return s.finalize(ctx)

@@ -413,6 +413,24 @@ func TestMessageProcessor_SendsImmediateAckForFastRequests(t *testing.T) {
 	}, 200*time.Millisecond, 10*time.Millisecond)
 }
 
+func TestMessageProcessor_DoesNotSendAckForSlashCommands(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	router := &processorTestRouter{
+		delay: 20 * time.Millisecond,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+
+	processor.dispatch(context.Background(), &weibo.Message{
+		ID:      "msg-help",
+		UserID:  "user-help",
+		Content: "/help",
+	})
+
+	time.Sleep(100 * time.Millisecond)
+	assert.Empty(t, platform.Replies())
+}
+
 func TestMessageProcessor_AllowsDifferentUsersInParallel(t *testing.T) {
 	platform := newProcessorTestPlatform()
 	router := &processorTestRouter{

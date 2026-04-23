@@ -340,6 +340,8 @@ func (p *Platform) sendChunk(ctx context.Context, userID, messageID string, chun
 		return fmt.Errorf("connection not established")
 	}
 
+	p.logger.Printf("📤 Sending chunk: to=%s message_id=%s chunk_id=%d done=%t text=%q", userID, messageID, chunkID, done, summarizeChunk(content))
+
 	if err := websocket.Message.Send(p.conn, string(data)); err != nil {
 		return err
 	}
@@ -374,6 +376,17 @@ func buildSendMessageFrame(userID, content, messageID string, chunkID int, done 
 	}
 
 	return json.Marshal(msg)
+}
+
+func summarizeChunk(content string) string {
+	const maxRunes = 120
+
+	runes := []rune(content)
+	if len(runes) <= maxRunes {
+		return content
+	}
+
+	return string(runes[:maxRunes]) + "..."
 }
 
 // generateMessageID 生成消息 ID

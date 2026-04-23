@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yourusername/weibo-ai-bridge/agent"
 	"github.com/yourusername/weibo-ai-bridge/config"
@@ -278,7 +279,7 @@ func (p *messageProcessor) handle(ctx context.Context, msg *weibo.Message) {
 
 	p.logger.Printf("Processing message: id=%s, type=%s, user=%s", msg.ID, msg.Type, msg.UserID)
 
-	if p.platform != nil {
+	if p.platform != nil && shouldSendProcessingAck(msg) {
 		if err := p.platform.Reply(ctx, msg.UserID, processingAckMessage); err != nil {
 			p.logger.Printf("Failed to send processing ack: id=%s, user=%s, error=%v", msg.ID, msg.UserID, err)
 		}
@@ -313,6 +314,20 @@ func (p *messageProcessor) sendBusyNotice(ctx context.Context, userID, messageID
 			p.logger.Printf("Failed to send busy notice: id=%s, user=%s, error=%v", messageID, userID, err)
 		}
 	}()
+}
+
+func shouldSendProcessingAck(msg *weibo.Message) bool {
+	if msg == nil {
+		return false
+	}
+
+	content := strings.TrimSpace(msg.Content)
+	if content == "" {
+		return true
+	}
+
+	first, _ := utf8.DecodeRuneInString(content)
+	return first != '/'
 }
 
 // healthHandler 健康检查处理器

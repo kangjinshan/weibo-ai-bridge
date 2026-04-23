@@ -295,8 +295,10 @@ func TestHandleMessage_RepliesToUserID(t *testing.T) {
 	err := router.HandleMessage(context.Background(), msg)
 
 	assert.NoError(t, err)
-	assert.Len(t, platform.replies, 1)
+	assert.Len(t, platform.replies, 2)
 	assert.Equal(t, "user-456", platform.replies[0]["message_id"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
 func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
@@ -340,8 +342,43 @@ func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
 		Timestamp: 1234567891,
 	})
 	assert.NoError(t, err)
-	assert.Len(t, platform.replies, 2)
-	assert.Equal(t, "Codex response", platform.replies[1]["content"])
+	assert.Len(t, platform.replies, 4)
+	assert.Equal(t, "Codex response", platform.replies[2]["content"])
+	assert.Equal(t, "", platform.replies[3]["content"])
+	assert.Equal(t, true, platform.replies[3]["done"])
+}
+
+func TestHandleMessage_CommandReplyEndsWithDoneChunk(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{
+		name:      "codex",
+		response:  "Codex response",
+		available: true,
+	})
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-command",
+		Type:      weibo.MessageTypeText,
+		Content:   "/new codex",
+		UserID:    "user-command",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.NotEmpty(t, platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
 func TestHandleMessage_AutoCreatesSessionOnFirstUserMessage(t *testing.T) {
@@ -374,8 +411,10 @@ func TestHandleMessage_AutoCreatesSessionOnFirstUserMessage(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "user-auto-1", activeSession.ID)
 	assert.Equal(t, "第一条消息直接开始", activeSession.Title)
-	assert.Len(t, platform.replies, 1)
+	assert.Len(t, platform.replies, 2)
 	assert.Equal(t, "Codex response", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
 func TestHandleAIMessage(t *testing.T) {
@@ -840,7 +879,7 @@ func TestForwardStreamToPlatform_UsesSingleMessageIDForBufferedDeltas(t *testing
 	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
-func TestForwardStreamToPlatform_SendsFinalMessageAsSingleDoneChunk(t *testing.T) {
+func TestForwardStreamToPlatform_SendsFinalMessageThenDoneChunk(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)
 
@@ -853,9 +892,11 @@ func TestForwardStreamToPlatform_SendsFinalMessageAsSingleDoneChunk(t *testing.T
 
 	assert.NoError(t, err)
 	assert.Len(t, platform.streams, 1)
-	assert.Len(t, platform.streams[0].chunks, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
 	assert.Equal(t, "final answer", platform.streams[0].chunks[0]["content"])
-	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
 func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {
@@ -872,9 +913,11 @@ func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Len(t, platform.streams, 1)
-	assert.Len(t, platform.streams[0].chunks, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
 	assert.Equal(t, "first final", platform.streams[0].chunks[0]["content"])
-	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
 func TestHandleMessage_ApprovalPromptFromInteractiveAgent(t *testing.T) {
@@ -967,10 +1010,12 @@ func TestHandleMessage_AllowAllContinuesPendingInteractiveSession(t *testing.T) 
 
 	assert.NoError(t, err)
 	assert.Equal(t, []agent.ApprovalAction{agent.ApprovalActionAllowAll}, liveSession.actions)
-	assert.Len(t, platform.replies, 4)
+	assert.Len(t, platform.replies, 5)
 	assert.Equal(t, "", platform.replies[1]["content"])
 	assert.Contains(t, platform.replies[2]["content"], "授权成功，这对话内将不再需要再次授权。")
 	assert.Equal(t, "继续执行完成", platform.replies[3]["content"])
+	assert.Equal(t, "", platform.replies[4]["content"])
+	assert.Equal(t, true, platform.replies[4]["done"])
 }
 
 func TestHandleMessage_ByTheWayInjectsIntoExistingInteractiveSession(t *testing.T) {
@@ -1015,8 +1060,10 @@ func TestHandleMessage_ByTheWayInjectsIntoExistingInteractiveSession(t *testing.
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"先做第一步", "顺便检查一下日志"}, liveSession.sentInputs)
-	assert.Len(t, platform.replies, 2)
-	assert.Equal(t, "收到补充: 顺便检查一下日志", platform.replies[1]["content"])
+	assert.Len(t, platform.replies, 4)
+	assert.Equal(t, "收到补充: 顺便检查一下日志", platform.replies[2]["content"])
+	assert.Equal(t, "", platform.replies[3]["content"])
+	assert.Equal(t, true, platform.replies[3]["done"])
 }
 
 func TestHandleMessage_ByTheWayRequiresExistingInteractiveSession(t *testing.T) {
@@ -1038,8 +1085,10 @@ func TestHandleMessage_ByTheWayRequiresExistingInteractiveSession(t *testing.T) 
 	})
 
 	assert.NoError(t, err)
-	assert.Len(t, platform.replies, 1)
+	assert.Len(t, platform.replies, 2)
 	assert.Equal(t, "No active session found. Use /new to create or activate a session first.", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
 func TestParseApprovalAction_SupportsMentionSuffix(t *testing.T) {

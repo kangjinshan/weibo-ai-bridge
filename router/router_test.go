@@ -115,6 +115,81 @@ func (m *MockAgent) IsAvailable() bool {
 	return m.available
 }
 
+type MockInteractiveAgent struct {
+	name      string
+	available bool
+	session   *MockInteractiveSession
+}
+
+func (m *MockInteractiveAgent) Name() string {
+	return m.name
+}
+
+func (m *MockInteractiveAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
+	return "", nil
+}
+
+func (m *MockInteractiveAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+	stream := make(chan agent.Event)
+	close(stream)
+	return stream, nil
+}
+
+func (m *MockInteractiveAgent) IsAvailable() bool {
+	return m.available
+}
+
+func (m *MockInteractiveAgent) StartSession(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+	if m.session == nil {
+		m.session = NewMockInteractiveSession()
+	}
+	return m.session, nil
+}
+
+type MockInteractiveSession struct {
+	events    chan agent.Event
+	sendFn    func(input string)
+	approveFn func(action agent.ApprovalAction)
+
+	sentInputs []string
+	actions    []agent.ApprovalAction
+	sessionID  string
+}
+
+func NewMockInteractiveSession() *MockInteractiveSession {
+	return &MockInteractiveSession{
+		events: make(chan agent.Event, 32),
+	}
+}
+
+func (m *MockInteractiveSession) Send(input string) error {
+	m.sentInputs = append(m.sentInputs, input)
+	if m.sendFn != nil {
+		m.sendFn(input)
+	}
+	return nil
+}
+
+func (m *MockInteractiveSession) RespondApproval(action agent.ApprovalAction) error {
+	m.actions = append(m.actions, action)
+	if m.approveFn != nil {
+		m.approveFn(action)
+	}
+	return nil
+}
+
+func (m *MockInteractiveSession) Events() <-chan agent.Event {
+	return m.events
+}
+
+func (m *MockInteractiveSession) CurrentSessionID() string {
+	return m.sessionID
+}
+
+func (m *MockInteractiveSession) Close() error {
+	return nil
+}
+
 func TestNewRouterWithDependencies(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{
@@ -723,4 +798,111 @@ func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {
 	assert.Len(t, platform.streams[0].chunks, 1)
 	assert.Equal(t, "first final", platform.streams[0].chunks[0]["content"])
 	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
+}
+
+func TestHandleMessage_ApprovalPromptFromInteractiveAgent(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		liveSession.events <- agent.Event{
+			Type:      agent.EventTypeApproval,
+			ToolName:  "command_execution",
+			ToolInput: "rm -rf ./tmp",
+		}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-approval",
+		Type:      weibo.MessageTypeText,
+		Content:   "请清理临时目录",
+		UserID:    "user-approval",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 1)
+	assert.Contains(t, platform.replies[0]["content"], "请回复：允许 / 取消 / 允许所有")
+	assert.Contains(t, platform.replies[0]["content"], "rm -rf ./tmp")
+}
+
+func TestHandleMessage_AllowAllContinuesPendingInteractiveSession(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		liveSession.events <- agent.Event{
+			Type:      agent.EventTypeApproval,
+			ToolName:  "command_execution",
+			ToolInput: "git push origin main",
+		}
+	}
+	liveSession.approveFn = func(action agent.ApprovalAction) {
+		liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "继续执行完成"}
+		liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-start",
+		Type:      weibo.MessageTypeText,
+		Content:   "帮我推送代码",
+		UserID:    "user-allow-all",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-allow-all",
+		Type:      weibo.MessageTypeText,
+		Content:   "允许所有 @bridge",
+		UserID:    "user-allow-all",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []agent.ApprovalAction{agent.ApprovalActionAllowAll}, liveSession.actions)
+	assert.Len(t, platform.replies, 3)
+	assert.Contains(t, platform.replies[1]["content"], "授权成功，这对话内将不再需要再次授权。")
+	assert.Equal(t, "继续执行完成", platform.replies[2]["content"])
+}
+
+func TestParseApprovalAction_SupportsMentionSuffix(t *testing.T) {
+	action, ok := parseApprovalAction("允许 @bridge")
+	assert.True(t, ok)
+	assert.Equal(t, agent.ApprovalActionAllow, action)
+
+	action, ok = parseApprovalAction("@bridge 允许所有")
+	assert.True(t, ok)
+	assert.Equal(t, agent.ApprovalActionAllowAll, action)
+
+	action, ok = parseApprovalAction("取消 @bridge")
+	assert.True(t, ok)
+	assert.Equal(t, agent.ApprovalActionCancel, action)
 }

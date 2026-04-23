@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/yourusername/weibo-ai-bridge/agent"
@@ -52,7 +54,18 @@ type Router struct {
 	sessionMgr     *session.Manager
 	agentMgr       *agent.Manager
 	commandHandler *CommandHandler
+	liveMu         sync.Mutex
+	liveSessions   map[string]*interactiveSessionState
 }
+
+type interactiveSessionState struct {
+	agentType        string
+	session          agent.InteractiveSession
+	awaitingApproval bool
+	allowAll         bool
+}
+
+var approvalMentionPattern = regexp.MustCompile(`@\S+`)
 
 // PlatformInterface 平台接口
 type PlatformInterface interface {
@@ -70,10 +83,11 @@ type streamingPlatformInterface interface {
 // NewRouter 创建路由器
 func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr *agent.Manager) *Router {
 	router := &Router{
-		handlers:   make(map[MessageType]Handler),
-		platform:   platform,
-		sessionMgr: sessionMgr,
-		agentMgr:   agentMgr,
+		handlers:     make(map[MessageType]Handler),
+		platform:     platform,
+		sessionMgr:   sessionMgr,
+		agentMgr:     agentMgr,
+		liveSessions: make(map[string]*interactiveSessionState),
 	}
 
 	if sessionMgr != nil && agentMgr != nil {
@@ -259,6 +273,15 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 				if err := sender.PushDelta(ctx, event.Content); err != nil {
 					return err
 				}
+			case agent.EventTypeApproval:
+				if err := sender.Settle(ctx); err != nil {
+					return err
+				}
+				if strings.TrimSpace(event.Content) != "" {
+					if err := r.sendReply(ctx, userID, event.Content); err != nil {
+						return err
+					}
+				}
 			case agent.EventTypeMessage:
 				if err := sender.PushDeliverText(ctx, event.Content, true); err != nil {
 					return err
@@ -439,6 +462,10 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 		return err
 	}
 
+	if interactiveAgent, ok := currentAgent.(agent.InteractiveAgent); ok {
+		return r.streamInteractiveAIMessage(ctx, msg, session, sessionKey, agentSessionID, interactiveAgent, events)
+	}
+
 	stream, err := currentAgent.ExecuteStream(ctx, agentSessionID, msg.Content)
 	if err != nil {
 		return err
@@ -461,6 +488,149 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 	}
 
 	return nil
+}
+
+func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, sess *session.Session, sessionKey, agentSessionID string, interactiveAgent agent.InteractiveAgent, events chan<- agent.Event) error {
+	liveState, err := r.getOrCreateInteractiveSession(ctx, sess, sessionKey, agentSessionID, interactiveAgent)
+	if err != nil {
+		return err
+	}
+
+	if liveState.awaitingApproval {
+		action, ok := parseApprovalAction(msg.Content)
+		if !ok {
+			events <- agent.Event{
+				Type:    agent.EventTypeApproval,
+				Content: approvalHintMessage(),
+			}
+			return nil
+		}
+
+		if action == agent.ApprovalActionAllowAll {
+			liveState.allowAll = true
+		}
+		liveState.awaitingApproval = false
+
+		if err := liveState.session.RespondApproval(action); err != nil {
+			if action == agent.ApprovalActionAllowAll {
+				liveState.allowAll = false
+			}
+			return err
+		}
+
+		if action == agent.ApprovalActionAllowAll {
+			events <- agent.Event{
+				Type:    agent.EventTypeApproval,
+				Content: "授权成功，这对话内将不再需要再次授权。",
+			}
+		}
+
+		return r.drainInteractiveSession(ctx, sess, sessionKey, liveState, events)
+	}
+
+	if err := liveState.session.Send(msg.Content); err != nil {
+		r.removeInteractiveSession(sess.ID)
+		return err
+	}
+
+	return r.drainInteractiveSession(ctx, sess, sessionKey, liveState, events)
+}
+
+func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, interactiveAgent agent.InteractiveAgent) (*interactiveSessionState, error) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+
+	if existing, ok := r.liveSessions[sess.ID]; ok {
+		if existing.agentType == sess.AgentType {
+			return existing, nil
+		}
+		_ = existing.session.Close()
+		delete(r.liveSessions, sess.ID)
+	}
+
+	liveSession, err := interactiveAgent.StartSession(ctx, agentSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	state := &interactiveSessionState{
+		agentType: sess.AgentType,
+		session:   liveSession,
+	}
+	r.liveSessions[sess.ID] = state
+
+	if sessionKey != "" {
+		if sid := strings.TrimSpace(liveSession.CurrentSessionID()); sid != "" {
+			if sess.Context == nil {
+				sess.Context = make(map[string]interface{})
+			}
+			sess.Context[sessionKey] = sid
+			r.sessionMgr.UpdateSession(sess.ID, sessionKey, sid)
+		}
+	}
+
+	return state, nil
+}
+
+func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Session, sessionKey string, liveState *interactiveSessionState, events chan<- agent.Event) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event, ok := <-liveState.session.Events():
+			if !ok {
+				r.removeInteractiveSession(sess.ID)
+				return errors.New("agent session closed unexpectedly")
+			}
+
+			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
+				if sess.Context == nil {
+					sess.Context = make(map[string]interface{})
+				}
+				sess.Context[sessionKey] = event.SessionID
+				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+			}
+
+			switch event.Type {
+			case agent.EventTypeApproval:
+				if liveState.allowAll {
+					if err := liveState.session.RespondApproval(agent.ApprovalActionAllow); err != nil {
+						r.removeInteractiveSession(sess.ID)
+						return err
+					}
+					continue
+				}
+
+				liveState.awaitingApproval = true
+				events <- agent.Event{
+					Type:    agent.EventTypeApproval,
+					Content: formatApprovalPrompt(event.ToolName, event.ToolInput),
+				}
+				return nil
+			case agent.EventTypeDone:
+				return nil
+			case agent.EventTypeError:
+				events <- event
+				r.removeInteractiveSession(sess.ID)
+				return nil
+			default:
+				events <- event
+			}
+		}
+	}
+}
+
+func (r *Router) removeInteractiveSession(sessionID string) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+
+	state, ok := r.liveSessions[sessionID]
+	if !ok {
+		return
+	}
+
+	_ = state.session.Close()
+	delete(r.liveSessions, sessionID)
 }
 
 func (r *Router) resolveAgentExecution(msg *Message) (*session.Session, string, string, agent.Agent, error) {
@@ -519,6 +689,61 @@ func agentSessionContextKey(agentType string) string {
 	default:
 		return ""
 	}
+}
+
+func formatApprovalPrompt(toolName, toolInput string) string {
+	toolName = strings.TrimSpace(toolName)
+	toolInput = strings.TrimSpace(toolInput)
+
+	if toolName == "" && toolInput == "" {
+		return approvalHintMessage()
+	}
+
+	if toolInput == "" {
+		return fmt.Sprintf("⚠️ 需要授权\n\nAgent 想执行：`%s`\n\n请回复：允许 / 取消 / 允许所有\n允许所有表示本对话内后续授权将自动通过。", toolName)
+	}
+
+	return fmt.Sprintf("⚠️ 需要授权\n\nAgent 想执行：`%s`\n\n```text\n%s\n```\n\n请回复：允许 / 取消 / 允许所有\n允许所有表示本对话内后续授权将自动通过。", toolName, toolInput)
+}
+
+func approvalHintMessage() string {
+	return "当前正在等待授权，请回复：取消 / 允许 / 允许所有。"
+}
+
+func parseApprovalAction(content string) (agent.ApprovalAction, bool) {
+	normalized := normalizeApprovalResponse(content)
+
+	for _, word := range []string{
+		"allow all", "allowall", "approve all", "yes all",
+		"允许所有", "允许全部", "全部允许", "所有允许", "都允许", "全部同意",
+	} {
+		if normalized == word {
+			return agent.ApprovalActionAllowAll, true
+		}
+	}
+
+	for _, word := range []string{"allow", "yes", "y", "ok", "允许", "同意", "可以", "好", "好的", "是", "确认", "approve"} {
+		if normalized == word {
+			return agent.ApprovalActionAllow, true
+		}
+	}
+
+	for _, word := range []string{"deny", "no", "n", "reject", "拒绝", "不允许", "不行", "不", "否", "取消", "cancel"} {
+		if normalized == word {
+			return agent.ApprovalActionCancel, true
+		}
+	}
+
+	return "", false
+}
+
+func normalizeApprovalResponse(content string) string {
+	content = strings.ReplaceAll(content, "\u3000", " ")
+	content = strings.TrimSpace(strings.ToLower(content))
+	content = approvalMentionPattern.ReplaceAllString(content, " ")
+	content = strings.Join(strings.Fields(content), " ")
+	content = strings.Trim(content, " \t\r\n,.!?;:，。！？；：")
+	return content
 }
 
 // extractSessionID 从响应中提取 session ID

@@ -173,21 +173,7 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 		return err
 	}
 
-	return r.forwardStreamToPlatformWithPrefix(ctx, msg.UserID, stream, "")
-}
-
-// HandleMessageWithPrefix 处理消息，并将 prefix 作为同一条回复的前缀发出。
-func (r *Router) HandleMessageWithPrefix(ctx context.Context, msg *weibo.Message, prefix string) error {
-	if msg == nil {
-		return errors.New("message cannot be nil")
-	}
-
-	stream, err := r.StreamMessage(ctx, msg)
-	if err != nil {
-		return err
-	}
-
-	return r.forwardStreamToPlatformWithPrefix(ctx, msg.UserID, stream, prefix)
+	return r.forwardStreamToPlatform(ctx, msg.UserID, stream)
 }
 
 func (r *Router) toRouterMessage(msg *weibo.Message) *Message {
@@ -388,10 +374,6 @@ func (r *Router) getInteractiveSession(sessionID string) (*interactiveSessionSta
 }
 
 func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, stream <-chan agent.Event) error {
-	return r.forwardStreamToPlatformWithPrefix(ctx, userID, stream, "")
-}
-
-func (r *Router) forwardStreamToPlatformWithPrefix(ctx context.Context, userID string, stream <-chan agent.Event, prefix string) error {
 	if r.platform == nil {
 		return errors.New("platform is not set")
 	}
@@ -401,9 +383,6 @@ func (r *Router) forwardStreamToPlatformWithPrefix(ctx context.Context, userID s
 		return err
 	}
 	sender := newStreamReplySender(writer)
-	if err := sender.Prime(ctx, prefix); err != nil {
-		return err
-	}
 
 	var streamErr error
 
@@ -920,29 +899,12 @@ type streamReplySender struct {
 	hasSeenPartial      bool
 	hasEmittedChunks    bool
 	hasEmittedDone      bool
-	needsLeadingNewline bool
 }
 
 func newStreamReplySender(writer streamReplyWriter) *streamReplySender {
 	return &streamReplySender{
 		writer: writer,
 	}
-}
-
-func (s *streamReplySender) Prime(ctx context.Context, prefix string) error {
-	if s.hasEmittedDone {
-		return nil
-	}
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" {
-		return nil
-	}
-
-	if err := s.emitText(ctx, prefix, false); err != nil {
-		return err
-	}
-	s.needsLeadingNewline = true
-	return nil
 }
 
 func (s *streamReplySender) PushDelta(ctx context.Context, delta string) error {
@@ -1046,10 +1008,6 @@ func (s *streamReplySender) finalize(ctx context.Context) error {
 func (s *streamReplySender) emitText(ctx context.Context, content string, markLastDone bool) error {
 	if content == "" {
 		return nil
-	}
-	if s.needsLeadingNewline {
-		content = "\n" + content
-		s.needsLeadingNewline = false
 	}
 
 	if err := s.writer.SendChunk(ctx, content, markLastDone); err != nil {

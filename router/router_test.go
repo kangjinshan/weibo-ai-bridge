@@ -858,26 +858,6 @@ func TestForwardStreamToPlatform_SendsFinalMessageAsSingleDoneChunk(t *testing.T
 	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
 }
 
-func TestForwardStreamToPlatformWithPrefix_CombinesAckAndFinalMessage(t *testing.T) {
-	platform := &MockPlatform{}
-	router := NewRouter(platform, nil, nil)
-
-	stream := make(chan agent.Event, 2)
-	stream <- agent.Event{Type: agent.EventTypeMessage, Content: "真实回复"}
-	stream <- agent.Event{Type: agent.EventTypeDone}
-	close(stream)
-
-	err := router.forwardStreamToPlatformWithPrefix(context.Background(), "user-prefix", stream, "已收到消息，正在处理中，请稍候。")
-
-	assert.NoError(t, err)
-	assert.Len(t, platform.streams, 1)
-	assert.Len(t, platform.streams[0].chunks, 2)
-	assert.Equal(t, "已收到消息，正在处理中，请稍候。", platform.streams[0].chunks[0]["content"])
-	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
-	assert.Equal(t, "\n真实回复", platform.streams[0].chunks[1]["content"])
-	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
-}
-
 func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)

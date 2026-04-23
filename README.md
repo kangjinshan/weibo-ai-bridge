@@ -173,7 +173,7 @@ journalctl -u weibo-ai-bridge.service -f
 
 - 如果你使用仓库自带的 Linux x86_64 预编译二进制，`ExecStart` 可以直接指向仓库根目录的 `./server`。
 - 如果你依赖用户级安装的 CLI（例如 `claude` 在 `~/.local/bin`），请确保 service 文件里的 `PATH` 包含该目录。
-- service 模板默认会读取仓库根目录的 `.env`：`EnvironmentFile=-/home/azureuser/weibo-ai-bridge/.env`
+- service 模板默认从 `CONFIG_PATH` 读取 TOML 配置，并额外读取仓库根目录的 `.env`：`EnvironmentFile=-/home/azureuser/weibo-ai-bridge/.env`
 - 如果 `codex` CLI 依赖 Azure/OpenAI/Anthropic 等环境变量，必须把这些变量写进 `.env`，不能只存在于你当前 shell。
 - `Restart=always` 和 `RestartSec=5` 会让服务异常退出后自动重启。
 
@@ -273,7 +273,7 @@ POST 请求体示例：
 ```bash
 # 微博平台配置
 export WEIBO_APP_ID="your-app-id"
-export WEIBO_APP_Secret="your-app-secret"
+export WEIBO_APP_SECRET="your-app-secret"
 export WEIBO_TOKEN_URL="http://open-im.api.weibo.com/open/auth/ws_token"
 export WEIBO_WS_URL="ws://open-im.api.weibo.com/ws/stream"
 export SERVER_PORT="5533"
@@ -302,7 +302,7 @@ export SESSION_MAX_SIZE="1000"
 
 ### TOML 配置文件
 
-创建 `config.toml` 文件：
+创建 `config.toml` 文件。默认路径是 `config/config.toml`，也可以通过 `CONFIG_PATH=/path/to/config.toml` 指定仓库外配置文件：
 
 ```toml
 [platform.weibo]

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -70,7 +71,7 @@ func Load() *Config {
 	cfg := defaultConfig()
 
 	// 从配置文件加载
-	if _, err := toml.DecodeFile("config/config.toml", cfg); err == nil {
+	if _, err := toml.DecodeFile(resolveConfigPath(), cfg); err == nil {
 		// 配置文件加载成功，继续使用
 	}
 
@@ -78,7 +79,7 @@ func Load() *Config {
 	if val := os.Getenv("WEIBO_APP_ID"); val != "" {
 		cfg.Platform.Weibo.AppID = val
 	}
-	if val := os.Getenv("WEIBO_APP_Secret"); val != "" {
+	if val := firstEnv("WEIBO_APP_SECRET", "WEIBO_APP_Secret"); val != "" {
 		cfg.Platform.Weibo.AppSecret = val
 	}
 	if val := os.Getenv("WEIBO_TOKEN_URL"); val != "" {
@@ -120,6 +121,24 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+func resolveConfigPath() string {
+	if val := strings.TrimSpace(os.Getenv("CONFIG_PATH")); val != "" {
+		return val
+	}
+
+	return filepath.Join("config", "config.toml")
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if val := os.Getenv(key); val != "" {
+			return val
+		}
+	}
+
+	return ""
 }
 
 // LoadFromFile 从文件加载配置

@@ -10,6 +10,7 @@ ExecStart=/home/azureuser/weibo-ai-bridge/server
 Restart=always
 RestartSec=5
 Environment=PATH=/home/azureuser/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CONFIG_PATH=/home/azureuser/weibo-ai-bridge/config/config.toml
 EnvironmentFile=-/home/azureuser/weibo-ai-bridge/.env
 
 [Install]

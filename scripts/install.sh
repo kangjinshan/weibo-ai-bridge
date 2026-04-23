@@ -21,6 +21,7 @@ INSTALL_DIR="/opt/${PROJECT_NAME}"
 CONFIG_DIR="/etc/${PROJECT_NAME}"
 BINARY_NAME="weibo-ai-bridge"
 SERVICE_NAME="${PROJECT_NAME}.service"
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
 
 # 日志函数
 log_info() {
@@ -147,15 +148,21 @@ install_binary() {
 install_config() {
     log_info "安装配置文件..."
 
-    if [[ -f "${PROJECT_DIR}/.env.example" ]]; then
-        cp "${PROJECT_DIR}/.env.example" "${CONFIG_DIR}/.env"
-        log_success "配置文件已安装: ${CONFIG_DIR}/.env"
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        log_warning "检测到已有配置文件，保留现有配置: ${CONFIG_FILE}"
+        return
     fi
 
-    # 设置权限
-    chmod 600 "${CONFIG_DIR}/.env"
+    if [[ -f "${PROJECT_DIR}/config/config.example.toml" ]]; then
+        cp "${PROJECT_DIR}/config/config.example.toml" "${CONFIG_FILE}"
+        chmod 600 "${CONFIG_FILE}"
+        log_success "配置文件已安装: ${CONFIG_FILE}"
+        log_warning "请编辑配置文件并填入真实 app_id / app_secret: ${CONFIG_FILE}"
+        return
+    fi
 
-    log_warning "请编辑配置文件: ${CONFIG_DIR}/.env"
+    log_error "未找到配置模板: ${PROJECT_DIR}/config/config.example.toml"
+    exit 1
 }
 
 # 创建 systemd 服务（可选）
@@ -180,7 +187,8 @@ StandardError=journal
 SyslogIdentifier=${PROJECT_NAME}
 
 # 环境变量
-Environment="CONFIG_PATH=${CONFIG_DIR}/.env"
+Environment="CONFIG_PATH=${CONFIG_FILE}"
+EnvironmentFile=-${CONFIG_DIR}/.env
 
 [Install]
 WantedBy=multi-user.target
@@ -212,12 +220,12 @@ show_completion() {
     log_success "=========================================="
     echo ""
     log_info "安装位置: ${INSTALL_DIR}"
-    log_info "配置文件: ${CONFIG_DIR}/.env"
+    log_info "配置文件: ${CONFIG_FILE}"
     log_info "日志目录: /var/log/${PROJECT_NAME}"
     echo ""
     log_warning "下一步操作："
-    echo "  1. 编辑配置文件: vi ${CONFIG_DIR}/.env"
-    echo "  2. 运行配置向导: ${INSTALL_DIR}/setup.sh"
+    echo "  1. 编辑配置文件: vi ${CONFIG_FILE}"
+    echo "  2. 如需环境变量补充配置，可编辑: ${CONFIG_DIR}/.env"
     echo "  3. 启动服务: systemctl start ${PROJECT_NAME}"
     echo "  4. 查看状态: systemctl status ${PROJECT_NAME}"
     echo ""

@@ -1,45 +1,23 @@
 package agent
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestWrapUserPrompt_AddsLongFormConstraintForChineseLengthRequests(t *testing.T) {
-	input := "再试一下输出1000字的文章"
+func TestWrapUserPrompt_PreservesInputVerbatim(t *testing.T) {
+	input := "排查一下为什么服务没起来，并直接修复"
 
 	got := wrapUserPrompt(input)
 
-	if !strings.Contains(got, "正文不少于1000字") {
-		t.Fatalf("expected long-form constraint, got %q", got)
-	}
-	if !strings.Contains(got, "用户消息：\n\n再试一下输出1000字的文章") {
-		t.Fatalf("expected original user input to be preserved, got %q", got)
+	if got != input {
+		t.Fatalf("expected input to pass through unchanged, got %q", got)
 	}
 }
 
-func TestWrapUserPrompt_KeepsGenericMessagesDirect(t *testing.T) {
-	input := "今天天气怎么样"
+func TestWrapUserPrompt_PreservesWhitespaceAndFormatting(t *testing.T) {
+	input := "第一行\n\n- 第二行\n"
 
 	got := wrapUserPrompt(input)
 
-	if strings.Contains(got, "正文不少于") {
-		t.Fatalf("did not expect long-form constraint, got %q", got)
-	}
-	if !strings.Contains(got, "用户消息：\n\n今天天气怎么样") {
-		t.Fatalf("expected original user input to be preserved, got %q", got)
-	}
-}
-
-func TestWrapUserPrompt_EncouragesMarkdownAndParagraphs(t *testing.T) {
-	input := "请介绍一下软件工程实践"
-
-	got := wrapUserPrompt(input)
-
-	if !strings.Contains(got, "优先使用简洁 Markdown 列表或小标题") {
-		t.Fatalf("expected markdown guidance, got %q", got)
-	}
-	if !strings.Contains(got, "段落之间保留空行") {
-		t.Fatalf("expected paragraph guidance, got %q", got)
+	if got != input {
+		t.Fatalf("expected formatting to be preserved, got %q", got)
 	}
 }

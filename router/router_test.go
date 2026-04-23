@@ -344,6 +344,40 @@ func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
 	assert.Equal(t, "Codex response", platform.replies[1]["content"])
 }
 
+func TestHandleMessage_AutoCreatesSessionOnFirstUserMessage(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{
+		name:      "codex",
+		response:  "Codex response",
+		available: true,
+	})
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-auto-new",
+		Type:      weibo.MessageTypeText,
+		Content:   "第一条消息直接开始",
+		UserID:    "user-auto",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+	assert.NoError(t, err)
+
+	activeSession, ok := sessionMgr.GetActiveSession("user-auto")
+	assert.True(t, ok)
+	assert.Equal(t, "user-auto-1", activeSession.ID)
+	assert.Equal(t, "第一条消息直接开始", activeSession.Title)
+	assert.Len(t, platform.replies, 1)
+	assert.Equal(t, "Codex response", platform.replies[0]["content"])
+}
+
 func TestHandleAIMessage(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -560,6 +594,49 @@ func TestHandleAIMessage_PersistsCodexSessionID(t *testing.T) {
 	sess, ok := sessionMgr.Get("session-1")
 	assert.True(t, ok)
 	assert.Equal(t, "codex-thread-1", sess.Context["codex_session_id"])
+}
+
+func TestHandleAIMessage_SetsSessionTitleFromFirstQuestionOnly(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	mockAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		response:  "Codex response",
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("codex")
+
+	sessionMgr.Create("session-1", "user-1", "codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	firstQuestion := strings.Repeat("你", 60)
+	_, err := router.handleAIMessage(context.Background(), &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   firstQuestion,
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+
+	_, err = router.handleAIMessage(context.Background(), &Message{
+		ID:        "msg-2",
+		Type:      TypeText,
+		Content:   "第二个问题不会覆盖标题",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+
+	sess, ok := sessionMgr.Get("session-1")
+	assert.True(t, ok)
+	assert.Len(t, []rune(sess.Title), 50)
+	assert.Equal(t, string([]rune(firstQuestion)[:50]), sess.Title)
 }
 
 func TestSendReply(t *testing.T) {
@@ -781,6 +858,26 @@ func TestForwardStreamToPlatform_SendsFinalMessageAsSingleDoneChunk(t *testing.T
 	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
 }
 
+func TestForwardStreamToPlatformWithPrefix_CombinesAckAndFinalMessage(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 2)
+	stream <- agent.Event{Type: agent.EventTypeMessage, Content: "真实回复"}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatformWithPrefix(context.Background(), "user-prefix", stream, "已收到消息，正在处理中，请稍候。")
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.Equal(t, "已收到消息，正在处理中，请稍候。", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, "\n真实回复", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
+}
+
 func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)
@@ -834,9 +931,11 @@ func TestHandleMessage_ApprovalPromptFromInteractiveAgent(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.Len(t, platform.replies, 1)
+	assert.Len(t, platform.replies, 2)
 	assert.Contains(t, platform.replies[0]["content"], "请回复：允许 / 取消 / 允许所有")
 	assert.Contains(t, platform.replies[0]["content"], "rm -rf ./tmp")
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
 func TestHandleMessage_AllowAllContinuesPendingInteractiveSession(t *testing.T) {
@@ -888,9 +987,79 @@ func TestHandleMessage_AllowAllContinuesPendingInteractiveSession(t *testing.T) 
 
 	assert.NoError(t, err)
 	assert.Equal(t, []agent.ApprovalAction{agent.ApprovalActionAllowAll}, liveSession.actions)
-	assert.Len(t, platform.replies, 3)
-	assert.Contains(t, platform.replies[1]["content"], "授权成功，这对话内将不再需要再次授权。")
-	assert.Equal(t, "继续执行完成", platform.replies[2]["content"])
+	assert.Len(t, platform.replies, 4)
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Contains(t, platform.replies[2]["content"], "授权成功，这对话内将不再需要再次授权。")
+	assert.Equal(t, "继续执行完成", platform.replies[3]["content"])
+}
+
+func TestHandleMessage_ByTheWayInjectsIntoExistingInteractiveSession(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "收到补充: " + input}
+		liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-start",
+		Type:      weibo.MessageTypeText,
+		Content:   "先做第一步",
+		UserID:    "user-btw",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-btw",
+		Type:      weibo.MessageTypeText,
+		Content:   "/btw 顺便检查一下日志",
+		UserID:    "user-btw",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"先做第一步", "顺便检查一下日志"}, liveSession.sentInputs)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "收到补充: 顺便检查一下日志", platform.replies[1]["content"])
+}
+
+func TestHandleMessage_ByTheWayRequiresExistingInteractiveSession(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockInteractiveAgent{name: "codex", available: true})
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-btw",
+		Type:      weibo.MessageTypeText,
+		Content:   "/btw 补一句",
+		UserID:    "user-btw-missing",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 1)
+	assert.Equal(t, "No active session found. Use /new to create or activate a session first.", platform.replies[0]["content"])
 }
 
 func TestParseApprovalAction_SupportsMentionSuffix(t *testing.T) {

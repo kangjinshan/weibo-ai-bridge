@@ -47,6 +47,10 @@ type messageHandler interface {
 	HandleMessage(ctx context.Context, msg *weibo.Message) error
 }
 
+type prefixedMessageHandler interface {
+	HandleMessageWithPrefix(ctx context.Context, msg *weibo.Message, prefix string) error
+}
+
 type chatStreamRequest struct {
 	UserID    string `json:"user_id"`
 	Content   string `json:"content"`
@@ -277,6 +281,15 @@ func (p *messageProcessor) handle(ctx context.Context, msg *weibo.Message) {
 	defer p.finish(msg.UserID)
 
 	p.logger.Printf("Processing message: id=%s, type=%s, user=%s", msg.ID, msg.Type, msg.UserID)
+
+	if prefixedRouter, ok := p.router.(prefixedMessageHandler); ok {
+		if err := prefixedRouter.HandleMessageWithPrefix(ctx, msg, processingAckMessage); err != nil {
+			p.logger.Printf("Failed to handle message: id=%s, error=%v", msg.ID, err)
+			return
+		}
+		p.logger.Printf("Message processed successfully: id=%s", msg.ID)
+		return
+	}
 
 	if p.platform != nil {
 		if err := p.platform.Reply(ctx, msg.UserID, processingAckMessage); err != nil {

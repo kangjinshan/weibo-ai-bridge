@@ -2,6 +2,10 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +23,7 @@ const (
 type Session struct {
 	ID        string
 	UserID    string
+	Title     string
 	AgentType string // "claude" or "codex"
 	State     State
 	Context   map[string]interface{}
@@ -65,6 +70,22 @@ func (m *Manager) Create(id, userID, agentType string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.createLocked(id, userID, agentType)
+}
+
+// CreateNext 为指定用户创建下一个编号会话。
+func (m *Manager) CreateNext(userID, agentType string) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.createLocked(m.nextSessionIDLocked(userID), userID, agentType)
+}
+
+func (m *Manager) createLocked(id, userID, agentType string) *Session {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+
 	// 检查是否超过最大会话数
 	if m.config.MaxSize > 0 && len(m.sessions) >= m.config.MaxSize {
 		// 清理过期会话
@@ -95,6 +116,31 @@ func (m *Manager) Create(id, userID, agentType string) *Session {
 	}
 
 	return session
+}
+
+func (m *Manager) nextSessionIDLocked(userID string) string {
+	prefix := userID + "-"
+	maxIndex := 0
+
+	for id, sess := range m.sessions {
+		if sess.UserID != userID {
+			continue
+		}
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+
+		suffix := strings.TrimPrefix(id, prefix)
+		index, err := strconv.Atoi(suffix)
+		if err != nil || index <= 0 {
+			continue
+		}
+		if index > maxIndex {
+			maxIndex = index
+		}
+	}
+
+	return fmt.Sprintf("%s-%d", userID, maxIndex+1)
 }
 
 // GetOrCreateSession 获取或创建会话
@@ -156,7 +202,7 @@ func (m *Manager) GetOrCreateActiveSession(userID, agentType string) *Session {
 		return session
 	}
 
-	return m.GetOrCreateSession(userID, userID, agentType)
+	return m.CreateNext(userID, agentType)
 }
 
 // UpdateSession 更新会话
@@ -203,6 +249,39 @@ func (s *Session) SetAgentType(agentType string) {
 	s.UpdatedAt = time.Now()
 }
 
+// SetTitleIfEmpty 在标题为空时设置会话标题。
+func (s *Session) SetTitleIfEmpty(title string) bool {
+	normalized := normalizeSessionTitle(title)
+	if normalized == "" {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(s.Title) != "" {
+		return false
+	}
+
+	s.Title = normalized
+	s.UpdatedAt = time.Now()
+	return true
+}
+
+func normalizeSessionTitle(title string) string {
+	title = strings.Join(strings.Fields(strings.TrimSpace(title)), " ")
+	if title == "" {
+		return ""
+	}
+
+	runes := []rune(title)
+	if len(runes) > 50 {
+		return string(runes[:50])
+	}
+
+	return title
+}
+
 // ToJSON 序列化会话为 JSON
 func (s *Session) ToJSON() ([]byte, error) {
 	s.mu.RLock()
@@ -212,6 +291,7 @@ func (s *Session) ToJSON() ([]byte, error) {
 	data := map[string]interface{}{
 		"id":         s.ID,
 		"user_id":    s.UserID,
+		"title":      s.Title,
 		"agent_type": s.AgentType,
 		"state":      s.State,
 		"context":    s.Context,
@@ -230,6 +310,7 @@ func (s *Session) FromJSON(data []byte) error {
 	var temp struct {
 		ID        string                 `json:"id"`
 		UserID    string                 `json:"user_id"`
+		Title     string                 `json:"title"`
 		AgentType string                 `json:"agent_type"`
 		State     State                  `json:"state"`
 		Context   map[string]interface{} `json:"context"`
@@ -243,6 +324,7 @@ func (s *Session) FromJSON(data []byte) error {
 
 	s.ID = temp.ID
 	s.UserID = temp.UserID
+	s.Title = temp.Title
 	s.AgentType = temp.AgentType
 	s.State = temp.State
 	s.Context = temp.Context
@@ -282,6 +364,28 @@ func (m *Manager) Count() int {
 	defer m.mu.RUnlock()
 
 	return len(m.sessions)
+}
+
+// ListByUser 按创建时间列出指定用户的全部会话。
+func (m *Manager) ListByUser(userID string) []*Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sessions := make([]*Session, 0)
+	for _, sess := range m.sessions {
+		if sess.UserID == userID {
+			sessions = append(sessions, sess)
+		}
+	}
+
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].CreatedAt.Equal(sessions[j].CreatedAt) {
+			return sessions[i].ID < sessions[j].ID
+		}
+		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
+	})
+
+	return sessions
 }
 
 // CleanExpired 清理过期会话

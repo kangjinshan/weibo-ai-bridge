@@ -41,10 +41,45 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.True(t, resp.Success)
 	assert.Contains(t, resp.Content, "/help")
 	assert.Contains(t, resp.Content, "/new")
+	assert.Contains(t, resp.Content, "/list")
 	assert.Contains(t, resp.Content, "/switch")
+	assert.Contains(t, resp.Content, "/btw")
 	assert.Contains(t, resp.Content, "/model")
 	assert.Contains(t, resp.Content, "/dir")
 	assert.Contains(t, resp.Content, "/status")
+}
+
+func TestCommandHandler_Handle_List(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	first := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, first)
+	first.SetTitleIfEmpty("第一个问题")
+	second := sessionManager.Create("session-2", "user-1", "codex")
+	assert.NotNil(t, second)
+	sessionManager.Create("session-3", "user-2", "claude")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-list",
+		Type:    TypeText,
+		Content: "/list",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Sessions:")
+	assert.Contains(t, resp.Content, "【1】第一个问题")
+	assert.Contains(t, resp.Content, "【2】未命名会话")
+	assert.Contains(t, resp.Content, "id=session-1")
+	assert.Contains(t, resp.Content, "id=session-2")
+	assert.Contains(t, resp.Content, "active")
 }
 
 func TestCommandHandler_Handle_New(t *testing.T) {
@@ -121,6 +156,64 @@ func TestCommandHandler_Handle_New(t *testing.T) {
 	}
 }
 
+func TestCommandHandler_Handle_New_DefaultsToCodexWhenOnlyCodexAvailable(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.SetDefault("codex")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-1",
+		Type:    TypeText,
+		Content: "/new",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Agent: codex")
+
+	activeSession, ok := sessionManager.GetActiveSession("user-1")
+	assert.True(t, ok)
+	assert.Equal(t, "codex", activeSession.AgentType)
+}
+
+func TestCommandHandler_Handle_New_DefaultsToActiveSessionAgentType(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.SetDefault("claude-code")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sessionManager.Create("session-1", "user-1", "codex")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-1",
+		Type:    TypeText,
+		Content: "/new",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Agent: codex")
+
+	activeSession, ok := sessionManager.GetActiveSession("user-1")
+	assert.True(t, ok)
+	assert.Equal(t, "codex", activeSession.AgentType)
+	assert.Equal(t, "user-1-1", activeSession.ID)
+}
+
 func TestCommandHandler_Handle_Switch(t *testing.T) {
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
@@ -158,7 +251,7 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 			sessionID: "session-1",
 			checkResult: func(t *testing.T, resp *Response) {
 				assert.False(t, resp.Success)
-				assert.Contains(t, resp.Content, "Please specify agent type")
+				assert.Contains(t, resp.Content, "Please specify a session number or agent type")
 			},
 		},
 		{
@@ -202,6 +295,59 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCommandHandler_Handle_SwitchSessionByNumber(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	first := sessionManager.Create("session-1", "user-1", "claude")
+	second := sessionManager.Create("session-2", "user-1", "codex")
+	assert.NotNil(t, first)
+	assert.NotNil(t, second)
+	assert.Equal(t, "session-2", sessionManager.GetActiveSessionID("user-1"))
+
+	resp, err := handler.Handle(&Message{
+		ID:        "msg-switch-session",
+		Type:      TypeText,
+		Content:   "/switch 1",
+		UserID:    "user-1",
+		SessionID: "session-2",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Switched to session 1: 未命名会话")
+	assert.Contains(t, resp.Content, "id=session-1")
+	assert.Equal(t, "session-1", sessionManager.GetActiveSessionID("user-1"))
+}
+
+func TestCommandHandler_Handle_SwitchSessionByNumber_RejectsInvalidIndex(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sessionManager.Create("session-1", "user-1", "claude")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-switch-session",
+		Type:    TypeText,
+		Content: "/switch 3",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Content, "Invalid session number")
 }
 
 func TestCommandHandler_Handle_Switch_RejectsUnavailableAgent(t *testing.T) {
@@ -357,6 +503,7 @@ func TestCommandHandler_Handle_Status(t *testing.T) {
 	assert.True(t, resp.Success)
 	assert.Contains(t, resp.Content, "Session Status")
 	assert.Contains(t, resp.Content, "session-1")
+	assert.Contains(t, resp.Content, "Title: 未命名会话")
 	assert.Contains(t, resp.Content, "user-1")
 	assert.Contains(t, resp.Content, "claude")
 	assert.Contains(t, resp.Content, "active")

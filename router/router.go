@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -120,6 +121,9 @@ func (r *Router) Handle(msg *Message) (*Response, error) {
 	content := strings.TrimSpace(msg.Content)
 
 	if strings.HasPrefix(content, "/") && r.commandHandler != nil {
+		if isByTheWayCommand(content) {
+			return r.handleByTheWaySync(context.Background(), msg)
+		}
 		return r.commandHandler.Handle(msg)
 	}
 
@@ -169,11 +173,25 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 		return err
 	}
 
-	return r.forwardStreamToPlatform(ctx, msg.UserID, stream)
+	return r.forwardStreamToPlatformWithPrefix(ctx, msg.UserID, stream, "")
+}
+
+// HandleMessageWithPrefix 处理消息，并将 prefix 作为同一条回复的前缀发出。
+func (r *Router) HandleMessageWithPrefix(ctx context.Context, msg *weibo.Message, prefix string) error {
+	if msg == nil {
+		return errors.New("message cannot be nil")
+	}
+
+	stream, err := r.StreamMessage(ctx, msg)
+	if err != nil {
+		return err
+	}
+
+	return r.forwardStreamToPlatformWithPrefix(ctx, msg.UserID, stream, prefix)
 }
 
 func (r *Router) toRouterMessage(msg *weibo.Message) *Message {
-	sessionID := msg.UserID
+	sessionID := ""
 	if r.sessionMgr != nil {
 		if activeSessionID := r.sessionMgr.GetActiveSessionID(msg.UserID); activeSessionID != "" {
 			sessionID = activeSessionID
@@ -206,6 +224,13 @@ func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan 
 
 		content := strings.TrimSpace(msg.Content)
 		if strings.HasPrefix(content, "/") && r.commandHandler != nil {
+			if handled, err := r.emitSpecialCommandEvents(ctx, events, msg); handled {
+				if err != nil {
+					events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
+				}
+				events <- agent.Event{Type: agent.EventTypeDone}
+				return
+			}
 			r.emitCommandEvents(events, msg)
 			return
 		}
@@ -218,6 +243,53 @@ func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan 
 	}()
 
 	return events, nil
+}
+
+func isByTheWayCommand(content string) bool {
+	parts := strings.Fields(strings.TrimSpace(content))
+	return len(parts) > 0 && parts[0] == "/btw"
+}
+
+func (r *Router) handleByTheWaySync(ctx context.Context, msg *Message) (*Response, error) {
+	stream, err := r.streamRouterMessage(ctx, msg)
+	if err != nil {
+		return nil, err
+	}
+
+	var contentParts []string
+	var responseErr error
+	success := true
+
+	for event := range stream {
+		switch event.Type {
+		case agent.EventTypeMessage, agent.EventTypeApproval:
+			if text := strings.TrimSpace(event.Content); text != "" {
+				contentParts = append(contentParts, text)
+			}
+		case agent.EventTypeError:
+			success = false
+			if strings.TrimSpace(event.Error) != "" {
+				responseErr = errors.New(event.Error)
+				if len(contentParts) == 0 {
+					contentParts = append(contentParts, event.Error)
+				}
+			}
+		}
+	}
+
+	return &Response{
+		Success: success,
+		Content: strings.Join(contentParts, "\n"),
+		Error:   responseErr,
+	}, nil
+}
+
+func (r *Router) emitSpecialCommandEvents(ctx context.Context, events chan<- agent.Event, msg *Message) (bool, error) {
+	if !isByTheWayCommand(msg.Content) {
+		return false, nil
+	}
+
+	return true, r.handleByTheWayCommand(ctx, msg, events)
 }
 
 func (r *Router) emitCommandEvents(events chan<- agent.Event, msg *Message) {
@@ -243,7 +315,83 @@ func (r *Router) emitCommandEvents(events chan<- agent.Event, msg *Message) {
 	events <- agent.Event{Type: agent.EventTypeDone}
 }
 
+func (r *Router) handleByTheWayCommand(ctx context.Context, msg *Message, events chan<- agent.Event) error {
+	if r.sessionMgr == nil {
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Session manager is not available."}
+		return nil
+	}
+
+	parts := strings.Fields(strings.TrimSpace(msg.Content))
+	if len(parts) < 2 {
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Please provide content to insert: /btw <message>"}
+		return nil
+	}
+
+	content := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Content), parts[0]))
+	if content == "" {
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Please provide content to insert: /btw <message>"}
+		return nil
+	}
+
+	sess, ok := r.resolveByTheWaySession(msg)
+	if !ok {
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: "No active session found. Use /new to create or activate a session first."}
+		return nil
+	}
+
+	liveState, ok := r.getInteractiveSession(sess.ID)
+	if !ok {
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: "No live interactive session is running for the current session yet."}
+		return nil
+	}
+
+	if liveState.awaitingApproval {
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Current session is waiting for approval. Reply with 允许 / 取消 / 允许所有 first."}
+		return nil
+	}
+
+	if err := liveState.session.Send(content); err != nil {
+		r.removeInteractiveSession(sess.ID)
+		return err
+	}
+
+	return r.drainInteractiveSession(ctx, sess, agentSessionContextKey(sess.AgentType), liveState, events)
+}
+
+func (r *Router) resolveByTheWaySession(msg *Message) (*session.Session, bool) {
+	sessionIDs := []string{}
+	if trimmed := strings.TrimSpace(msg.SessionID); trimmed != "" {
+		sessionIDs = append(sessionIDs, trimmed)
+	}
+	if r.sessionMgr != nil {
+		if activeSessionID := strings.TrimSpace(r.sessionMgr.GetActiveSessionID(msg.UserID)); activeSessionID != "" {
+			sessionIDs = append(sessionIDs, activeSessionID)
+		}
+	}
+
+	for _, sessionID := range slices.Compact(sessionIDs) {
+		sess, exists := r.sessionMgr.Get(sessionID)
+		if exists && sess.UserID == msg.UserID {
+			return sess, true
+		}
+	}
+
+	return nil, false
+}
+
+func (r *Router) getInteractiveSession(sessionID string) (*interactiveSessionState, bool) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+
+	state, ok := r.liveSessions[sessionID]
+	return state, ok
+}
+
 func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, stream <-chan agent.Event) error {
+	return r.forwardStreamToPlatformWithPrefix(ctx, userID, stream, "")
+}
+
+func (r *Router) forwardStreamToPlatformWithPrefix(ctx context.Context, userID string, stream <-chan agent.Event, prefix string) error {
 	if r.platform == nil {
 		return errors.New("platform is not set")
 	}
@@ -253,6 +401,9 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 		return err
 	}
 	sender := newStreamReplySender(writer)
+	if err := sender.Prime(ctx, prefix); err != nil {
+		return err
+	}
 
 	var streamErr error
 
@@ -274,11 +425,8 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 					return err
 				}
 			case agent.EventTypeApproval:
-				if err := sender.Settle(ctx); err != nil {
-					return err
-				}
 				if strings.TrimSpace(event.Content) != "" {
-					if err := r.sendReply(ctx, userID, event.Content); err != nil {
+					if err := sender.PushInformationalText(ctx, event.Content); err != nil {
 						return err
 					}
 				}
@@ -287,11 +435,8 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 					return err
 				}
 			case agent.EventTypeError:
-				if err := sender.Settle(ctx); err != nil {
-					return err
-				}
 				if strings.TrimSpace(event.Error) != "" {
-					if err := r.sendReply(ctx, userID, "AI execution failed: "+event.Error); err != nil {
+					if err := sender.PushDeliverText(ctx, "AI execution failed: "+event.Error, true); err != nil {
 						return err
 					}
 					streamErr = errors.New(event.Error)
@@ -652,6 +797,8 @@ func (r *Router) resolveAgentExecution(msg *Message) (*session.Session, string, 
 		return nil, "", "", nil, errors.New("Failed to create or get session")
 	}
 
+	currentSession.SetTitleIfEmpty(msg.Content)
+
 	currentAgent := r.agentMgr.ResolveAgent(currentSession.AgentType)
 	if currentAgent == nil {
 		return nil, "", "", nil, fmt.Errorf("No agent available for session type: %s", currentSession.AgentType)
@@ -773,12 +920,29 @@ type streamReplySender struct {
 	hasSeenPartial      bool
 	hasEmittedChunks    bool
 	hasEmittedDone      bool
+	needsLeadingNewline bool
 }
 
 func newStreamReplySender(writer streamReplyWriter) *streamReplySender {
 	return &streamReplySender{
 		writer: writer,
 	}
+}
+
+func (s *streamReplySender) Prime(ctx context.Context, prefix string) error {
+	if s.hasEmittedDone {
+		return nil
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return nil
+	}
+
+	if err := s.emitText(ctx, prefix, false); err != nil {
+		return err
+	}
+	s.needsLeadingNewline = true
+	return nil
 }
 
 func (s *streamReplySender) PushDelta(ctx context.Context, delta string) error {
@@ -843,6 +1007,21 @@ func (s *streamReplySender) PushDeliverText(ctx context.Context, text string, is
 	return s.finalize(ctx)
 }
 
+func (s *streamReplySender) PushInformationalText(ctx context.Context, text string) error {
+	if s.hasEmittedDone {
+		return nil
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	if err := s.flushBufferedDelta(ctx, true); err != nil {
+		return err
+	}
+
+	return s.emitText(ctx, text, false)
+}
+
 func (s *streamReplySender) Settle(ctx context.Context) error {
 	if err := s.flushBufferedDelta(ctx, true); err != nil {
 		return err
@@ -867,6 +1046,10 @@ func (s *streamReplySender) finalize(ctx context.Context) error {
 func (s *streamReplySender) emitText(ctx context.Context, content string, markLastDone bool) error {
 	if content == "" {
 		return nil
+	}
+	if s.needsLeadingNewline {
+		content = "\n" + content
+		s.needsLeadingNewline = false
 	}
 
 	if err := s.writer.SendChunk(ctx, content, markLastDone); err != nil {

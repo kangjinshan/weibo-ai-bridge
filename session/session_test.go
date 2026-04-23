@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,21 @@ func TestManager_Count(t *testing.T) {
 	assert.Equal(t, 2, mgr.Count())
 }
 
+func TestManager_ListByUser(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	session2 := mgr.Create("session-2", "user-1", "codex")
+	time.Sleep(10 * time.Millisecond)
+	session1 := mgr.Create("session-1", "user-1", "claude")
+	mgr.Create("session-3", "user-2", "claude")
+
+	sessions := mgr.ListByUser("user-1")
+
+	assert.Len(t, sessions, 2)
+	assert.Equal(t, session2.ID, sessions[0].ID)
+	assert.Equal(t, session1.ID, sessions[1].ID)
+}
+
 func TestManager_CleanExpired(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 1}) // 1秒超时
 
@@ -180,6 +196,7 @@ func TestSession_ConcurrentAccess(t *testing.T) {
 func TestSession_ToJSON(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 3600})
 	session := mgr.Create("test-id", "user-123", "claude")
+	session.SetTitleIfEmpty("第一条问题")
 	session.Update("key1", "value1")
 	session.Update("key2", 123)
 
@@ -189,6 +206,7 @@ func TestSession_ToJSON(t *testing.T) {
 	assert.NotNil(t, jsonData)
 	assert.Contains(t, string(jsonData), "test-id")
 	assert.Contains(t, string(jsonData), "user-123")
+	assert.Contains(t, string(jsonData), "第一条问题")
 	assert.Contains(t, string(jsonData), "claude")
 	assert.Contains(t, string(jsonData), "active")
 }
@@ -197,6 +215,7 @@ func TestSession_FromJSON(t *testing.T) {
 	jsonData := []byte(`{
 		"id": "test-id",
 		"user_id": "user-123",
+		"title": "第一条问题",
 		"agent_type": "claude",
 		"state": "active",
 		"context": {
@@ -213,6 +232,7 @@ func TestSession_FromJSON(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "test-id", session.ID)
 	assert.Equal(t, "user-123", session.UserID)
+	assert.Equal(t, "第一条问题", session.Title)
 	assert.Equal(t, "claude", session.AgentType)
 	assert.Equal(t, StateActive, session.State)
 	assert.NotNil(t, session.Context)
@@ -221,6 +241,7 @@ func TestSession_FromJSON(t *testing.T) {
 func TestSession_ToJSON_FromJSON_RoundTrip(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 3600})
 	original := mgr.Create("test-id", "user-123", "claude")
+	original.SetTitleIfEmpty("第一条问题")
 	original.Update("key1", "value1")
 	original.Update("key2", 123)
 
@@ -236,8 +257,23 @@ func TestSession_ToJSON_FromJSON_RoundTrip(t *testing.T) {
 	// 验证
 	assert.Equal(t, original.ID, restored.ID)
 	assert.Equal(t, original.UserID, restored.UserID)
+	assert.Equal(t, original.Title, restored.Title)
 	assert.Equal(t, original.AgentType, restored.AgentType)
 	assert.Equal(t, original.State, restored.State)
+}
+
+func TestSession_SetTitleIfEmpty_TruncatesTo50RunesAndDoesNotOverwrite(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+	sess := mgr.Create("test-id", "user-123", "claude")
+
+	longTitle := strings.Repeat("你", 60)
+	updated := sess.SetTitleIfEmpty(longTitle)
+	assert.True(t, updated)
+	assert.Len(t, []rune(sess.Title), 50)
+
+	updated = sess.SetTitleIfEmpty("第二个问题")
+	assert.False(t, updated)
+	assert.Len(t, []rune(sess.Title), 50)
 }
 
 func TestManager_GetOrCreateSession(t *testing.T) {
@@ -277,6 +313,30 @@ func TestManager_ActiveSessionLifecycle(t *testing.T) {
 
 	mgr.Delete("session-1")
 	assert.Equal(t, "", mgr.GetActiveSessionID("user-1"))
+}
+
+func TestManager_GetOrCreateActiveSession_CreatesNumberedSessionWhenMissing(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	session := mgr.GetOrCreateActiveSession("user-1", "codex")
+
+	assert.NotNil(t, session)
+	assert.Equal(t, "user-1-1", session.ID)
+	assert.Equal(t, "codex", session.AgentType)
+	assert.Equal(t, "user-1-1", mgr.GetActiveSessionID("user-1"))
+}
+
+func TestManager_CreateNext_UsesNextAvailableNumericSuffix(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	mgr.Create("user-1-1", "user-1", "claude")
+	mgr.Create("user-1-3", "user-1", "codex")
+	mgr.Create("custom-id", "user-1", "codex")
+
+	session := mgr.CreateNext("user-1", "codex")
+
+	assert.NotNil(t, session)
+	assert.Equal(t, "user-1-4", session.ID)
 }
 
 func TestManager_UpdateSession(t *testing.T) {

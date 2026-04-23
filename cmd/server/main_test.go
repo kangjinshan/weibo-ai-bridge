@@ -57,6 +57,12 @@ type processorTestRouter struct {
 	release <-chan struct{}
 }
 
+type processorTestPrefixedRouter struct {
+	mu       sync.Mutex
+	prefixes []string
+	messages []string
+}
+
 type sseTestAgent struct {
 	name      string
 	available bool
@@ -133,6 +139,30 @@ func (r *processorTestRouter) HandleMessage(ctx context.Context, msg *weibo.Mess
 	}
 
 	return nil
+}
+
+func (r *processorTestPrefixedRouter) HandleMessage(ctx context.Context, msg *weibo.Message) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.messages = append(r.messages, msg.UserID+":"+msg.ID)
+	return nil
+}
+
+func (r *processorTestPrefixedRouter) HandleMessageWithPrefix(ctx context.Context, msg *weibo.Message, prefix string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.prefixes = append(r.prefixes, prefix)
+	r.messages = append(r.messages, msg.UserID+":"+msg.ID)
+	return nil
+}
+
+func (r *processorTestPrefixedRouter) Prefixes() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.prefixes...)
 }
 
 func TestMainInitialization(t *testing.T) {
@@ -411,6 +441,22 @@ func TestMessageProcessor_SendsImmediateAckForFastRequests(t *testing.T) {
 		replies := platform.Replies()
 		return len(replies) == 1 && strings.Contains(replies[0], processingAckMessage)
 	}, 200*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestMessageProcessor_PassesAckPrefixToPrefixedHandler(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	router := &processorTestPrefixedRouter{}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+
+	processor.dispatch(context.Background(), &weibo.Message{ID: "msg-prefixed", UserID: "user-prefixed"})
+
+	assert.Eventually(t, func() bool {
+		prefixes := router.Prefixes()
+		return len(prefixes) == 1 && prefixes[0] == processingAckMessage
+	}, 200*time.Millisecond, 10*time.Millisecond)
+
+	assert.Empty(t, platform.Replies())
 }
 
 func TestMessageProcessor_AllowsDifferentUsersInParallel(t *testing.T) {

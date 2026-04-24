@@ -264,6 +264,9 @@ func (p *messageProcessor) dispatch(ctx context.Context, msg *weibo.Message) {
 	if p.tryInjectByTheWay(ctx, msg) {
 		return
 	}
+	if p.tryHandleBusySlashCommand(ctx, msg) {
+		return
+	}
 
 	startNow, queued := p.enqueue(msg)
 	if queued {
@@ -393,6 +396,27 @@ func (p *messageProcessor) tryInjectByTheWay(ctx context.Context, msg *weibo.Mes
 	return handled
 }
 
+func (p *messageProcessor) tryHandleBusySlashCommand(ctx context.Context, msg *weibo.Message) bool {
+	if msg == nil || !isSlashCommandMessage(msg.Content) || isByTheWayMessage(msg.Content) {
+		return false
+	}
+
+	p.mu.Lock()
+	_, busy := p.inFlightUsers[msg.UserID]
+	p.mu.Unlock()
+	if !busy {
+		return false
+	}
+
+	go func() {
+		if err := p.router.HandleMessage(ctx, msg); err != nil && !isBenignCancellation(err) {
+			p.logger.Printf("Failed to handle slash command immediately: id=%s, error=%v", msg.ID, err)
+		}
+	}()
+
+	return true
+}
+
 func (p *messageProcessor) endRun(userID string, runID int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -454,6 +478,11 @@ func shouldInterruptInFlight(msg *weibo.Message) bool {
 func isByTheWayMessage(content string) bool {
 	content = strings.TrimSpace(content)
 	return strings.HasPrefix(content, "/btw")
+}
+
+func isSlashCommandMessage(content string) bool {
+	content = strings.TrimSpace(content)
+	return strings.HasPrefix(content, "/")
 }
 
 func isBenignCancellation(err error) bool {

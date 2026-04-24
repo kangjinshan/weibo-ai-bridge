@@ -519,6 +519,49 @@ func TestMessageProcessor_ByTheWayInjectsIntoBusySessionWithoutInterrupt(t *test
 	close(release)
 }
 
+func TestMessageProcessor_SlashCommandBypassesBusyQueue(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	release := make(chan struct{})
+	router := &processorTestRouter{
+		started: make(chan string, 2),
+		release: release,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+	ctx := context.Background()
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-1",
+		UserID:  "user-slash",
+		Content: "先执行第一条",
+	})
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-slash:msg-1", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first message did not start")
+	}
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-help",
+		UserID:  "user-slash",
+		Content: "/help",
+	})
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-slash:msg-help", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("slash command did not bypass busy queue")
+	}
+
+	replies := platform.Replies()
+	assert.Len(t, replies, 1)
+	assert.True(t, strings.Contains(replies[0], processingAckMessage))
+	close(release)
+}
+
 func TestMessageProcessor_AllowsDifferentUsersInParallel(t *testing.T) {
 	platform := newProcessorTestPlatform()
 	router := &processorTestRouter{

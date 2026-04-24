@@ -51,6 +51,7 @@ Weibo AI Bridge 是一个基于 Go 语言开发的中间件服务，旨在连接
 - **Codex 增量流**: Codex 路径优先通过本地 `codex app-server` WebSocket 协议消费 `item/agentMessage/delta`，拿到多少增量就尽快向微博发送多少；如果 `app-server` 不可用，会自动回退到旧的 `codex exec --json` 路径。
 - **微博分片语义**: 同一轮回复会复用同一个 `messageId`，逐片递增 `chunkId`，最后一片或结束标记带 `done=true`。
 - **Markdown 友好输出**: Bridge 会引导 Agent 在长回复中使用简洁 Markdown 与自然分段；流式正文会尽量在句号、换行或段落边界再 flush，避免把格式拆得过碎。
+- **交互式会话尾部静默保护**: 对 Codex 这类可复用的 interactive session，Bridge 在发送新一轮消息前会先等待上一轮尾部事件短暂静默，避免晚到的 `done` 误吞下一轮回复，出现“只收到处理中提示、没有正文”的情况。
 - **SSE 调试出口**: Bridge 提供 `/chat/stream` SSE 接口，可直接观察内部事件流，便于联调和排查。
 
 ## 安装指南

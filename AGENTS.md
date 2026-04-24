@@ -1,70 +1,70 @@
 # AGENTS.md
 
-## Purpose
+## 作用
 
-This file is the contributor and coding-agent guide for the `weibo-ai-bridge` repository.
+这个文件是 `weibo-ai-bridge` 仓库的协作与编码代理说明。
 
-- Use this document for repository structure, development workflow, testing, and change guardrails.
-- Use `agents.md` for runtime AI agent access/configuration details exposed by the product itself.
+- 这里描述仓库结构、开发流程、测试方式和修改约束。
+- 运行时 AI Agent 的接入、安装和配置说明仍然放在 `agents.md`。
 
-## Project Summary
+## 项目概览
 
-`weibo-ai-bridge` is a Go service that connects Weibo direct messages to local AI agent CLIs.
+`weibo-ai-bridge` 是一个 Go 服务，用来把微博私信桥接到本地 AI Agent CLI。
 
-Current supported agent backends:
+当前支持的 Agent 后端：
 
-- Claude Code, registered as `claude-code`, exposed to sessions as `claude`
-- Codex CLI, exposed as `codex`
+- Claude Code：内部注册名是 `claude-code`，会话层暴露为 `claude`
+- Codex CLI：会话层暴露为 `codex`
 
-At runtime the service:
+服务运行时的主流程：
 
-1. Connects to the Weibo Open Platform WebSocket API.
-2. Creates or resumes per-user sessions.
-3. Routes commands and normal chat messages.
-4. Streams agent output back to Weibo in chunks.
-5. Exposes HTTP endpoints for health, stats, and SSE debugging.
+1. 连接微博开放平台 WebSocket API。
+2. 为用户创建或恢复会话。
+3. 路由命令消息和普通对话消息。
+4. 将 Agent 输出按分片流式回传给微博。
+5. 暴露健康检查、统计和 SSE 调试接口。
 
-## Repository Map
+## 仓库结构
 
 - `cmd/server/main.go`
-  Service entrypoint, HTTP server, platform startup/shutdown, top-level message processing queue.
+  服务入口，负责 HTTP 服务、平台启动与关闭、顶层消息排队处理。
 - `router/`
-  Message routing, slash commands, interactive-session handling, stream forwarding, approval flow, `/btw` insertion.
+  消息路由、斜杠命令、交互式会话、流式转发、审批流和 `/btw` 插话。
 - `agent/`
-  Agent abstraction and concrete integrations for Claude and Codex, including interactive sessions and Codex app-server streaming.
+  Agent 抽象层，以及 Claude/Codex 的具体实现，包含交互式会话和 Codex app-server 流式协议。
 - `platform/weibo/`
-  Weibo platform adapter, message transport, chunked reply sender, request/response types.
+  微博平台适配层、消息收发、分片回复发送器和平台侧类型定义。
 - `session/`
-  In-memory session manager plus optional persistence hooks.
+  内存会话管理，以及可选的持久化入口。
 - `config/`
-  TOML/env config loading and validation.
+  TOML 与环境变量配置加载、配置校验。
 - `deploy/`
-  Deployment assets such as the `systemd` unit.
+  部署相关资源，例如 `systemd` service 文件。
 - `docs/`
-  Design/spec notes and planning artifacts.
+  设计文档、规格说明和计划记录。
 - `README.md`
-  User-facing project overview and operational setup.
+  面向使用者和运维的项目说明。
 - `agents.md`
-  Runtime AI-agent usage/configuration notes, not repo contribution guidance.
+  面向运行时 Agent 接入的说明，不是仓库协作手册。
 
-## Core Runtime Behaviors
+## 关键运行约束
 
-These behaviors are important and should not be changed casually.
+这些行为是当前系统的重要约束，除非任务明确要求，否则不要随意改动。
 
-- Default HTTP port is `5533` unless `SERVER_PORT` is set.
-- Config file path defaults to `config/config.toml` and can be overridden by `CONFIG_PATH`.
-- At least one agent must be enabled or the server exits during config validation/startup.
-- Session agent types are normalized at the router layer as `claude` or `codex`.
-- Agent manager internally registers Claude under `claude-code` and resolves `claude` to `claude-code`.
-- New sessions auto-increment by user as `<userID>-<n>`.
-- Incoming non-command messages create or reuse the active session path; command messages are handled by `router/command.go`.
-- `/btw` is special: it injects follow-up input into a live interactive session instead of behaving like a normal command.
-- Codex prefers `codex app-server` streaming and falls back to JSON CLI execution when needed.
-- Long replies are chunked with Chinese-safe rune boundaries and formatting-aware flush behavior.
+- 默认 HTTP 端口是 `5533`，除非设置了 `SERVER_PORT`
+- 默认配置文件路径是 `config/config.toml`，可由 `CONFIG_PATH` 覆盖
+- 至少要启用一个 Agent，否则服务会在启动时失败
+- 会话层的 Agent 类型统一使用 `claude` 或 `codex`
+- Agent Manager 内部把 Claude 注册为 `claude-code`，并把 `claude` 解析到 `claude-code`
+- 新建会话按用户递增编号，格式是 `<userID>-<n>`
+- 非命令消息会进入当前活跃会话路径；命令消息由 `router/command.go` 处理
+- `/btw` 是特殊命令，它会把补充内容注入当前活跃的交互式会话，而不是走普通命令逻辑
+- Codex 优先走 `codex app-server` 流式路径，失败时才回退到 JSON CLI 路径
+- 长回复需要保持中文安全切分，并尽量在自然边界 flush
 
-## Commands And Interfaces
+## 命令与接口
 
-User-visible slash commands currently handled in `router/command.go`:
+当前由 `router/command.go` 处理的用户命令：
 
 - `/help`
 - `/new [claude|codex]`
@@ -75,18 +75,18 @@ User-visible slash commands currently handled in `router/command.go`:
 - `/status`
 - `/btw <content>`
 
-HTTP endpoints in `cmd/server/main.go`:
+当前由 `cmd/server/main.go` 暴露的 HTTP 接口：
 
 - `GET /health`
 - `GET /stats`
 - `GET /chat/stream`
 - `POST /chat/stream`
 
-When changing command semantics or endpoint payloads, update tests first and keep `README.md` aligned.
+如果修改命令语义或接口返回，优先补测试，并同步更新 `README.md`。
 
-## Development Workflow
+## 开发流程
 
-Common commands:
+常用命令：
 
 ```bash
 make build
@@ -96,22 +96,22 @@ make lint
 make dev
 ```
 
-Build output:
+构建产物：
 
 - `build/weibo-ai-bridge`
 
-Notes:
+补充说明：
 
-- `make test` runs `go test -v -race -coverprofile=coverage.out ./...`
-- `make fmt` applies `gofmt -w -s .`
-- `make lint` expects `golangci-lint`
-- A prebuilt `server` binary may exist in the repo root, but source changes should be validated against a fresh build
+- `make test` 实际执行 `go test -v -race -coverprofile=coverage.out ./...`
+- `make fmt` 会执行 `gofmt -w -s .`
+- `make lint` 依赖 `golangci-lint`
+- 仓库根目录可能已有预编译的 `server` 二进制，但改动源码后应以重新构建结果为准
 
-## Testing Expectations
+## 测试要求
 
-Prefer the narrowest test scope that proves the change, then expand if the change crosses package boundaries.
+优先运行能证明改动正确性的最小测试范围；如果改动跨层，再逐步扩大。
 
-Examples:
+示例：
 
 ```bash
 go test ./router ./agent
@@ -119,7 +119,7 @@ go test ./cmd/server
 go test ./...
 ```
 
-For changes affecting message flow, prioritize:
+如果改动影响消息链路，优先关注：
 
 - `router/*_test.go`
 - `agent/*_test.go`
@@ -127,30 +127,30 @@ For changes affecting message flow, prioritize:
 - `platform/weibo/*_test.go`
 - `session/*_test.go`
 
-If you change:
+具体对应关系：
 
-- command parsing, update `router/command_test.go`
-- streaming/event translation, update `agent/*_test.go` and `router/router_test.go`
-- HTTP handlers, update `cmd/server/main_test.go`
-- config behavior, update `config/*_test.go`
-- session lifecycle, update `session/session_test.go`
+- 改命令解析时，更新 `router/command_test.go`
+- 改流式事件或事件翻译时，更新 `agent/*_test.go` 和 `router/router_test.go`
+- 改 HTTP handler 时，更新 `cmd/server/main_test.go`
+- 改配置逻辑时，更新 `config/*_test.go`
+- 改会话生命周期时，更新 `session/session_test.go`
 
-## Change Guardrails
+## 修改边界
 
-- Keep user-facing Chinese copy consistent with existing command/status text unless the task explicitly asks for wording changes.
-- Do not silently rename `claude-code` or `codex` identifiers without checking manager resolution and tests.
-- Preserve stream event ordering guarantees: deltas/messages/errors/done are consumed by router and HTTP streaming paths.
-- Be careful with session context keys such as `claude_session_id` and `codex_session_id`; they are part of resume behavior.
-- Avoid introducing byte-based slicing for message chunks; use rune-safe behavior for Chinese output.
-- Keep command handling and normal chat handling separate. `/btw` is the only slash command that participates in live conversation injection.
-- Preserve graceful shutdown behavior in `cmd/server/main.go`.
-- Do not assume Codex is always available through JSON mode only; app-server support is first-class in this codebase.
+- 用户可见的中文提示文案应尽量与现有风格保持一致，除非任务明确要求改文案
+- 不要静默重命名 `claude-code` 或 `codex` 这些标识；改之前先检查解析逻辑和测试
+- 保持流式事件顺序稳定；router 和 HTTP 流式出口都依赖这个顺序
+- 谨慎修改会话上下文键，例如 `claude_session_id`、`codex_session_id`，它们直接影响续接逻辑
+- 不要引入按字节切分中文消息的逻辑，必须保持 rune 安全
+- 普通命令处理和普通聊天处理要分开，`/btw` 是唯一会进入实时交互注入路径的特殊命令
+- 保持 `cmd/server/main.go` 里的优雅关闭语义
+- 不要把 Codex 当成只有 JSON CLI 一种路径；这个仓库把 app-server 当作一等能力
 
-## Config Notes
+## 配置说明
 
-Config is loaded from TOML first, then overridden by environment variables.
+配置先从 TOML 读取，再由环境变量覆盖。
 
-Common env vars:
+常见环境变量：
 
 - `CONFIG_PATH`
 - `SERVER_PORT`
@@ -168,28 +168,28 @@ Common env vars:
 - `LOG_FORMAT`
 - `LOG_OUTPUT`
 
-Claude authentication is handled primarily by the local CLI environment. Codex may also rely on local CLI/provider configuration.
+Claude 的认证主要由本地 CLI 环境负责。Codex 也可能依赖本地 CLI 或 provider 的现有配置。
 
-## Suggested Editing Strategy
+## 建议的改动方式
 
-When implementing changes:
+实现改动时，建议按下面顺序处理：
 
-1. Identify the layer first: `config`, `session`, `agent`, `router`, `platform`, or `cmd/server`.
-2. Read the matching tests before editing behavior-heavy code.
-3. Change the smallest layer that can own the behavior.
-4. Add or update tests in the same package.
-5. Run targeted tests, then broader tests if the change crosses layers.
+1. 先判断改动归属哪一层：`config`、`session`、`agent`、`router`、`platform` 或 `cmd/server`
+2. 对行为型逻辑，先读对应测试
+3. 只改最适合承载这段逻辑的那一层
+4. 在同包补充或更新测试
+5. 先跑定向测试，再跑更大范围测试
 
-## Known Repository Quirks
+## 仓库里的已知情况
 
-- The module path still uses `github.com/yourusername/weibo-ai-bridge`; do not "fix" it unless the task is explicitly about module renaming.
-- The repo may contain generated or prebuilt artifacts such as the root `server` binary and `build/` outputs.
-- `agents.md` already exists in lowercase. Keep it unless the task explicitly asks to merge or remove it.
+- 当前 `go.mod` 里的 module path 仍是 `github.com/yourusername/weibo-ai-bridge`，除非任务明确要求，否则不要顺手改
+- 仓库中可能存在预编译或构建产物，例如根目录下的 `server` 和 `build/`
+- 已经存在一个小写的 `agents.md`，除非任务明确要求整合或删除，否则保留
 
-## Documentation Maintenance
+## 文档维护
 
-Update docs when behavior changes:
+如果行为发生变化，请同步更新相应文档：
 
-- `README.md` for operator-facing setup or endpoint/command changes
-- `agents.md` for runtime AI backend configuration or availability changes
-- `AGENTS.md` for repository workflow, architecture, or contribution expectations
+- `README.md`：面向使用者和运维的行为、命令、接口、部署说明
+- `agents.md`：运行时 Agent 接入、可用性、配置说明
+- `AGENTS.md`：仓库结构、开发流程、协作约束

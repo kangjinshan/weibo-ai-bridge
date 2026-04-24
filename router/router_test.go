@@ -1233,6 +1233,62 @@ func TestHandleMessage_ByTheWayIgnoresBufferedDoneBeforeSendingNewTurn(t *testin
 	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
+func TestHandleMessage_IgnoresLateDoneFromPreviousTurnBeforeSendingNewTurn(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		if input == "继续处理这个请求" {
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "这是新的回复"}
+				liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			}()
+		}
+	}
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}()
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	active := sessionMgr.Create("user-late-done-1", "user-late-done", "codex")
+	assert.NotNil(t, active)
+	sessionMgr.SetActiveSession("user-late-done", active.ID)
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	router.liveSessions[active.ID] = &interactiveSessionState{
+		agentType: "codex",
+		session:   liveSession,
+	}
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-late-done",
+		Type:      weibo.MessageTypeText,
+		Content:   "继续处理这个请求",
+		UserID:    "user-late-done",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"继续处理这个请求"}, liveSession.sentInputs)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "这是新的回复", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
+}
+
 func TestHandleMessage_ByTheWayRequiresExistingInteractiveSession(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})

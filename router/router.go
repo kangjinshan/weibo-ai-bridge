@@ -661,7 +661,7 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 }
 
 func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, sess *session.Session, sessionKey, agentSessionID string, interactiveAgent agent.InteractiveAgent, events chan<- agent.Event) error {
-	liveState, err := r.getOrCreateInteractiveSession(ctx, sess, sessionKey, agentSessionID, interactiveAgent)
+	liveState, created, err := r.getOrCreateInteractiveSession(ctx, sess, sessionKey, agentSessionID, interactiveAgent)
 	if err != nil {
 		return err
 	}
@@ -698,6 +698,9 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 		return r.drainInteractiveSession(ctx, sess, sessionKey, liveState, events)
 	}
 
+	if !created {
+		r.waitInteractiveEventsQuiesced(sess, sessionKey, liveState, interactiveDoneGracePeriod)
+	}
 	r.discardBufferedInteractiveEvents(sess, sessionKey, liveState)
 
 	if err := liveState.session.Send(msg.Content); err != nil {
@@ -763,13 +766,13 @@ func (r *Router) waitInteractiveEventsQuiesced(sess *session.Session, sessionKey
 	}
 }
 
-func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, interactiveAgent agent.InteractiveAgent) (*interactiveSessionState, error) {
+func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, interactiveAgent agent.InteractiveAgent) (*interactiveSessionState, bool, error) {
 	r.liveMu.Lock()
 	defer r.liveMu.Unlock()
 
 	if existing, ok := r.liveSessions[sess.ID]; ok {
 		if existing.agentType == sess.AgentType {
-			return existing, nil
+			return existing, false, nil
 		}
 		_ = existing.session.Close()
 		delete(r.liveSessions, sess.ID)
@@ -777,7 +780,7 @@ func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *sessio
 
 	liveSession, err := interactiveAgent.StartSession(ctx, agentSessionID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	state := &interactiveSessionState{
@@ -796,7 +799,7 @@ func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *sessio
 		}
 	}
 
-	return state, nil
+	return state, true, nil
 }
 
 func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Session, sessionKey string, liveState *interactiveSessionState, events chan<- agent.Event) error {

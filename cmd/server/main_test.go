@@ -52,9 +52,11 @@ func (p *processorTestPlatform) Replies() []string {
 }
 
 type processorTestRouter struct {
-	delay   time.Duration
-	started chan string
-	release <-chan struct{}
+	delay    time.Duration
+	started  chan string
+	canceled chan string
+	injected chan string
+	release  <-chan struct{}
 }
 
 type sseTestAgent struct {
@@ -120,6 +122,9 @@ func (r *processorTestRouter) HandleMessage(ctx context.Context, msg *weibo.Mess
 		select {
 		case <-r.release:
 		case <-ctx.Done():
+			if r.canceled != nil {
+				r.canceled <- msg.UserID + ":" + msg.ID
+			}
 			return ctx.Err()
 		}
 	}
@@ -128,11 +133,24 @@ func (r *processorTestRouter) HandleMessage(ctx context.Context, msg *weibo.Mess
 		select {
 		case <-time.After(r.delay):
 		case <-ctx.Done():
+			if r.canceled != nil {
+				r.canceled <- msg.UserID + ":" + msg.ID
+			}
 			return ctx.Err()
 		}
 	}
 
 	return nil
+}
+
+func (r *processorTestRouter) InjectByTheWay(ctx context.Context, msg *weibo.Message) (bool, error) {
+	if msg == nil || !strings.HasPrefix(strings.TrimSpace(msg.Content), "/btw") {
+		return false, nil
+	}
+	if r.injected != nil {
+		r.injected <- msg.UserID + ":" + msg.ID
+	}
+	return true, nil
 }
 
 func TestMainInitialization(t *testing.T) {
@@ -250,8 +268,10 @@ func TestGracefulShutdown(t *testing.T) {
 
 func TestConfigValidation(t *testing.T) {
 	// 测试缺少必需配置的情况
+	t.Setenv("CONFIG_PATH", "/tmp/non-existent-weibo-ai-bridge-config.toml")
 	os.Unsetenv("WEIBO_APP_ID")
 	os.Unsetenv("WEIBO_APP_Secret")
+	os.Unsetenv("WEIBO_APP_SECRET")
 	defer func() {
 		os.Setenv("WEIBO_APP_ID", "test-app-id")
 		os.Setenv("WEIBO_APP_Secret", "test-Secret")
@@ -342,16 +362,16 @@ func TestLogLevels(t *testing.T) {
 	}
 }
 
-func TestMessageProcessor_SendsBusyNoticeForRepeatedUser(t *testing.T) {
+func TestMessageProcessor_QueuesRepeatedUserMessages(t *testing.T) {
 	platform := newProcessorTestPlatform()
-	release := make(chan struct{})
+	release := make(chan struct{}, 2)
 	router := &processorTestRouter{
 		started: make(chan string, 2),
 		release: release,
 	}
 
 	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
-	processor.busyCooldown = time.Millisecond
+	processor.queueNoticeCooldown = time.Millisecond
 
 	ctx := context.Background()
 	processor.dispatch(ctx, &weibo.Message{ID: "msg-1", UserID: "user-1"})
@@ -369,16 +389,31 @@ func TestMessageProcessor_SendsBusyNoticeForRepeatedUser(t *testing.T) {
 		replies := platform.Replies()
 		return len(replies) >= 2 &&
 			strings.Contains(replies[0], processingAckMessage) &&
-			strings.Contains(replies[len(replies)-1], messageAlreadyRunningHint)
+			strings.Contains(replies[len(replies)-1], messageQueuedHint)
 	}, time.Second, 20*time.Millisecond)
 
 	select {
 	case started := <-router.started:
-		t.Fatalf("second message should not be handled, got %s", started)
+		t.Fatalf("second message should remain queued before the first finishes, got %s", started)
 	case <-time.After(150 * time.Millisecond):
 	}
 
-	close(release)
+	release <- struct{}{}
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-1:msg-2", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("queued message did not start after the first finished")
+	}
+
+	assert.Eventually(t, func() bool {
+		replies := platform.Replies()
+		return len(replies) >= 3 &&
+			strings.Contains(replies[2], processingAckMessage)
+	}, time.Second, 20*time.Millisecond)
+
+	release <- struct{}{}
 }
 
 func TestMessageProcessor_SendsImmediateAckForSlowRequests(t *testing.T) {
@@ -429,6 +464,59 @@ func TestMessageProcessor_DoesNotSendAckForSlashCommands(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 	assert.Empty(t, platform.Replies())
+}
+
+func TestMessageProcessor_ByTheWayInjectsIntoBusySessionWithoutInterrupt(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	release := make(chan struct{})
+	router := &processorTestRouter{
+		started:  make(chan string, 2),
+		canceled: make(chan string, 1),
+		injected: make(chan string, 1),
+		release:  release,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+	ctx := context.Background()
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-1",
+		UserID:  "user-btw",
+		Content: "先执行第一条",
+	})
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-btw:msg-1", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first message did not start")
+	}
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-btw",
+		UserID:  "user-btw",
+		Content: "/btw 顺便继续",
+	})
+
+	select {
+	case injected := <-router.injected:
+		assert.Equal(t, "user-btw:msg-btw", injected)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("/btw message was not injected")
+	}
+
+	select {
+	case canceled := <-router.canceled:
+		t.Fatalf("first message should not be interrupted, got %s", canceled)
+	case started := <-router.started:
+		t.Fatalf("/btw should not start a second processor turn, got %s", started)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	replies := platform.Replies()
+	assert.Len(t, replies, 1)
+	assert.True(t, strings.Contains(replies[0], processingAckMessage))
+	close(release)
 }
 
 func TestMessageProcessor_AllowsDifferentUsersInParallel(t *testing.T) {

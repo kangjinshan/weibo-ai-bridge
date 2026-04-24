@@ -26,9 +26,9 @@ var (
 )
 
 const (
-	busyNoticeCooldown        = 10 * time.Second
-	processingAckMessage      = "已收到消息，正在处理中，请稍候。"
-	messageAlreadyRunningHint = "上一条消息还在处理中，这条消息先不排队处理；请等当前回复结束后再发送。"
+	queueNoticeCooldown  = 10 * time.Second
+	processingAckMessage = "已收到消息，正在处理中，请稍候。"
+	messageQueuedHint    = "上一条消息还在处理中，这条消息已加入队列，会在当前回复结束后继续处理。"
 )
 
 type messageSource interface {
@@ -48,6 +48,10 @@ type messageHandler interface {
 	HandleMessage(ctx context.Context, msg *weibo.Message) error
 }
 
+type byTheWayInjector interface {
+	InjectByTheWay(ctx context.Context, msg *weibo.Message) (bool, error)
+}
+
 type chatStreamRequest struct {
 	UserID    string `json:"user_id"`
 	Content   string `json:"content"`
@@ -59,11 +63,19 @@ type messageProcessor struct {
 	router   messageHandler
 	logger   *log.Logger
 
-	busyCooldown time.Duration
+	queueNoticeCooldown time.Duration
 
-	mu             sync.Mutex
-	inFlightUsers  map[string]struct{}
-	lastBusyNotice map[string]time.Time
+	mu              sync.Mutex
+	inFlightUsers   map[string]struct{}
+	activeRuns      map[string]activeRun
+	queuedMessages  map[string][]*weibo.Message
+	lastQueueNotice map[string]time.Time
+	nextRunID       int64
+}
+
+type activeRun struct {
+	id     int64
+	cancel context.CancelFunc
 }
 
 func newMessageProcessor(platform replyPlatform, router messageHandler, logger *log.Logger) *messageProcessor {
@@ -72,12 +84,14 @@ func newMessageProcessor(platform replyPlatform, router messageHandler, logger *
 	}
 
 	return &messageProcessor{
-		platform:       platform,
-		router:         router,
-		logger:         logger,
-		busyCooldown:   busyNoticeCooldown,
-		inFlightUsers:  make(map[string]struct{}),
-		lastBusyNotice: make(map[string]time.Time),
+		platform:            platform,
+		router:              router,
+		logger:              logger,
+		queueNoticeCooldown: queueNoticeCooldown,
+		inFlightUsers:       make(map[string]struct{}),
+		activeRuns:          make(map[string]activeRun),
+		queuedMessages:      make(map[string][]*weibo.Message),
+		lastQueueNotice:     make(map[string]time.Time),
 	}
 }
 
@@ -247,53 +261,151 @@ func (p *messageProcessor) dispatch(ctx context.Context, msg *weibo.Message) {
 		return
 	}
 
-	if !p.tryStart(msg.UserID) {
-		p.sendBusyNotice(ctx, msg.UserID, msg.ID)
+	if p.tryInjectByTheWay(ctx, msg) {
 		return
 	}
 
-	go p.handle(ctx, msg)
+	startNow, queued := p.enqueue(msg)
+	if queued {
+		p.sendQueueNotice(ctx, msg.UserID, msg.ID)
+		return
+	}
+
+	if startNow {
+		go p.handle(ctx, msg)
+	}
 }
 
-func (p *messageProcessor) tryStart(userID string) bool {
+func (p *messageProcessor) enqueue(msg *weibo.Message) (startNow bool, queued bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if _, exists := p.inFlightUsers[userID]; exists {
-		return false
+	if _, exists := p.inFlightUsers[msg.UserID]; exists {
+		p.queuedMessages[msg.UserID] = append(p.queuedMessages[msg.UserID], msg)
+		return false, true
 	}
 
-	p.inFlightUsers[userID] = struct{}{}
-	return true
+	p.inFlightUsers[msg.UserID] = struct{}{}
+	return true, false
 }
 
-func (p *messageProcessor) finish(userID string) {
+func (p *messageProcessor) clearUser(userID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	delete(p.inFlightUsers, userID)
+	delete(p.activeRuns, userID)
+	delete(p.queuedMessages, userID)
+	delete(p.lastQueueNotice, userID)
+}
+
+func (p *messageProcessor) nextQueued(userID string) *weibo.Message {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	queue := p.queuedMessages[userID]
+	if len(queue) == 0 {
+		delete(p.inFlightUsers, userID)
+		delete(p.activeRuns, userID)
+		delete(p.lastQueueNotice, userID)
+		return nil
+	}
+
+	next := queue[0]
+	if len(queue) == 1 {
+		delete(p.queuedMessages, userID)
+		return next
+	}
+
+	p.queuedMessages[userID] = queue[1:]
+	return next
 }
 
 func (p *messageProcessor) handle(ctx context.Context, msg *weibo.Message) {
-	defer p.finish(msg.UserID)
-
-	p.logger.Printf("Processing message: id=%s, type=%s, user=%s", msg.ID, msg.Type, msg.UserID)
-
-	if p.platform != nil && shouldSendProcessingAck(msg) {
-		if err := p.platform.Reply(ctx, msg.UserID, processingAckMessage); err != nil {
-			p.logger.Printf("Failed to send processing ack: id=%s, user=%s, error=%v", msg.ID, msg.UserID, err)
+	for current := msg; current != nil; current = p.nextQueued(current.UserID) {
+		if ctx.Err() != nil {
+			p.clearUser(current.UserID)
+			return
 		}
+
+		runCtx, cancel, runID := p.beginRun(ctx, current.UserID)
+
+		p.logger.Printf("Processing message: id=%s, type=%s, user=%s", current.ID, current.Type, current.UserID)
+
+		if p.platform != nil && shouldSendProcessingAck(current) {
+			if err := p.platform.Reply(runCtx, current.UserID, processingAckMessage); err != nil {
+				p.logger.Printf("Failed to send processing ack: id=%s, user=%s, error=%v", current.ID, current.UserID, err)
+			}
+		}
+
+		if err := p.router.HandleMessage(runCtx, current); err != nil {
+			if !isBenignCancellation(err) {
+				p.logger.Printf("Failed to handle message: id=%s, error=%v", current.ID, err)
+			}
+			cancel()
+			p.endRun(current.UserID, runID)
+			continue
+		}
+
+		cancel()
+		p.endRun(current.UserID, runID)
+		p.logger.Printf("Message processed successfully: id=%s", current.ID)
+	}
+}
+
+func (p *messageProcessor) beginRun(parent context.Context, userID string) (context.Context, context.CancelFunc, int64) {
+	runCtx, cancel := context.WithCancel(parent)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.nextRunID++
+	runID := p.nextRunID
+	p.activeRuns[userID] = activeRun{
+		id:     runID,
+		cancel: cancel,
 	}
 
-	if err := p.router.HandleMessage(ctx, msg); err != nil {
-		p.logger.Printf("Failed to handle message: id=%s, error=%v", msg.ID, err)
+	return runCtx, cancel, runID
+}
+
+func (p *messageProcessor) tryInjectByTheWay(ctx context.Context, msg *weibo.Message) bool {
+	if msg == nil || !isByTheWayMessage(msg.Content) {
+		return false
+	}
+
+	p.mu.Lock()
+	_, busy := p.inFlightUsers[msg.UserID]
+	p.mu.Unlock()
+	if !busy {
+		return false
+	}
+
+	injector, ok := p.router.(byTheWayInjector)
+	if !ok {
+		return false
+	}
+
+	handled, err := injector.InjectByTheWay(ctx, msg)
+	if err != nil {
+		p.logger.Printf("Failed to inject /btw message: id=%s, error=%v", msg.ID, err)
+	}
+	return handled
+}
+
+func (p *messageProcessor) endRun(userID string, runID int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	run, ok := p.activeRuns[userID]
+	if !ok || run.id != runID {
 		return
 	}
 
-	p.logger.Printf("Message processed successfully: id=%s", msg.ID)
+	delete(p.activeRuns, userID)
 }
 
-func (p *messageProcessor) sendBusyNotice(ctx context.Context, userID, messageID string) {
+func (p *messageProcessor) sendQueueNotice(ctx context.Context, userID, messageID string) {
 	if p.platform == nil {
 		return
 	}
@@ -301,17 +413,17 @@ func (p *messageProcessor) sendBusyNotice(ctx context.Context, userID, messageID
 	now := time.Now()
 
 	p.mu.Lock()
-	lastNoticeAt := p.lastBusyNotice[userID]
-	if !lastNoticeAt.IsZero() && now.Sub(lastNoticeAt) < p.busyCooldown {
+	lastNoticeAt := p.lastQueueNotice[userID]
+	if !lastNoticeAt.IsZero() && now.Sub(lastNoticeAt) < p.queueNoticeCooldown {
 		p.mu.Unlock()
 		return
 	}
-	p.lastBusyNotice[userID] = now
+	p.lastQueueNotice[userID] = now
 	p.mu.Unlock()
 
 	go func() {
-		if err := p.platform.Reply(ctx, userID, messageAlreadyRunningHint); err != nil {
-			p.logger.Printf("Failed to send busy notice: id=%s, user=%s, error=%v", messageID, userID, err)
+		if err := p.platform.Reply(ctx, userID, messageQueuedHint); err != nil {
+			p.logger.Printf("Failed to send queue notice: id=%s, user=%s, error=%v", messageID, userID, err)
 		}
 	}()
 }
@@ -328,6 +440,29 @@ func shouldSendProcessingAck(msg *weibo.Message) bool {
 
 	first, _ := utf8.DecodeRuneInString(content)
 	return first != '/'
+}
+
+func shouldInterruptInFlight(msg *weibo.Message) bool {
+	if msg == nil {
+		return false
+	}
+
+	content := strings.TrimSpace(msg.Content)
+	return strings.HasPrefix(content, "/btw")
+}
+
+func isByTheWayMessage(content string) bool {
+	content = strings.TrimSpace(content)
+	return strings.HasPrefix(content, "/btw")
+}
+
+func isBenignCancellation(err error) bool {
+	if err == context.Canceled || err == context.DeadlineExceeded {
+		return true
+	}
+
+	text := strings.TrimSpace(err.Error())
+	return text == context.Canceled.Error() || text == context.DeadlineExceeded.Error()
 }
 
 // healthHandler 健康检查处理器

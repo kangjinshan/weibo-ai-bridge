@@ -75,3 +75,11 @@ type InteractiveSession interface {
 	// Close 关闭底层会话。
 	Close() error
 }
+
+// InterruptibleSession 支持显式中断当前正在运行的 turn。
+type InterruptibleSession interface {
+	InteractiveSession
+
+	// Interrupt 中断当前正在执行的 turn；如果当前没有活动 turn，应静默成功返回。
+	Interrupt() error
+}

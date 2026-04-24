@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/yourusername/weibo-ai-bridge/agent"
@@ -147,11 +148,13 @@ func (m *MockInteractiveAgent) StartSession(ctx context.Context, sessionID strin
 }
 
 type MockInteractiveSession struct {
-	events    chan agent.Event
-	sendFn    func(input string)
-	approveFn func(action agent.ApprovalAction)
+	events      chan agent.Event
+	sendFn      func(input string)
+	interruptFn func()
+	approveFn   func(action agent.ApprovalAction)
 
 	sentInputs []string
+	interrupts int
 	actions    []agent.ApprovalAction
 	sessionID  string
 }
@@ -174,6 +177,14 @@ func (m *MockInteractiveSession) RespondApproval(action agent.ApprovalAction) er
 	m.actions = append(m.actions, action)
 	if m.approveFn != nil {
 		m.approveFn(action)
+	}
+	return nil
+}
+
+func (m *MockInteractiveSession) Interrupt() error {
+	m.interrupts++
+	if m.interruptFn != nil {
+		m.interruptFn()
 	}
 	return nil
 }
@@ -899,6 +910,46 @@ func TestForwardStreamToPlatform_SendsFinalMessageThenDoneChunk(t *testing.T) {
 	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
+func TestForwardStreamToPlatform_SettlesCurrentStreamOnContextCancel(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := make(chan agent.Event, 1)
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "partial"}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- router.forwardStreamToPlatform(ctx, "user-cancel", stream)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	err := <-errCh
+	assert.Error(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.Equal(t, "partial", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
+}
+
+func TestForwardStreamToPlatform_IgnoresContextCanceledErrorEvent(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 2)
+	stream <- agent.Event{Type: agent.EventTypeError, Error: context.Canceled.Error()}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-cancel-error", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 0)
+}
+
 func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)
@@ -1060,10 +1111,126 @@ func TestHandleMessage_ByTheWayInjectsIntoExistingInteractiveSession(t *testing.
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"先做第一步", "顺便检查一下日志"}, liveSession.sentInputs)
+	assert.Equal(t, 0, liveSession.interrupts)
 	assert.Len(t, platform.replies, 4)
 	assert.Equal(t, "收到补充: 顺便检查一下日志", platform.replies[2]["content"])
 	assert.Equal(t, "", platform.replies[3]["content"])
 	assert.Equal(t, true, platform.replies[3]["done"])
+}
+
+func TestHandleMessage_ByTheWayDoesNotConsumeTrailingEventsFromPreviousTurn(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		switch input {
+		case "先做第一步":
+			liveSession.events <- agent.Event{Type: agent.EventTypeDelta, Content: "第一段"}
+			liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				liveSession.events <- agent.Event{Type: agent.EventTypeDelta, Content: "尾巴"}
+				liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			}()
+		case "顺便检查一下日志":
+			liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "收到补充: " + input}
+			liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+		}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-start",
+		Type:      weibo.MessageTypeText,
+		Content:   "先做第一步",
+		UserID:    "user-btw-tail",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "第一段尾巴", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-btw",
+		Type:      weibo.MessageTypeText,
+		Content:   "/btw 顺便检查一下日志",
+		UserID:    "user-btw-tail",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"先做第一步", "顺便检查一下日志"}, liveSession.sentInputs)
+	assert.Len(t, platform.replies, 4)
+	assert.Equal(t, "收到补充: 顺便检查一下日志", platform.replies[2]["content"])
+	assert.Equal(t, "", platform.replies[3]["content"])
+	assert.Equal(t, true, platform.replies[3]["done"])
+}
+
+func TestHandleMessage_ByTheWayIgnoresBufferedDoneBeforeSendingNewTurn(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+	liveSession.sendFn = func(input string) {
+		if input == "顺便检查一下日志" {
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "收到补充: " + input}
+				liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			}()
+		}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	active := sessionMgr.Create("user-btw-buffered-1", "user-btw-buffered", "codex")
+	assert.NotNil(t, active)
+	sessionMgr.SetActiveSession("user-btw-buffered", active.ID)
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	router.liveSessions[active.ID] = &interactiveSessionState{
+		agentType: "codex",
+		session:   liveSession,
+	}
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-btw",
+		Type:      weibo.MessageTypeText,
+		Content:   "/btw 顺便检查一下日志",
+		UserID:    "user-btw-buffered",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"顺便检查一下日志"}, liveSession.sentInputs)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "收到补充: 顺便检查一下日志", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
 func TestHandleMessage_ByTheWayRequiresExistingInteractiveSession(t *testing.T) {

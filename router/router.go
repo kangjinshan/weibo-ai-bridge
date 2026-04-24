@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/yourusername/weibo-ai-bridge/agent"
@@ -67,6 +68,8 @@ type interactiveSessionState struct {
 }
 
 var approvalMentionPattern = regexp.MustCompile(`@\S+`)
+
+const interactiveDoneGracePeriod = 200 * time.Millisecond
 
 // PlatformInterface 平台接口
 type PlatformInterface interface {
@@ -176,6 +179,20 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 	return r.forwardStreamToPlatform(ctx, msg.UserID, stream)
 }
 
+func (r *Router) InjectByTheWay(ctx context.Context, msg *weibo.Message) (bool, error) {
+	if msg == nil {
+		return false, errors.New("message cannot be nil")
+	}
+
+	routerMsg := r.toRouterMessage(msg)
+	if !isByTheWayCommand(routerMsg.Content) {
+		return false, nil
+	}
+
+	_, err := r.injectByTheWay(routerMsg)
+	return true, err
+}
+
 func (r *Router) toRouterMessage(msg *weibo.Message) *Message {
 	sessionID := ""
 	if r.sessionMgr != nil {
@@ -211,7 +228,7 @@ func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan 
 		content := strings.TrimSpace(msg.Content)
 		if strings.HasPrefix(content, "/") && r.commandHandler != nil {
 			if handled, err := r.emitSpecialCommandEvents(ctx, events, msg); handled {
-				if err != nil {
+				if err != nil && !isBenignCancellation(err) {
 					events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
 				}
 				events <- agent.Event{Type: agent.EventTypeDone}
@@ -221,7 +238,7 @@ func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan 
 			return
 		}
 
-		if err := r.streamAIMessage(ctx, msg, events); err != nil {
+		if err := r.streamAIMessage(ctx, msg, events); err != nil && !isBenignCancellation(err) {
 			events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
 		}
 
@@ -302,37 +319,9 @@ func (r *Router) emitCommandEvents(events chan<- agent.Event, msg *Message) {
 }
 
 func (r *Router) handleByTheWayCommand(ctx context.Context, msg *Message, events chan<- agent.Event) error {
-	if r.sessionMgr == nil {
-		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Session manager is not available."}
-		return nil
-	}
-
-	parts := strings.Fields(strings.TrimSpace(msg.Content))
-	if len(parts) < 2 {
-		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Please provide content to insert: /btw <message>"}
-		return nil
-	}
-
-	content := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Content), parts[0]))
-	if content == "" {
-		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Please provide content to insert: /btw <message>"}
-		return nil
-	}
-
-	sess, ok := r.resolveByTheWaySession(msg)
-	if !ok {
-		events <- agent.Event{Type: agent.EventTypeMessage, Content: "No active session found. Use /new to create or activate a session first."}
-		return nil
-	}
-
-	liveState, ok := r.getInteractiveSession(sess.ID)
-	if !ok {
-		events <- agent.Event{Type: agent.EventTypeMessage, Content: "No live interactive session is running for the current session yet."}
-		return nil
-	}
-
-	if liveState.awaitingApproval {
-		events <- agent.Event{Type: agent.EventTypeMessage, Content: "Current session is waiting for approval. Reply with 允许 / 取消 / 允许所有 first."}
+	sess, liveState, content, err := r.resolveByTheWayTarget(msg)
+	if err != nil {
+		events <- agent.Event{Type: agent.EventTypeMessage, Content: err.Error()}
 		return nil
 	}
 
@@ -342,6 +331,51 @@ func (r *Router) handleByTheWayCommand(ctx context.Context, msg *Message, events
 	}
 
 	return r.drainInteractiveSession(ctx, sess, agentSessionContextKey(sess.AgentType), liveState, events)
+}
+
+func (r *Router) injectByTheWay(msg *Message) (string, error) {
+	_, liveState, content, err := r.resolveByTheWayTarget(msg)
+	if err != nil {
+		return "", err
+	}
+
+	if err := liveState.session.Send(content); err != nil {
+		return "", err
+	}
+
+	return "已注入补充说明，当前回复会继续输出。", nil
+}
+
+func (r *Router) resolveByTheWayTarget(msg *Message) (*session.Session, *interactiveSessionState, string, error) {
+	if r.sessionMgr == nil {
+		return nil, nil, "", errors.New("Session manager is not available.")
+	}
+
+	parts := strings.Fields(strings.TrimSpace(msg.Content))
+	if len(parts) < 2 {
+		return nil, nil, "", errors.New("Please provide content to insert: /btw <message>")
+	}
+
+	content := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Content), parts[0]))
+	if content == "" {
+		return nil, nil, "", errors.New("Please provide content to insert: /btw <message>")
+	}
+
+	sess, ok := r.resolveByTheWaySession(msg)
+	if !ok {
+		return nil, nil, "", errors.New("No active session found. Use /new to create or activate a session first.")
+	}
+
+	liveState, ok := r.getInteractiveSession(sess.ID)
+	if !ok {
+		return nil, nil, "", errors.New("No live interactive session is running for the current session yet.")
+	}
+
+	if liveState.awaitingApproval {
+		return nil, nil, "", errors.New("Current session is waiting for approval. Reply with 允许 / 取消 / 允许所有 first.")
+	}
+
+	return sess, liveState, content, nil
 }
 
 func (r *Router) resolveByTheWaySession(msg *Message) (*session.Session, bool) {
@@ -389,6 +423,9 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 	for {
 		select {
 		case <-ctx.Done():
+			if err := sender.Settle(context.WithoutCancel(ctx)); err != nil {
+				return err
+			}
 			return ctx.Err()
 		case event, ok := <-stream:
 			if !ok {
@@ -414,7 +451,7 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 					return err
 				}
 			case agent.EventTypeError:
-				if strings.TrimSpace(event.Error) != "" {
+				if strings.TrimSpace(event.Error) != "" && !isBenignCancellation(errors.New(event.Error)) {
 					if err := sender.PushDeliverText(ctx, "AI execution failed: "+event.Error, true); err != nil {
 						return err
 					}
@@ -427,6 +464,15 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 			}
 		}
 	}
+}
+
+func isBenignCancellation(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	text := strings.TrimSpace(err.Error())
+	return text == context.Canceled.Error() || text == context.DeadlineExceeded.Error()
 }
 
 func (r *Router) openStreamWriter(ctx context.Context, userID string) (streamReplyWriter, error) {
@@ -652,12 +698,69 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 		return r.drainInteractiveSession(ctx, sess, sessionKey, liveState, events)
 	}
 
+	r.discardBufferedInteractiveEvents(sess, sessionKey, liveState)
+
 	if err := liveState.session.Send(msg.Content); err != nil {
 		r.removeInteractiveSession(sess.ID)
 		return err
 	}
 
 	return r.drainInteractiveSession(ctx, sess, sessionKey, liveState, events)
+}
+
+func (r *Router) discardBufferedInteractiveEvents(sess *session.Session, sessionKey string, liveState *interactiveSessionState) {
+	for {
+		select {
+		case event, ok := <-liveState.session.Events():
+			if !ok {
+				r.removeInteractiveSession(sess.ID)
+				return
+			}
+
+			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
+				if sess.Context == nil {
+					sess.Context = make(map[string]interface{})
+				}
+				sess.Context[sessionKey] = event.SessionID
+				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func (r *Router) waitInteractiveEventsQuiesced(sess *session.Session, sessionKey string, liveState *interactiveSessionState, quietPeriod time.Duration) {
+	timer := time.NewTimer(quietPeriod)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			return
+		case event, ok := <-liveState.session.Events():
+			if !ok {
+				r.removeInteractiveSession(sess.ID)
+				return
+			}
+
+			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
+				if sess.Context == nil {
+					sess.Context = make(map[string]interface{})
+				}
+				sess.Context[sessionKey] = event.SessionID
+				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+			}
+
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(quietPeriod)
+		}
+	}
 }
 
 func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, interactiveAgent agent.InteractiveAgent) (*interactiveSessionState, error) {
@@ -732,13 +835,64 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 				}
 				return nil
 			case agent.EventTypeDone:
-				return nil
+				return r.drainInteractiveTailAfterDone(ctx, sess, sessionKey, liveState, events)
 			case agent.EventTypeError:
 				events <- event
 				r.removeInteractiveSession(sess.ID)
 				return nil
 			default:
 				events <- event
+			}
+		}
+	}
+}
+
+func (r *Router) drainInteractiveTailAfterDone(ctx context.Context, sess *session.Session, sessionKey string, liveState *interactiveSessionState, events chan<- agent.Event) error {
+	timer := time.NewTimer(interactiveDoneGracePeriod)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case event, ok := <-liveState.session.Events():
+			if !ok {
+				r.removeInteractiveSession(sess.ID)
+				return errors.New("agent session closed unexpectedly")
+			}
+
+			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
+				if sess.Context == nil {
+					sess.Context = make(map[string]interface{})
+				}
+				sess.Context[sessionKey] = event.SessionID
+				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+			}
+
+			switch event.Type {
+			case agent.EventTypeDone:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(interactiveDoneGracePeriod)
+			case agent.EventTypeError:
+				events <- event
+				r.removeInteractiveSession(sess.ID)
+				return nil
+			default:
+				events <- event
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(interactiveDoneGracePeriod)
 			}
 		}
 	}

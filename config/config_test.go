@@ -10,9 +10,11 @@ import (
 
 func TestLoad(t *testing.T) {
 	// 设置测试环境变量
-	os.Setenv("WEIBO_APP_ID", "test-app-id")
-	os.Setenv("WEIBO_APP_SECRET", "test-app-secret")
-	os.Setenv("CLAUDE_ENABLED", "true")
+	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.toml"))
+	t.Setenv("WEIBO_APP_ID", "test-app-id")
+	t.Setenv("WEIBO_APP_SECRET", "test-app-secret")
+	t.Setenv("CLAUDE_ENABLED", "true")
+	t.Setenv("CODEX_ENABLED", "false")
 
 	cfg := Load()
 
@@ -21,20 +23,12 @@ func TestLoad(t *testing.T) {
 	assert.Equal(t, "test-app-secret", cfg.Platform.Weibo.AppSecret)
 	assert.True(t, cfg.Agent.Claude.Enabled)
 	assert.False(t, cfg.Agent.Codex.Enabled)
-
-	// 清理环境变量
-	os.Unsetenv("WEIBO_APP_ID")
-	os.Unsetenv("WEIBO_APP_SECRET")
-	os.Unsetenv("WEIBO_APP_Secret")
-	os.Unsetenv("CLAUDE_ENABLED")
 }
 
 func TestLoad_LegacyWeiboAppSecretEnvStillWorks(t *testing.T) {
+	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.toml"))
 	os.Unsetenv("WEIBO_APP_SECRET")
-	os.Setenv("WEIBO_APP_Secret", "legacy-secret")
-	t.Cleanup(func() {
-		os.Unsetenv("WEIBO_APP_Secret")
-	})
+	t.Setenv("WEIBO_APP_Secret", "legacy-secret")
 
 	cfg := Load()
 

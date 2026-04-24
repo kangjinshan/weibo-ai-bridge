@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -29,6 +30,7 @@ type codexInteractiveSession struct {
 	pendingResp   map[string]chan map[string]any
 
 	threadID atomic.Value
+	turnID   atomic.Value
 	alive    atomic.Bool
 
 	readDone chan struct{}
@@ -124,8 +126,20 @@ func (s *codexInteractiveSession) Send(input string) error {
 	s.deltaSeen = make(map[string]bool)
 	s.deltaSeenMu.Unlock()
 
-	_, err := s.request("turn/start", params)
-	return err
+	resp, err := s.request("turn/start", params)
+	if err != nil {
+		return err
+	}
+
+	if result, _ := resp["result"].(map[string]any); result != nil {
+		if turn, _ := result["turn"].(map[string]any); turn != nil {
+			if turnID, _ := turn["id"].(string); strings.TrimSpace(turnID) != "" {
+				s.turnID.Store(strings.TrimSpace(turnID))
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *codexInteractiveSession) RespondApproval(action ApprovalAction) error {
@@ -149,6 +163,39 @@ func (s *codexInteractiveSession) RespondApproval(action ApprovalAction) error {
 		"id":     pending.id,
 		"result": result,
 	})
+}
+
+func (s *codexInteractiveSession) Interrupt() error {
+	threadID := strings.TrimSpace(s.CurrentSessionID())
+	turnID, _ := s.turnID.Load().(string)
+	turnID = strings.TrimSpace(turnID)
+	if threadID == "" || turnID == "" {
+		return nil
+	}
+
+	_, err := s.request("turn/interrupt", map[string]any{
+		"threadId": threadID,
+		"turnId":   turnID,
+	})
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") ||
+			strings.Contains(strings.ToLower(err.Error()), "no active") ||
+			strings.Contains(strings.ToLower(err.Error()), "already completed") {
+			return nil
+		}
+		return err
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		currentTurnID, _ := s.turnID.Load().(string)
+		if strings.TrimSpace(currentTurnID) == "" || strings.TrimSpace(currentTurnID) != turnID {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	return nil
 }
 
 func (s *codexInteractiveSession) Events() <-chan Event {
@@ -316,6 +363,19 @@ func (s *codexInteractiveSession) readLoop() {
 				sendEvent(s.events, event)
 				continue
 			}
+		}
+
+		if method, _ := msg["method"].(string); method == "turn/started" {
+			if params, _ := msg["params"].(map[string]any); params != nil {
+				if turn, _ := params["turn"].(map[string]any); turn != nil {
+					if turnID, _ := turn["id"].(string); strings.TrimSpace(turnID) != "" {
+						s.turnID.Store(strings.TrimSpace(turnID))
+					}
+				}
+			}
+		}
+		if method, _ := msg["method"].(string); method == "turn/completed" {
+			s.turnID.Store("")
 		}
 
 		s.deltaSeenMu.Lock()

@@ -1131,6 +1131,91 @@ func TestHandleMessage_AllowAllContinuesPendingInteractiveSession(t *testing.T) 
 	assert.Equal(t, true, platform.replies[4]["done"])
 }
 
+func TestHandleMessage_AllowAndCancelContinuePendingInteractiveSession(t *testing.T) {
+	tests := []struct {
+		name           string
+		agentName      string
+		replyContent   string
+		approvalInput  string
+		expectedAction agent.ApprovalAction
+		expectedText   string
+	}{
+		{
+			name:           "claude allow",
+			agentName:      "claude-code",
+			replyContent:   "允许 @bridge",
+			approvalInput:  "rm -rf ./tmp",
+			expectedAction: agent.ApprovalActionAllow,
+			expectedText:   "已按授权继续执行",
+		},
+		{
+			name:           "codex cancel",
+			agentName:      "codex",
+			replyContent:   "取消 @bridge",
+			approvalInput:  "git push origin main",
+			expectedAction: agent.ApprovalActionCancel,
+			expectedText:   "已取消本次执行",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			platform := &MockPlatform{}
+			sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+			agentMgr := agent.NewManager()
+
+			liveSession := NewMockInteractiveSession()
+			liveSession.sendFn = func(input string) {
+				liveSession.events <- agent.Event{
+					Type:      agent.EventTypeApproval,
+					ToolName:  "command_execution",
+					ToolInput: tt.approvalInput,
+				}
+			}
+			liveSession.approveFn = func(action agent.ApprovalAction) {
+				liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: tt.expectedText}
+				liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			}
+
+			interactiveAgent := &MockInteractiveAgent{
+				name:      tt.agentName,
+				available: true,
+				session:   liveSession,
+			}
+			agentMgr.Register(interactiveAgent)
+			agentMgr.SetDefault(tt.agentName)
+
+			router := NewRouter(platform, sessionMgr, agentMgr)
+
+			err := router.HandleMessage(context.Background(), &weibo.Message{
+				ID:        "msg-start",
+				Type:      weibo.MessageTypeText,
+				Content:   "先执行这个操作",
+				UserID:    "user-" + strings.ReplaceAll(tt.name, " ", "-"),
+				UserName:  "tester",
+				Timestamp: 1,
+			})
+			assert.NoError(t, err)
+
+			err = router.HandleMessage(context.Background(), &weibo.Message{
+				ID:        "msg-approval-reply",
+				Type:      weibo.MessageTypeText,
+				Content:   tt.replyContent,
+				UserID:    "user-" + strings.ReplaceAll(tt.name, " ", "-"),
+				UserName:  "tester",
+				Timestamp: 2,
+			})
+
+			assert.NoError(t, err)
+			assert.Equal(t, []agent.ApprovalAction{tt.expectedAction}, liveSession.actions)
+			assert.Contains(t, platform.replies[0]["content"], "请回复：允许 / 取消 / 允许所有")
+			assert.Equal(t, tt.expectedText, platform.replies[2]["content"])
+			assert.Equal(t, "", platform.replies[3]["content"])
+			assert.Equal(t, true, platform.replies[3]["done"])
+		})
+	}
+}
+
 func TestHandleMessage_ByTheWayInjectsIntoExistingInteractiveSession(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
@@ -1176,6 +1261,54 @@ func TestHandleMessage_ByTheWayInjectsIntoExistingInteractiveSession(t *testing.
 	assert.Equal(t, 0, liveSession.interrupts)
 	assert.Len(t, platform.replies, 4)
 	assert.Equal(t, "收到补充: 顺便检查一下日志", platform.replies[2]["content"])
+	assert.Equal(t, "", platform.replies[3]["content"])
+	assert.Equal(t, true, platform.replies[3]["done"])
+}
+
+func TestHandleMessage_ByTheWayInjectsIntoExistingClaudeInteractiveSession(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "Claude 收到补充: " + input}
+		liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-start",
+		Type:      weibo.MessageTypeText,
+		Content:   "先做第一步",
+		UserID:    "user-btw-claude",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-btw",
+		Type:      weibo.MessageTypeText,
+		Content:   "/btw 顺便检查一下日志",
+		UserID:    "user-btw-claude",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"先做第一步", "顺便检查一下日志"}, liveSession.sentInputs)
+	assert.Len(t, platform.replies, 4)
+	assert.Equal(t, "Claude 收到补充: 顺便检查一下日志", platform.replies[2]["content"])
 	assert.Equal(t, "", platform.replies[3]["content"])
 	assert.Equal(t, true, platform.replies[3]["done"])
 }

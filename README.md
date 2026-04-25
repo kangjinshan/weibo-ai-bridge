@@ -33,6 +33,7 @@ Weibo AI Bridge 是一个基于 Go 语言开发的中间件服务，旨在连接
 - **消息路由**: 智能路由消息到对应的 AI Agent
 - **命令处理**: 支持会话列表、会话切换、Agent 切换、状态查看与对进行中会话插话
 - **审批回复**: 当交互式 Agent 请求授权时，用户可直接回复 `允许`、`允许所有` 或 `取消`
+- **内置微博 Skills**: 仓库自带 `weibo-skill-api` 能力包，安装 bridge 时可同时安装到 Codex 和 Claude 的 personal skills 目录
 - **命令旁路**: 当上一条普通消息仍在处理中时，`/help`、`/list`、`/status` 等 slash 指令会立即执行，不进入消息队列
 - **健康检查**: 提供 HTTP 接口用于健康检查和统计信息
 
@@ -181,6 +182,22 @@ journalctl -u weibo-ai-bridge.service -f
 - service 模板默认从 `CONFIG_PATH` 读取 TOML 配置，并额外读取仓库根目录的 `.env`：`EnvironmentFile=-/home/azureuser/weibo-ai-bridge/.env`
 - 如果 `codex` CLI 依赖 Azure/OpenAI/Anthropic 等环境变量，必须把这些变量写进 `.env`，不能只存在于你当前 shell。
 - `Restart=always` 和 `RestartSec=5` 会让服务异常退出后自动重启。
+- 安装脚本 `scripts/install.sh` 会同时复制仓库内置的 `skills/weibo-skill-api`，并安装到目标用户的 `~/.codex/skills/weibo-skill-api` 与 `~/.claude/skills/weibo-skill-api`。
+
+#### 安装内置微博 Skills
+
+如果你是直接在仓库中开发或手动部署，而不是使用 `scripts/install.sh`，可以单独执行：
+
+```bash
+bash scripts/install-skills.sh
+```
+
+这会把仓库内置的 `skills/weibo-skill-api` 同时安装到当前用户的：
+
+- `~/.codex/skills/weibo-skill-api`
+- `~/.claude/skills/weibo-skill-api`
+
+该 skill 会默认复用 `weibo-ai-bridge` 的微博 `app_id` / `app_secret` 与统一 token 缓存，不再需要单独维护 `~/.weibo-skill/config.json`。
 
 ### HTTP 接口
 
@@ -643,7 +660,8 @@ Configuration validation failed: platform.weibo.app_id is required
 ```
 
 **解决方法**:
-检查环境变量或配置文件中是否正确设置了 `WEIBO_APP_ID` 和 `WEIBO_APP_Secret`。
+检查环境变量或配置文件中是否正确设置了 `WEIBO_APP_ID` 和 `WEIBO_APP_SECRET`。
+兼容说明：当前程序仍兼容旧别名 `WEIBO_APP_Secret`，但新配置应统一使用 `WEIBO_APP_SECRET`。
 
 #### 2. Agent 初始化失败
 

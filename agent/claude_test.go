@@ -1,9 +1,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 )
+
+type testWriteCloser struct {
+	bytes.Buffer
+}
+
+func (w *testWriteCloser) Close() error {
+	return nil
+}
 
 func TestClaudeCodeAgent_Name(t *testing.T) {
 	agent := NewClaudeCodeAgent()
@@ -255,6 +265,79 @@ func TestParseClaudeStreamEvent_ResultAvoidsDuplicateFinal(t *testing.T) {
 
 	if len(events) != 1 || events[0].Type != EventTypeDone {
 		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestClaudeInteractiveSession_RespondApproval(t *testing.T) {
+	tests := []struct {
+		name             string
+		action           ApprovalAction
+		expectedBehavior string
+		expectInput      bool
+	}{
+		{
+			name:             "allow",
+			action:           ApprovalActionAllow,
+			expectedBehavior: "allow",
+			expectInput:      true,
+		},
+		{
+			name:             "allow all",
+			action:           ApprovalActionAllowAll,
+			expectedBehavior: "allow",
+			expectInput:      true,
+		},
+		{
+			name:             "cancel",
+			action:           ApprovalActionCancel,
+			expectedBehavior: "deny",
+			expectInput:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdin := &testWriteCloser{}
+			session := &claudeInteractiveSession{
+				stdin: stdin,
+				pending: &claudePendingApproval{
+					requestID: "req-1",
+					input: map[string]any{
+						"command": "ls -la",
+					},
+				},
+			}
+			session.alive.Store(true)
+
+			err := session.RespondApproval(tt.action)
+			if err != nil {
+				t.Fatalf("RespondApproval returned error: %v", err)
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(stdin.Bytes()), &payload); err != nil {
+				t.Fatalf("failed to parse payload: %v", err)
+			}
+
+			if payload["type"] != "control_response" {
+				t.Fatalf("unexpected type: %v", payload["type"])
+			}
+
+			response, _ := payload["response"].(map[string]any)
+			if response["request_id"] != "req-1" {
+				t.Fatalf("unexpected request id: %v", response["request_id"])
+			}
+
+			inner, _ := response["response"].(map[string]any)
+			if inner["behavior"] != tt.expectedBehavior {
+				t.Fatalf("unexpected behavior: %v", inner["behavior"])
+			}
+
+			_, hasUpdatedInput := inner["updatedInput"]
+			if hasUpdatedInput != tt.expectInput {
+				t.Fatalf("updatedInput presence = %v, want %v", hasUpdatedInput, tt.expectInput)
+			}
+		})
 	}
 }
 

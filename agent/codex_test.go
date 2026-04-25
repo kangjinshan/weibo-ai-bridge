@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -278,5 +279,79 @@ func TestShouldIgnoreCodexAppServerReadError(t *testing.T) {
 	}
 	if shouldIgnoreCodexAppServerReadError(err, true) {
 		t.Fatal("expected active-turn abnormal closure to surface as error")
+	}
+}
+
+func TestCodexApprovalResult(t *testing.T) {
+	tests := []struct {
+		name     string
+		pending  *codexPendingApproval
+		action   ApprovalAction
+		expected map[string]any
+	}{
+		{
+			name: "command allow",
+			pending: &codexPendingApproval{
+				method: "item/commandExecution/requestApproval",
+			},
+			action:   ApprovalActionAllow,
+			expected: map[string]any{"decision": "accept"},
+		},
+		{
+			name: "command allow all",
+			pending: &codexPendingApproval{
+				method: "item/commandExecution/requestApproval",
+			},
+			action:   ApprovalActionAllowAll,
+			expected: map[string]any{"decision": "acceptForSession"},
+		},
+		{
+			name: "file change cancel",
+			pending: &codexPendingApproval{
+				method: "item/fileChange/requestApproval",
+			},
+			action:   ApprovalActionCancel,
+			expected: map[string]any{"decision": "cancel"},
+		},
+		{
+			name: "permissions allow all",
+			pending: &codexPendingApproval{
+				method: "item/permissions/requestApproval",
+				params: map[string]any{
+					"permissions": map[string]any{"disk": "write"},
+				},
+			},
+			action: ApprovalActionAllowAll,
+			expected: map[string]any{
+				"permissions": map[string]any{"disk": "write"},
+				"scope":       "session",
+			},
+		},
+		{
+			name: "permissions cancel",
+			pending: &codexPendingApproval{
+				method: "item/permissions/requestApproval",
+				params: map[string]any{
+					"permissions": map[string]any{"disk": "write"},
+				},
+			},
+			action: ApprovalActionCancel,
+			expected: map[string]any{
+				"permissions": map[string]any{},
+				"scope":       "turn",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := codexApprovalResult(tt.pending, tt.action)
+			if err != nil {
+				t.Fatalf("codexApprovalResult returned error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Fatalf("unexpected result: got %#v want %#v", got, tt.expected)
+			}
+		})
 	}
 }

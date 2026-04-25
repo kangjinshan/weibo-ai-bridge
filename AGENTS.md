@@ -32,6 +32,8 @@
   消息路由、斜杠命令、交互式会话、流式转发、审批流和 `/btw` 插话。
 - `agent/`
   Agent 抽象层，以及 Claude/Codex 的具体实现，包含交互式会话和 Codex app-server 流式协议。
+- `skills/`
+  项目内置的 skill 能力包。当前包含 `weibo-skill-api`，安装 bridge 时会同步安装到 Codex 和 Claude 的 personal skills 目录。
 - `platform/weibo/`
   微博平台适配层、消息收发、分片回复发送器和平台侧类型定义。
 - `session/`
@@ -64,6 +66,7 @@
 - 长回复需要保持中文安全切分，并尽量在自然边界 flush
 - 如果流式正文连续 5 秒没有实际输出，下一次恢复输出前应补一个换行，避免微博侧长段回复缺少视觉分隔
 - 对 Codex interactive session，`turn/completed` 之后紧跟着出现的 EOF 或 `websocket close 1006` 应按正常收尾处理，不应回给用户 `AI execution failed`
+- `skills/weibo-skill-api` 默认应复用 `weibo-ai-bridge` 的微博配置与 token 缓存，不要重新引入单独的 `~/.weibo-skill/config.json`
 
 ## 命令与接口
 
@@ -204,6 +207,7 @@ Claude 的认证主要由本地 CLI 环境负责。Codex 也可能依赖本地 C
 - `README.md`：面向使用者和运维的行为、命令、接口、部署说明
 - `agents.md`：运行时 Agent 接入、可用性、配置说明
 - `AGENTS.md`：仓库结构、开发流程、协作约束
+- `skills/weibo-skill-api/*`：内置微博 skill 的脚本、说明与配置约束
 
 提交 GitHub 前，必须显式检查一次文档是否需要同步：
 

@@ -22,6 +22,9 @@ CONFIG_DIR="/etc/${PROJECT_NAME}"
 BINARY_NAME="weibo-ai-bridge"
 SERVICE_NAME="${PROJECT_NAME}.service"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
+SKILL_NAME="weibo-skill-api"
+TARGET_USER="${SUDO_USER:-${USER}}"
+TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
 
 # 日志函数
 log_info() {
@@ -144,6 +147,19 @@ install_binary() {
     log_success "二进制文件安装完成"
 }
 
+# 安装附带资源
+install_assets() {
+    log_info "安装项目附带资源..."
+
+    rm -rf "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/skills"
+    cp -r "${PROJECT_DIR}/scripts" "${INSTALL_DIR}/scripts"
+    cp -r "${PROJECT_DIR}/skills" "${INSTALL_DIR}/skills"
+    chmod +x "${INSTALL_DIR}/scripts/"*.sh
+    find "${INSTALL_DIR}/skills" -type f -name '*.sh' -exec chmod +x {} \;
+
+    log_success "附带资源安装完成"
+}
+
 # 安装配置文件
 install_config() {
     log_info "安装配置文件..."
@@ -203,6 +219,26 @@ EOF
     fi
 }
 
+install_user_skills() {
+    if [[ -z "${TARGET_USER}" || -z "${TARGET_HOME}" ]]; then
+        log_warning "无法解析目标用户，跳过 Codex/Claude skill 安装"
+        return
+    fi
+
+    if [[ ! -x "${INSTALL_DIR}/scripts/install-skills.sh" ]]; then
+        log_warning "未找到 skill 安装脚本，跳过 Codex/Claude skill 安装"
+        return
+    fi
+
+    log_info "为用户 ${TARGET_USER} 安装 Codex/Claude 微博 skills..."
+    su - "${TARGET_USER}" -c "${INSTALL_DIR}/scripts/install-skills.sh --repo-root ${INSTALL_DIR} --user-home ${TARGET_HOME}" || {
+        log_warning "Codex/Claude skill 安装失败，请手动运行: ${INSTALL_DIR}/scripts/install-skills.sh --repo-root ${INSTALL_DIR} --user-home ${TARGET_HOME}"
+        return
+    }
+
+    log_success "Codex/Claude 微博 skills 安装完成"
+}
+
 # 清理临时文件
 cleanup() {
     if [[ -d "/tmp/${PROJECT_NAME}" ]] && [[ "${PROJECT_DIR}" == "/tmp/${PROJECT_NAME}" ]]; then
@@ -222,6 +258,7 @@ show_completion() {
     log_info "安装位置: ${INSTALL_DIR}"
     log_info "配置文件: ${CONFIG_FILE}"
     log_info "日志目录: /var/log/${PROJECT_NAME}"
+    log_info "已安装微博 skills: ${TARGET_HOME}/.codex/skills/${SKILL_NAME} 和 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
     echo ""
     log_warning "下一步操作："
     echo "  1. 编辑配置文件: vi ${CONFIG_FILE}"
@@ -246,8 +283,10 @@ main() {
     download_project
     build_project
     install_binary
+    install_assets
     install_config
     create_service
+    install_user_skills
     cleanup
     show_completion
 

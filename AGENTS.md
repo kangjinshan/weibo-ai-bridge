@@ -62,6 +62,8 @@
 - 当用户已有普通消息在处理中时，其它 slash 指令应旁路消息队列并立即执行；不要把 `/help`、`/status` 之类命令排到当前回复之后
 - Codex 优先走 `codex app-server` 流式路径，失败时才回退到 JSON CLI 路径
 - 长回复需要保持中文安全切分，并尽量在自然边界 flush
+- 如果流式正文连续 5 秒没有实际输出，下一次恢复输出前应补一个换行，避免微博侧长段回复缺少视觉分隔
+- 对 Codex interactive session，`turn/completed` 之后紧跟着出现的 EOF 或 `websocket close 1006` 应按正常收尾处理，不应回给用户 `AI execution failed`
 
 ## 命令与接口
 

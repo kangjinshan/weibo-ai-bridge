@@ -908,6 +908,26 @@ func TestForwardStreamToPlatform_BuffersDeltaUntilSentenceBoundary(t *testing.T)
 	assert.Equal(t, true, platform.streams[0].chunks[2]["done"])
 }
 
+func TestForwardStreamToPlatform_FlushesDeltaWithoutPunctuationAfterThreshold(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 3)
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: strings.Repeat("你", 12)}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: strings.Repeat("好", 12)}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardStreamToPlatform(context.Background(), "user-no-punct", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.Equal(t, strings.Repeat("你", 12)+strings.Repeat("好", 12), platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
+}
+
 func TestForwardStreamToPlatform_UsesSingleMessageIDForBufferedDeltas(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)

@@ -70,6 +70,7 @@ type interactiveSessionState struct {
 var approvalMentionPattern = regexp.MustCompile(`@\S+`)
 
 const interactiveDoneGracePeriod = 200 * time.Millisecond
+const deltaFallbackFlushRunes = 24
 
 // PlatformInterface 平台接口
 type PlatformInterface interface {
@@ -1292,6 +1293,9 @@ func findDeltaFlushBoundary(buffered string, force bool) int {
 	}
 	if runeCount >= 12 && lastBoundary > 0 {
 		return lastBoundary
+	}
+	if lastBoundary == 0 && runeCount >= deltaFallbackFlushRunes {
+		return len(buffered)
 	}
 	if runeCount >= 220 {
 		return len(buffered)

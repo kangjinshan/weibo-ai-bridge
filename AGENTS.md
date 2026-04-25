@@ -78,6 +78,12 @@
 - `/status`
 - `/btw <content>`
 
+交互式授权回复：
+
+- 当路由层进入 `EventTypeApproval` 等待态时，用户回复 `允许`、`允许所有` 或 `取消` 会被解析为审批动作
+- `允许所有` 仅对当前会话生效；router 会把后续同会话审批自动转成 allow
+- `/btw` 与授权回复都依赖交互式会话；当前测试已覆盖 `claude-code` 和 `codex`
+
 当前由 `cmd/server/main.go` 暴露的 HTTP 接口：
 
 - `GET /health`

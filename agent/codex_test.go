@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestCodeXAgent_Name(t *testing.T) {
@@ -265,5 +267,16 @@ func TestParseCodexAppServerMessage_FinalMessageWithoutDelta(t *testing.T) {
 
 	if len(events) != 1 || events[0].Type != EventTypeMessage || events[0].Content != "完整正文" {
 		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestShouldIgnoreCodexAppServerReadError(t *testing.T) {
+	err := &websocket.CloseError{Code: websocket.CloseAbnormalClosure, Text: "unexpected EOF"}
+
+	if !shouldIgnoreCodexAppServerReadError(err, false) {
+		t.Fatal("expected idle abnormal closure to be ignored")
+	}
+	if shouldIgnoreCodexAppServerReadError(err, true) {
+		t.Fatal("expected active-turn abnormal closure to surface as error")
 	}
 }

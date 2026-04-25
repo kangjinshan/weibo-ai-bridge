@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -336,10 +338,13 @@ func (s *codexInteractiveSession) readLoop() {
 		var msg map[string]any
 		if err := s.conn.ReadJSON(&msg); err != nil {
 			if s.ctx.Err() == nil {
-				sendEvent(s.events, Event{
-					Type:  EventTypeError,
-					Error: fmt.Sprintf("codex app-server stream error: %v", err),
-				})
+				currentTurnID, _ := s.turnID.Load().(string)
+				if !shouldIgnoreCodexAppServerReadError(err, strings.TrimSpace(currentTurnID) != "") {
+					sendEvent(s.events, Event{
+						Type:  EventTypeError,
+						Error: fmt.Sprintf("codex app-server stream error: %v", err),
+					})
+				}
 			}
 			return
 		}
@@ -386,6 +391,29 @@ func (s *codexInteractiveSession) readLoop() {
 			sendEvent(s.events, event)
 		}
 	}
+}
+
+func shouldIgnoreCodexAppServerReadError(err error, hasActiveTurn bool) bool {
+	if err == nil || hasActiveTurn {
+		return false
+	}
+
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		switch closeErr.Code {
+		case websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived, websocket.CloseAbnormalClosure:
+			return true
+		}
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 func (s *codexInteractiveSession) parseApprovalRequest(msg map[string]any) (Event, bool) {

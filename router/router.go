@@ -863,7 +863,7 @@ func (r *Router) drainInteractiveTailAfterDone(ctx context.Context, sess *sessio
 		case event, ok := <-liveState.session.Events():
 			if !ok {
 				r.removeInteractiveSession(sess.ID)
-				return errors.New("agent session closed unexpectedly")
+				return nil
 			}
 
 			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
@@ -1060,11 +1060,16 @@ type streamReplySender struct {
 	hasSeenPartial      bool
 	hasEmittedChunks    bool
 	hasEmittedDone      bool
+	lastEmitAt          time.Time
+	now                 func() time.Time
+	idleLineBreakAfter  time.Duration
 }
 
 func newStreamReplySender(writer streamReplyWriter) *streamReplySender {
 	return &streamReplySender{
-		writer: writer,
+		writer:             writer,
+		now:                time.Now,
+		idleLineBreakAfter: 5 * time.Second,
 	}
 }
 
@@ -1171,15 +1176,34 @@ func (s *streamReplySender) emitText(ctx context.Context, content string, markLa
 		return nil
 	}
 
+	if s.shouldPrependIdleLineBreak(content) {
+		content = "\n" + content
+	}
+
 	if err := s.writer.SendChunk(ctx, content, markLastDone); err != nil {
 		return err
 	}
 	s.hasEmittedChunks = true
+	if s.now != nil {
+		s.lastEmitAt = s.now()
+	}
 	if markLastDone {
 		s.hasEmittedDone = true
 	}
 
 	return nil
+}
+
+func (s *streamReplySender) shouldPrependIdleLineBreak(content string) bool {
+	if !s.hasEmittedChunks || s.idleLineBreakAfter <= 0 || strings.HasPrefix(content, "\n") {
+		return false
+	}
+
+	if s.now == nil || s.lastEmitAt.IsZero() {
+		return false
+	}
+
+	return s.now().Sub(s.lastEmitAt) >= s.idleLineBreakAfter
 }
 
 func (s *streamReplySender) flushBufferedDelta(ctx context.Context, force bool) error {

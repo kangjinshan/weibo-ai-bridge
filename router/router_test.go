@@ -824,6 +824,48 @@ func TestForwardStreamToPlatform_DoesNotArtificiallySplitDelta(t *testing.T) {
 	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
+func TestStreamReplySender_PrependsLineBreakAfterIdleGap(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-gap", messageID: "stream-msg-user-gap"}
+	now := time.Unix(100, 0)
+
+	sender := newStreamReplySender(writer)
+	sender.now = func() time.Time { return now }
+	sender.idleLineBreakAfter = 5 * time.Second
+
+	err := sender.PushDelta(context.Background(), "第一句。")
+	assert.NoError(t, err)
+
+	now = now.Add(6 * time.Second)
+	err = sender.PushDelta(context.Background(), "第二句。")
+	assert.NoError(t, err)
+
+	assert.Len(t, writer.chunks, 2)
+	assert.Equal(t, "第一句。", writer.chunks[0]["content"])
+	assert.Equal(t, "\n第二句。", writer.chunks[1]["content"])
+}
+
+func TestStreamReplySender_DoesNotPrependLineBreakBeforeIdleGap(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-no-gap", messageID: "stream-msg-user-no-gap"}
+	now := time.Unix(100, 0)
+
+	sender := newStreamReplySender(writer)
+	sender.now = func() time.Time { return now }
+	sender.idleLineBreakAfter = 5 * time.Second
+
+	err := sender.PushDelta(context.Background(), "第一句。")
+	assert.NoError(t, err)
+
+	now = now.Add(4 * time.Second)
+	err = sender.PushDelta(context.Background(), "第二句。")
+	assert.NoError(t, err)
+
+	assert.Len(t, writer.chunks, 2)
+	assert.Equal(t, "第一句。", writer.chunks[0]["content"])
+	assert.Equal(t, "第二句。", writer.chunks[1]["content"])
+}
+
 func TestForwardStreamToPlatform_DoesNotDropRepeatedDelta(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)
@@ -1285,6 +1327,44 @@ func TestHandleMessage_IgnoresLateDoneFromPreviousTurnBeforeSendingNewTurn(t *te
 	assert.Equal(t, []string{"继续处理这个请求"}, liveSession.sentInputs)
 	assert.Len(t, platform.replies, 2)
 	assert.Equal(t, "这是新的回复", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
+}
+
+func TestHandleMessage_InteractiveSessionCloseAfterDoneDoesNotFail(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "这是正常回复"}
+		liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+		close(liveSession.events)
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-close-after-done",
+		Type:      weibo.MessageTypeText,
+		Content:   "继续执行",
+		UserID:    "user-close-after-done",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "这是正常回复", platform.replies[0]["content"])
 	assert.Equal(t, "", platform.replies[1]["content"])
 	assert.Equal(t, true, platform.replies[1]["done"])
 }

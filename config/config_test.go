@@ -95,9 +95,19 @@ func TestDefaultValues(t *testing.T) {
 	assert.Equal(t, 30, cfg.Platform.Weibo.Timeout)
 	assert.Equal(t, 3600, cfg.Session.Timeout)
 	assert.Equal(t, 1000, cfg.Session.MaxSize)
+	assert.Equal(t, defaultSessionStoragePath(), cfg.Session.StoragePath)
 	assert.Equal(t, "info", cfg.Log.Level)
 	assert.Equal(t, "json", cfg.Log.Format)
 	assert.Equal(t, "stdout", cfg.Log.Output)
 	assert.True(t, cfg.Agent.Claude.Enabled)
 	assert.False(t, cfg.Agent.Codex.Enabled)
+}
+
+func TestLoad_SessionStoragePathEnvOverride(t *testing.T) {
+	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.toml"))
+	t.Setenv("SESSION_STORAGE_PATH", "/tmp/custom-weibo-ai-bridge-sessions")
+
+	cfg := Load()
+
+	assert.Equal(t, "/tmp/custom-weibo-ai-bridge-sessions", cfg.Session.StoragePath)
 }

@@ -95,6 +95,14 @@ func newMessageProcessor(platform replyPlatform, router messageHandler, logger *
 	}
 }
 
+func newSessionManager(cfg *config.Config) *session.Manager {
+	return session.NewManager(session.ManagerConfig{
+		Timeout:     cfg.Session.Timeout,
+		MaxSize:     cfg.Session.MaxSize,
+		StoragePath: cfg.Session.StoragePath,
+	})
+}
+
 func main() {
 	// 初始化日志
 	initLogger()
@@ -113,11 +121,8 @@ func main() {
 	defer cancel()
 
 	// 创建会话管理器
-	sessionMgr := session.NewManager(session.ManagerConfig{
-		Timeout: cfg.Session.Timeout,
-		MaxSize: cfg.Session.MaxSize,
-	})
-	logger.Printf("Session manager initialized: timeout=%ds, max_size=%d", cfg.Session.Timeout, cfg.Session.MaxSize)
+	sessionMgr := newSessionManager(cfg)
+	logger.Printf("Session manager initialized: timeout=%ds, max_size=%d, storage_path=%s", cfg.Session.Timeout, cfg.Session.MaxSize, cfg.Session.StoragePath)
 
 	// 创建 Agent 管理器并注册 Agent
 	agentMgr := agent.NewManager()

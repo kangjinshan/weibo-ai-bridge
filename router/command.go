@@ -229,7 +229,7 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 	}
 
 	// 更新会话的 Agent 类型
-	sess.SetAgentType(agentType)
+	h.sessionManager.SetSessionAgentType(sess.ID, agentType)
 
 	return &Response{
 		Success: true,

@@ -933,7 +933,11 @@ func (r *Router) resolveAgentExecution(msg *Message) (*session.Session, string, 
 		return nil, "", "", nil, errors.New("Failed to create or get session")
 	}
 
-	currentSession.SetTitleIfEmpty(msg.Content)
+	if r.sessionMgr != nil {
+		r.sessionMgr.SetSessionTitleIfEmpty(currentSession.ID, msg.Content)
+	} else {
+		currentSession.SetTitleIfEmpty(msg.Content)
+	}
 
 	currentAgent := r.agentMgr.ResolveAgent(currentSession.AgentType)
 	if currentAgent == nil {

@@ -1,8 +1,11 @@
 package session
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +49,10 @@ type ManagerConfig struct {
 	Timeout     int
 	MaxSize     int
 	StoragePath string // 可选：会话持久化存储路径
+}
+
+type storageMetadata struct {
+	ActiveByUser map[string]string `json:"active_by_user"`
 }
 
 // NewManager 创建会话管理器
@@ -113,6 +120,7 @@ func (m *Manager) createLocked(id, userID, agentType string) *Session {
 	// 持久化会话
 	if m.storagePath != "" {
 		m.saveSessionLocked(session)
+		m.saveMetadataLocked()
 	}
 
 	return session
@@ -193,6 +201,7 @@ func (m *Manager) SetActiveSession(userID, sessionID string) bool {
 	}
 
 	m.activeByUser[userID] = sessionID
+	m.saveMetadataLocked()
 	return true
 }
 
@@ -341,6 +350,8 @@ func (m *Manager) Close(id string) {
 
 	if session, exists := m.sessions[id]; exists {
 		session.State = StateClosed
+		session.UpdatedAt = time.Now()
+		m.saveSessionLocked(session)
 	}
 }
 
@@ -356,6 +367,10 @@ func (m *Manager) Delete(id string) {
 	}
 
 	delete(m.sessions, id)
+	if m.storagePath != "" {
+		m.deleteSessionStorage(id)
+		m.saveMetadataLocked()
+	}
 }
 
 // Count 获取会话数量
@@ -416,6 +431,10 @@ func (m *Manager) cleanExpiredLocked() int {
 		}
 	}
 
+	if expired > 0 {
+		m.saveMetadataLocked()
+	}
+
 	return expired
 }
 
@@ -430,9 +449,11 @@ func (m *Manager) saveSessionLocked(session *Session) {
 		return
 	}
 
-	// 这里简化实现，实际应该使用文件系统或数据库
-	// 由于没有文件系统权限，这里只是占位实现
-	_ = data
+	if err := os.MkdirAll(m.storageSessionsDir(), 0o755); err != nil {
+		return
+	}
+
+	_ = writeFileAtomically(m.sessionStoragePath(session.ID), data, 0o644)
 }
 
 // deleteSessionStorage 从存储中删除会话
@@ -441,8 +462,7 @@ func (m *Manager) deleteSessionStorage(id string) {
 		return
 	}
 
-	// 这里简化实现，实际应该使用文件系统或数据库
-	_ = id
+	_ = os.Remove(m.sessionStoragePath(id))
 }
 
 // loadSessions 从存储加载会话
@@ -451,6 +471,270 @@ func (m *Manager) loadSessions() {
 		return
 	}
 
-	// 这里简化实现，实际应该从文件系统或数据库加载
-	// 由于没有文件系统权限，这里只是占位实现
+	baseDir := normalizeStoragePath(m.storagePath)
+	if baseDir == "" {
+		return
+	}
+	m.storagePath = baseDir
+
+	if err := os.MkdirAll(m.storageSessionsDir(), 0o755); err != nil {
+		return
+	}
+
+	m.loadStoragePath(baseDir, false)
+
+	imported := false
+	for _, legacyPath := range legacyStoragePaths(baseDir) {
+		if m.loadStoragePath(legacyPath, true) {
+			imported = true
+		}
+	}
+
+	m.restoreMissingActiveSessions()
+
+	if imported {
+		for _, sess := range m.sessions {
+			m.saveSessionLocked(sess)
+		}
+		m.saveMetadataLocked()
+	}
+}
+
+func (m *Manager) loadStoragePath(storagePath string, preserveExisting bool) bool {
+	baseDir := normalizeStoragePath(storagePath)
+	if baseDir == "" {
+		return false
+	}
+
+	imported := false
+	entries, err := os.ReadDir(filepath.Join(baseDir, "sessions"))
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+
+			data, readErr := os.ReadFile(filepath.Join(baseDir, "sessions", entry.Name()))
+			if readErr != nil {
+				continue
+			}
+
+			sess := &Session{}
+			if unmarshalErr := sess.FromJSON(data); unmarshalErr != nil {
+				continue
+			}
+			if strings.TrimSpace(sess.ID) == "" || strings.TrimSpace(sess.UserID) == "" {
+				continue
+			}
+			if sess.Context == nil {
+				sess.Context = make(map[string]interface{})
+			}
+
+			if existing, ok := m.sessions[sess.ID]; ok && preserveExisting {
+				if existing != nil {
+					continue
+				}
+			}
+
+			if existing, ok := m.sessions[sess.ID]; !ok || !preserveExisting || existing == nil {
+				m.sessions[sess.ID] = sess
+				imported = true
+			}
+		}
+	}
+
+	metaData, err := os.ReadFile(filepath.Join(baseDir, "metadata.json"))
+	if err == nil {
+		var meta storageMetadata
+		if unmarshalErr := json.Unmarshal(metaData, &meta); unmarshalErr == nil && meta.ActiveByUser != nil {
+			for userID, sessionID := range meta.ActiveByUser {
+				sess, ok := m.sessions[sessionID]
+				if !ok || sess.UserID != userID {
+					continue
+				}
+				if preserveExisting {
+					if _, exists := m.activeByUser[userID]; exists {
+						continue
+					}
+				}
+				m.activeByUser[userID] = sessionID
+				imported = true
+			}
+		}
+	}
+
+	return imported
+}
+
+func (m *Manager) restoreMissingActiveSessions() {
+	for _, sess := range m.sessions {
+		activeID, ok := m.activeByUser[sess.UserID]
+		if !ok {
+			m.activeByUser[sess.UserID] = sess.ID
+			continue
+		}
+
+		current, exists := m.sessions[activeID]
+		if !exists || current == nil || current.UserID != sess.UserID {
+			m.activeByUser[sess.UserID] = sess.ID
+		}
+	}
+}
+
+func (m *Manager) PersistSession(id string) {
+	if m.storagePath == "" {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, exists := m.sessions[id]
+	if !exists {
+		return
+	}
+	m.saveSessionLocked(session)
+}
+
+func (m *Manager) SetSessionAgentType(id, agentType string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, exists := m.sessions[id]
+	if !exists {
+		return false
+	}
+
+	session.SetAgentType(agentType)
+	m.saveSessionLocked(session)
+	return true
+}
+
+func (m *Manager) SetSessionTitleIfEmpty(id, title string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, exists := m.sessions[id]
+	if !exists {
+		return false
+	}
+
+	updated := session.SetTitleIfEmpty(title)
+	if updated {
+		m.saveSessionLocked(session)
+	}
+	return updated
+}
+
+func (m *Manager) saveMetadataLocked() {
+	if m.storagePath == "" {
+		return
+	}
+
+	if err := os.MkdirAll(m.storagePath, 0o755); err != nil {
+		return
+	}
+
+	data, err := json.Marshal(storageMetadata{ActiveByUser: m.activeByUser})
+	if err != nil {
+		return
+	}
+
+	_ = writeFileAtomically(m.metadataStoragePath(), data, 0o644)
+}
+
+func (m *Manager) storageSessionsDir() string {
+	return filepath.Join(normalizeStoragePath(m.storagePath), "sessions")
+}
+
+func (m *Manager) metadataStoragePath() string {
+	return filepath.Join(normalizeStoragePath(m.storagePath), "metadata.json")
+}
+
+func (m *Manager) sessionStoragePath(id string) string {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(id))
+	return filepath.Join(m.storageSessionsDir(), encoded+".json")
+}
+
+func normalizeStoragePath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	}
+	if strings.HasPrefix(trimmed, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(trimmed, "~/"))
+		}
+	}
+	return filepath.Clean(trimmed)
+}
+
+func legacyStoragePaths(currentStoragePath string) []string {
+	current := normalizeStoragePath(currentStoragePath)
+	seen := map[string]struct{}{}
+	paths := make([]string, 0, 2)
+
+	add := func(path string) {
+		normalized := normalizeStoragePath(path)
+		if normalized == "" || normalized == current {
+			return
+		}
+		if _, exists := seen[normalized]; exists {
+			return
+		}
+		seen[normalized] = struct{}{}
+		paths = append(paths, normalized)
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		add(filepath.Join(cwd, "data", "sessions"))
+	}
+
+	if exePath, err := os.Executable(); err == nil {
+		add(filepath.Join(filepath.Dir(exePath), "data", "sessions"))
+	}
+
+	return paths
+}
+
+func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = os.Remove(tmpName)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }

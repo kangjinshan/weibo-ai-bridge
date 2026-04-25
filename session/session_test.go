@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -377,4 +379,165 @@ func TestManager_Create_MaxSize(t *testing.T) {
 	session3 := mgr.Create("id3", "user3", "claude")
 	assert.Nil(t, session3)
 	assert.Equal(t, 2, mgr.Count())
+}
+
+func TestManager_PersistsSessionsAndActiveSessionAcrossRestart(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "sessions")
+	mgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+
+	first := mgr.Create("user-1-1", "user-1", "claude")
+	second := mgr.Create("user-1-2", "user-1", "codex")
+	assert.NotNil(t, first)
+	assert.NotNil(t, second)
+
+	mgr.SetSessionTitleIfEmpty(first.ID, "第一次对话")
+	mgr.UpdateSession(first.ID, "codex_session_id", "thread-123")
+	mgr.SetSessionAgentType(first.ID, "codex")
+	assert.True(t, mgr.SetActiveSession("user-1", first.ID))
+
+	reloaded := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+
+	assert.Equal(t, 2, reloaded.Count())
+	assert.Equal(t, first.ID, reloaded.GetActiveSessionID("user-1"))
+
+	restored, exists := reloaded.Get(first.ID)
+	assert.True(t, exists)
+	assert.Equal(t, "第一次对话", restored.Title)
+	assert.Equal(t, "codex", restored.AgentType)
+	assert.Equal(t, "thread-123", restored.Context["codex_session_id"])
+}
+
+func TestManager_DeleteRemovesPersistedSession(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "sessions")
+	mgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+
+	sess := mgr.Create("user-1-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	mgr.Delete(sess.ID)
+
+	reloaded := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+
+	assert.Equal(t, 0, reloaded.Count())
+	assert.Equal(t, "", reloaded.GetActiveSessionID("user-1"))
+}
+
+func TestNewManager_ExpandsHomeDirectoryStoragePath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	mgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: "~/persisted-sessions",
+	})
+
+	sess := mgr.Create("user-1-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	_, err := os.Stat(filepath.Join(homeDir, "persisted-sessions", "metadata.json"))
+	assert.NoError(t, err)
+}
+
+func TestNewManager_ImportsLegacyStorageFromWorkingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+
+	legacyStoragePath := filepath.Join(workspace, "data", "sessions")
+	legacyMgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: legacyStoragePath,
+	})
+
+	legacySess := legacyMgr.Create("user-legacy-1", "legacy-user", "codex")
+	assert.NotNil(t, legacySess)
+	legacyMgr.SetSessionTitleIfEmpty(legacySess.ID, "旧目录中的会话")
+	legacyMgr.UpdateSession(legacySess.ID, "codex_session_id", "thread-legacy")
+	assert.True(t, legacyMgr.SetActiveSession("legacy-user", legacySess.ID))
+
+	newStoragePath := filepath.Join(workspace, "state", "sessions")
+	reloaded := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: newStoragePath,
+	})
+
+	assert.Equal(t, 1, reloaded.Count())
+	assert.Equal(t, legacySess.ID, reloaded.GetActiveSessionID("legacy-user"))
+
+	restored, exists := reloaded.Get(legacySess.ID)
+	assert.True(t, exists)
+	assert.Equal(t, "旧目录中的会话", restored.Title)
+	assert.Equal(t, "thread-legacy", restored.Context["codex_session_id"])
+
+	_, err := os.Stat(filepath.Join(newStoragePath, "metadata.json"))
+	assert.NoError(t, err)
+	_, err = os.Stat(reloaded.sessionStoragePath(legacySess.ID))
+	assert.NoError(t, err)
+}
+
+func TestNewManager_LegacyImportDoesNotOverrideCurrentStorage(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+
+	legacyStoragePath := filepath.Join(workspace, "data", "sessions")
+	legacyMgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: legacyStoragePath,
+	})
+	legacySess := legacyMgr.Create("user-1-1", "user-1", "claude")
+	assert.NotNil(t, legacySess)
+	legacyMgr.SetSessionTitleIfEmpty(legacySess.ID, "legacy title")
+	assert.True(t, legacyMgr.SetActiveSession("user-1", legacySess.ID))
+
+	currentStoragePath := filepath.Join(workspace, "stable", "sessions")
+	currentMgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: currentStoragePath,
+	})
+	currentSess := currentMgr.Create("user-1-1", "user-1", "codex")
+	assert.NotNil(t, currentSess)
+	currentMgr.SetSessionTitleIfEmpty(currentSess.ID, "current title")
+	currentMgr.UpdateSession(currentSess.ID, "codex_session_id", "thread-current")
+	assert.True(t, currentMgr.SetActiveSession("user-1", currentSess.ID))
+
+	extraLegacySess := legacyMgr.Create("user-1-2", "user-1", "claude")
+	assert.NotNil(t, extraLegacySess)
+
+	reloaded := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: currentStoragePath,
+	})
+
+	assert.Equal(t, 2, reloaded.Count())
+	assert.Equal(t, currentSess.ID, reloaded.GetActiveSessionID("user-1"))
+
+	restored, exists := reloaded.Get(currentSess.ID)
+	assert.True(t, exists)
+	assert.Equal(t, "current title", restored.Title)
+	assert.Equal(t, "thread-current", restored.Context["codex_session_id"])
+
+	importedLegacy, exists := reloaded.Get(extraLegacySess.ID)
+	assert.True(t, exists)
+	assert.Equal(t, extraLegacySess.ID, importedLegacy.ID)
 }

@@ -55,8 +55,9 @@ type CodexConfig struct {
 
 // SessionConfig 会话配置
 type SessionConfig struct {
-	Timeout int `toml:"timeout"`
-	MaxSize int `toml:"max_size"`
+	Timeout     int    `toml:"timeout"`
+	MaxSize     int    `toml:"max_size"`
+	StoragePath string `toml:"storage_path"`
 }
 
 // LogConfig 日志配置
@@ -64,6 +65,16 @@ type LogConfig struct {
 	Level  string `toml:"level"`  // debug, info, warn, error
 	Format string `toml:"format"` // json, text
 	Output string `toml:"output"`
+}
+
+func defaultSessionStoragePath() string {
+	if dir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(dir) != "" {
+		return filepath.Join(dir, "weibo-ai-bridge", "sessions")
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".weibo-ai-bridge", "sessions")
+	}
+	return filepath.Join("data", "sessions")
 }
 
 // Load 加载配置
@@ -119,6 +130,9 @@ func Load() *Config {
 		maxSize, _ := strconv.Atoi(val)
 		cfg.Session.MaxSize = maxSize
 	}
+	if val := os.Getenv("SESSION_STORAGE_PATH"); val != "" {
+		cfg.Session.StoragePath = val
+	}
 
 	return cfg
 }
@@ -171,8 +185,9 @@ func defaultConfig() *Config {
 			},
 		},
 		Session: SessionConfig{
-			Timeout: 3600,
-			MaxSize: 1000,
+			Timeout:     3600,
+			MaxSize:     1000,
+			StoragePath: defaultSessionStoragePath(),
 		},
 		Log: LogConfig{
 			Level:  "info",

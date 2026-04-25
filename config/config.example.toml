@@ -47,6 +47,10 @@ timeout = 3600
 # 最大会话数量
 max_size = 1000
 
+# 会话持久化目录
+# 默认会使用当前系统用户目录下的稳定路径，避免重装或替换仓库目录时丢失
+storage_path = "~/.config/weibo-ai-bridge/sessions"
+
 [log]
 # 日志级别: debug, info, warn, error
 level = "info"

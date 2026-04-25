@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -193,6 +194,31 @@ func TestComponentInitialization(t *testing.T) {
 	agentMgr := agent.NewManager()
 	assert.NotNil(t, agentMgr, "Failed to create agent manager")
 	assert.Equal(t, 0, agentMgr.Count())
+}
+
+func TestNewSessionManager_UsesConfiguredStoragePath(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "sessions")
+	cfg := &config.Config{
+		Session: config.SessionConfig{
+			Timeout:     3600,
+			MaxSize:     1000,
+			StoragePath: storagePath,
+		},
+	}
+
+	sessionMgr := newSessionManager(cfg)
+	created := sessionMgr.Create("user-1-1", "user-1", "codex")
+	assert.NotNil(t, created)
+
+	reloaded := session.NewManager(session.ManagerConfig{
+		Timeout:     cfg.Session.Timeout,
+		MaxSize:     cfg.Session.MaxSize,
+		StoragePath: cfg.Session.StoragePath,
+	})
+
+	restored, exists := reloaded.Get(created.ID)
+	assert.True(t, exists)
+	assert.Equal(t, created.ID, restored.ID)
 }
 
 func TestHealthHandler(t *testing.T) {

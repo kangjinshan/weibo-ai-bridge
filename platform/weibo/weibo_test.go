@@ -283,7 +283,7 @@ func TestBuildSendMessageFrame_RejectsEmptyNonFinalChunk(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestPlatformReply_SendsContentBeforeFinalDoneChunk(t *testing.T) {
+func TestPlatformReply_SendsPlainMessageWithoutStreamingFields(t *testing.T) {
 	received := make(chan map[string]any, 4)
 	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
 		defer conn.Close()
@@ -328,17 +328,17 @@ drain:
 		}
 	}
 
-	require.Len(t, frames, 2)
+	require.Len(t, frames, 1)
 
-	payload0 := frames[0]["payload"].(map[string]any)
-	payload1 := frames[1]["payload"].(map[string]any)
-	assert.Equal(t, "已收到消息，正在处理中，请稍候。", payload0["text"])
-	assert.Equal(t, false, payload0["done"])
-	assert.Equal(t, float64(0), payload0["chunkId"])
-	assert.Equal(t, "", payload1["text"])
-	assert.Equal(t, true, payload1["done"])
-	assert.Equal(t, float64(1), payload1["chunkId"])
-	assert.Equal(t, payload0["messageId"], payload1["messageId"])
+	payload := frames[0]["payload"].(map[string]any)
+	assert.Equal(t, "已收到消息，正在处理中，请稍候。", payload["text"])
+	assert.Equal(t, "user-1", payload["toUserId"])
+	_, hasMessageID := payload["messageId"]
+	_, hasChunkID := payload["chunkId"]
+	_, hasDone := payload["done"]
+	assert.False(t, hasMessageID)
+	assert.False(t, hasChunkID)
+	assert.False(t, hasDone)
 }
 
 func TestSplitContent_KeepsUTF8RunesIntact(t *testing.T) {

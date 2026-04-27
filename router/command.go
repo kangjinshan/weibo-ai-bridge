@@ -2,6 +2,8 @@ package router
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -13,6 +15,11 @@ import (
 type CommandHandler struct {
 	sessionManager *session.Manager
 	agentManager   *agent.Manager
+	agentRepairer  agentAvailabilityRepairer
+}
+
+type agentAvailabilityRepairer interface {
+	EnsureAvailable(agentType string) (bool, error)
 }
 
 // NewCommandHandler 创建命令处理器
@@ -21,6 +28,10 @@ func NewCommandHandler(sessionManager *session.Manager, agentManager *agent.Mana
 		sessionManager: sessionManager,
 		agentManager:   agentManager,
 	}
+}
+
+func (h *CommandHandler) SetAgentAvailabilityRepairer(repairer agentAvailabilityRepairer) {
+	h.agentRepairer = repairer
 }
 
 // Handle 处理消息
@@ -114,7 +125,14 @@ func (h *CommandHandler) handleNew(userID string, args []string) (*Response, err
 			Content: "Invalid agent type. Use claude or codex.",
 		}, nil
 	}
-	if !h.isAgentTypeAvailable(agentType) {
+	available, err := h.ensureAgentTypeAvailable(agentType)
+	if err != nil {
+		return &Response{
+			Success: false,
+			Content: fmt.Sprintf("Failed to prepare requested agent %s: %v", agentType, err),
+		}, nil
+	}
+	if !available {
 		return &Response{
 			Success: false,
 			Content: fmt.Sprintf("Requested agent is not available: %s", agentType),
@@ -212,7 +230,14 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 			Content: "Invalid agent type. Use claude or codex.",
 		}, nil
 	}
-	if !h.isAgentTypeAvailable(agentType) {
+	available, err := h.ensureAgentTypeAvailable(agentType)
+	if err != nil {
+		return &Response{
+			Success: false,
+			Content: fmt.Sprintf("Failed to prepare requested agent %s: %v", agentType, err),
+		}, nil
+	}
+	if !available {
 		return &Response{
 			Success: false,
 			Content: fmt.Sprintf("Requested agent is not available: %s", agentType),
@@ -283,6 +308,74 @@ func (h *CommandHandler) isAgentTypeAvailable(agentType string) bool {
 	}
 
 	return h.agentManager.ResolveAgent(agentType) != nil
+}
+
+func (h *CommandHandler) ensureAgentTypeAvailable(agentType string) (bool, error) {
+	if h.isAgentTypeAvailable(agentType) {
+		return true, nil
+	}
+	if h.agentRepairer == nil {
+		return false, nil
+	}
+	return h.agentRepairer.EnsureAvailable(agentType)
+}
+
+type configBackedAgentAvailabilityRepairer struct {
+	agentManager *agent.Manager
+	configPath   string
+}
+
+func newConfigBackedAgentAvailabilityRepairer(agentManager *agent.Manager, configPath string) *configBackedAgentAvailabilityRepairer {
+	return &configBackedAgentAvailabilityRepairer{
+		agentManager: agentManager,
+		configPath:   strings.TrimSpace(configPath),
+	}
+}
+
+func (r *configBackedAgentAvailabilityRepairer) EnsureAvailable(agentType string) (bool, error) {
+	agentType = strings.ToLower(strings.TrimSpace(agentType))
+	if agentType != "claude" && agentType != "codex" {
+		return false, nil
+	}
+	if r.agentManager == nil {
+		return false, nil
+	}
+	if r.agentManager.ResolveAgent(agentType) != nil {
+		return true, nil
+	}
+
+	candidate := reparableAgent(agentType)
+	if candidate == nil || !candidate.IsAvailable() {
+		return false, nil
+	}
+
+	if err := setAgentEnabledInConfig(resolveConfigPathForRepair(r.configPath), agentType, true); err != nil {
+		return false, err
+	}
+
+	r.agentManager.Register(candidate)
+	return r.agentManager.ResolveAgent(agentType) != nil, nil
+}
+
+func reparableAgent(agentType string) agent.Agent {
+	switch agentType {
+	case "claude":
+		return agent.NewClaudeCodeAgent()
+	case "codex":
+		return agent.NewCodeXAgent("")
+	default:
+		return nil
+	}
+}
+
+func resolveConfigPathForRepair(path string) string {
+	if strings.TrimSpace(path) != "" {
+		return strings.TrimSpace(path)
+	}
+	if envPath := strings.TrimSpace(os.Getenv("CONFIG_PATH")); envPath != "" {
+		return envPath
+	}
+	return filepath.Join("config", "config.toml")
 }
 
 // handleModel 处理显示模型命令

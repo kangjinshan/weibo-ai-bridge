@@ -97,6 +97,7 @@ func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr
 
 	if sessionMgr != nil && agentMgr != nil {
 		router.commandHandler = NewCommandHandler(sessionMgr, agentMgr)
+		router.commandHandler.SetAgentAvailabilityRepairer(newConfigBackedAgentAvailabilityRepairer(agentMgr, ""))
 		router.Register(TypeText, router)
 		router.Register(TypeImage, router)
 		router.Register(TypeVoice, router)

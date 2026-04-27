@@ -1,6 +1,8 @@
 package router
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -176,6 +178,44 @@ func TestCommandHandler_Handle_New_DefaultsToCodexWhenOnlyCodexAvailable(t *test
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Agent: codex")
+
+	activeSession, ok := sessionManager.GetActiveSession("user-1")
+	assert.True(t, ok)
+	assert.Equal(t, "codex", activeSession.AgentType)
+}
+
+func TestCommandHandler_Handle_New_RepairsUnavailableAgent(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.SetDefault("claude-code")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	repairCalls := 0
+	handler.agentRepairer = &testAgentAvailabilityRepairer{
+		ensureAvailableFn: func(agentType string) (bool, error) {
+			repairCalls++
+			assert.Equal(t, "codex", agentType)
+			agentManager.Register(&MockAgent{name: "codex", available: true})
+			return true, nil
+		},
+	}
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-1",
+		Type:    TypeText,
+		Content: "/new codex",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, 1, repairCalls)
 	assert.Contains(t, resp.Content, "Agent: codex")
 
 	activeSession, ok := sessionManager.GetActiveSession("user-1")
@@ -380,6 +420,88 @@ func TestCommandHandler_Handle_Switch_RejectsUnavailableAgent(t *testing.T) {
 	assert.Equal(t, "claude", sess.AgentType)
 }
 
+func TestCommandHandler_Handle_Switch_RepairsUnavailableAgent(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.SetDefault("claude-code")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	repairCalls := 0
+	handler.agentRepairer = &testAgentAvailabilityRepairer{
+		ensureAvailableFn: func(agentType string) (bool, error) {
+			repairCalls++
+			assert.Equal(t, "codex", agentType)
+			agentManager.Register(&MockAgent{name: "codex", available: true})
+			return true, nil
+		},
+	}
+
+	sess := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	resp, err := handler.Handle(&Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "/switch codex",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, 1, repairCalls)
+	assert.Contains(t, resp.Content, "Switched to codex agent")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.Equal(t, "codex", sess.AgentType)
+}
+
+func TestConfigBackedAgentAvailabilityRepairer_EnsureAvailable_EnablesCodex(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	err := os.WriteFile(configPath, []byte(`
+[platform.weibo]
+app_id = "app-id"
+app_secret = "app-secret"
+
+[agent.claude]
+enabled = true
+
+[agent.codex]
+enabled = false
+`), 0o644)
+	assert.NoError(t, err)
+
+	binDir := filepath.Join(tmpDir, "bin")
+	assert.NoError(t, os.MkdirAll(binDir, 0o755))
+	codexPath := filepath.Join(binDir, "codex")
+	err = os.WriteFile(codexPath, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	assert.NoError(t, err)
+
+	t.Setenv("PATH", binDir)
+
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.SetDefault("claude-code")
+
+	repairer := newConfigBackedAgentAvailabilityRepairer(agentManager, configPath)
+	available, err := repairer.EnsureAvailable("codex")
+
+	assert.NoError(t, err)
+	assert.True(t, available)
+	assert.NotNil(t, agentManager.ResolveAgent("codex"))
+
+	updated, err := os.ReadFile(configPath)
+	assert.NoError(t, err)
+	assert.Contains(t, string(updated), "[agent.codex]")
+	assert.Contains(t, string(updated), "enabled = true")
+}
+
 func TestCommandHandler_Handle_Model(t *testing.T) {
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
@@ -410,6 +532,14 @@ func TestCommandHandler_Handle_Model(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
 	assert.Contains(t, resp.Content, "Model: claude-code")
+}
+
+type testAgentAvailabilityRepairer struct {
+	ensureAvailableFn func(agentType string) (bool, error)
+}
+
+func (r *testAgentAvailabilityRepairer) EnsureAvailable(agentType string) (bool, error) {
+	return r.ensureAvailableFn(agentType)
 }
 
 func TestCommandHandler_Handle_Model_UsesSessionAgentType(t *testing.T) {

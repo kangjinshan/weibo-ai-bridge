@@ -242,23 +242,18 @@ func (p *Platform) Messages() <-chan *Message {
 
 // Reply 回复消息
 func (p *Platform) Reply(ctx context.Context, userID string, content string) error {
-	stream, err := p.OpenReplyStream(ctx, userID)
-	if err != nil {
-		return err
-	}
-
 	chunks := splitContent(content, maxWeiboChunk)
 	if len(chunks) == 0 {
-		return stream.SendChunk(ctx, "", true)
+		chunks = []string{""}
 	}
 
 	for _, chunk := range chunks {
-		if err := stream.SendChunk(ctx, chunk, false); err != nil {
+		if err := p.sendPlainMessage(ctx, userID, chunk); err != nil {
 			return err
 		}
 	}
 
-	return stream.SendChunk(ctx, "", true)
+	return nil
 }
 
 // OpenReplyStream 打开一轮流式回复。
@@ -349,6 +344,37 @@ func (p *Platform) sendChunk(ctx context.Context, userID, messageID string, chun
 	return nil
 }
 
+func (p *Platform) sendPlainMessage(ctx context.Context, userID, content string) error {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+
+	data, err := buildPlainSendMessageFrame(userID, content)
+	if err != nil {
+		return err
+	}
+
+	p.connMutex.Lock()
+	defer p.connMutex.Unlock()
+
+	if p.conn == nil {
+		return fmt.Errorf("connection not established")
+	}
+
+	p.logger.Printf("📤 Sending plain message: to=%s text=%q", userID, summarizeChunk(content))
+
+	if err := websocket.Message.Send(p.conn, string(data)); err != nil {
+		return err
+	}
+
+	time.Sleep(sendChunkDelay)
+	return nil
+}
+
 func buildSendMessageFrame(userID, content, messageID string, chunkID int, done bool) ([]byte, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("userID is required")
@@ -371,6 +397,22 @@ func buildSendMessageFrame(userID, content, messageID string, chunkID int, done 
 			"messageId": messageID,
 			"chunkId":   chunkID,
 			"done":      done,
+		},
+	}
+
+	return json.Marshal(msg)
+}
+
+func buildPlainSendMessageFrame(userID, content string) ([]byte, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("userID is required")
+	}
+
+	msg := map[string]interface{}{
+		"type": "send_message",
+		"payload": map[string]interface{}{
+			"toUserId": userID,
+			"text":     content,
 		},
 	}
 

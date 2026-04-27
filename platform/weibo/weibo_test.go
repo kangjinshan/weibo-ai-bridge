@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/websocket"
 )
 
 // mockWebSocketServer 创建一个模拟的 WebSocket 服务器
@@ -280,6 +281,64 @@ func TestBuildSendMessageFrame_AllowsEmptyFinalChunk(t *testing.T) {
 func TestBuildSendMessageFrame_RejectsEmptyNonFinalChunk(t *testing.T) {
 	_, err := buildSendMessageFrame("user-1", "", "msg-1", 1, false)
 	assert.Error(t, err)
+}
+
+func TestPlatformReply_SendsContentBeforeFinalDoneChunk(t *testing.T) {
+	received := make(chan map[string]any, 4)
+	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		for {
+			var data string
+			if err := websocket.Message.Receive(conn, &data); err != nil {
+				return
+			}
+
+			var frame map[string]any
+			if err := json.Unmarshal([]byte(data), &frame); err != nil {
+				continue
+			}
+			received <- frame
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, err := websocket.Dial(wsURL, "", "http://localhost/")
+	require.NoError(t, err)
+
+	platform, err := NewPlatform("test-app-id", "test-secret")
+	require.NoError(t, err)
+	platform.conn = conn
+	defer platform.conn.Close()
+
+	err = platform.Reply(context.Background(), "user-1", "已收到消息，正在处理中，请稍候。")
+	require.NoError(t, err)
+
+	time.Sleep(250 * time.Millisecond)
+	_ = platform.conn.Close()
+
+	var frames []map[string]any
+drain:
+	for {
+		select {
+		case frame := <-received:
+			frames = append(frames, frame)
+		case <-time.After(200 * time.Millisecond):
+			break drain
+		}
+	}
+
+	require.Len(t, frames, 2)
+
+	payload0 := frames[0]["payload"].(map[string]any)
+	payload1 := frames[1]["payload"].(map[string]any)
+	assert.Equal(t, "已收到消息，正在处理中，请稍候。", payload0["text"])
+	assert.Equal(t, false, payload0["done"])
+	assert.Equal(t, float64(0), payload0["chunkId"])
+	assert.Equal(t, "", payload1["text"])
+	assert.Equal(t, true, payload1["done"])
+	assert.Equal(t, float64(1), payload1["chunkId"])
+	assert.Equal(t, payload0["messageId"], payload1["messageId"])
 }
 
 func TestSplitContent_KeepsUTF8RunesIntact(t *testing.T) {

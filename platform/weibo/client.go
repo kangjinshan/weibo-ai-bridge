@@ -249,17 +249,16 @@ func (p *Platform) Reply(ctx context.Context, userID string, content string) err
 
 	chunks := splitContent(content, maxWeiboChunk)
 	if len(chunks) == 0 {
-		chunks = []string{""}
+		return stream.SendChunk(ctx, "", true)
 	}
 
-	for i, chunk := range chunks {
-		done := i == len(chunks)-1
-		if err := stream.SendChunk(ctx, chunk, done); err != nil {
+	for _, chunk := range chunks {
+		if err := stream.SendChunk(ctx, chunk, false); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return stream.SendChunk(ctx, "", true)
 }
 
 // OpenReplyStream 打开一轮流式回复。

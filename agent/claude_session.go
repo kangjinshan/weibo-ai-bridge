@@ -164,6 +164,9 @@ func (s *claudeInteractiveSession) Events() <-chan Event {
 }
 
 func (s *claudeInteractiveSession) CurrentSessionID() string {
+	if s == nil || s.state == nil {
+		return ""
+	}
 	return s.state.sessionID
 }
 

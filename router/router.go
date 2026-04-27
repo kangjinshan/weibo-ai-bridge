@@ -677,19 +677,18 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 			return nil
 		}
 
-		if action == agent.ApprovalActionAllowAll {
+		allowAllRequested := action == agent.ApprovalActionAllowAll
+		if allowAllRequested {
 			liveState.allowAll = true
 		}
 		liveState.awaitingApproval = false
 
-		if err := liveState.session.RespondApproval(action); err != nil {
-			if action == agent.ApprovalActionAllowAll {
-				liveState.allowAll = false
-			}
+		liveState, err = r.respondInteractiveApproval(ctx, sess, sessionKey, agentSessionID, action, interactiveAgent, liveState)
+		if err != nil {
 			return err
 		}
 
-		if action == agent.ApprovalActionAllowAll {
+		if allowAllRequested {
 			events <- agent.Event{
 				Type:    agent.EventTypeApproval,
 				Content: "授权成功，这对话内将不再需要再次授权。",
@@ -704,12 +703,56 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 	}
 	r.discardBufferedInteractiveEvents(sess, sessionKey, liveState)
 
-	if err := liveState.session.Send(msg.Content); err != nil {
-		r.removeInteractiveSession(sess.ID)
+	liveState, err = r.sendInteractiveInput(ctx, sess, sessionKey, agentSessionID, msg.Content, interactiveAgent, liveState)
+	if err != nil {
 		return err
 	}
 
 	return r.drainInteractiveSession(ctx, sess, sessionKey, liveState, events)
+}
+
+func (r *Router) respondInteractiveApproval(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, action agent.ApprovalAction, interactiveAgent agent.InteractiveAgent, liveState *interactiveSessionState) (*interactiveSessionState, error) {
+	if err := liveState.session.RespondApproval(action); err != nil {
+		if !isSessionNotRunningError(err) {
+			return nil, err
+		}
+
+		r.removeInteractiveSession(sess.ID)
+		restartedState, _, restartErr := r.getOrCreateInteractiveSession(ctx, sess, sessionKey, agentSessionID, interactiveAgent)
+		if restartErr != nil {
+			return nil, restartErr
+		}
+		restartedState.allowAll = liveState.allowAll
+		restartedState.awaitingApproval = false
+		if err := restartedState.session.RespondApproval(action); err != nil {
+			r.removeInteractiveSession(sess.ID)
+			return nil, err
+		}
+		return restartedState, nil
+	}
+
+	return liveState, nil
+}
+
+func (r *Router) sendInteractiveInput(ctx context.Context, sess *session.Session, sessionKey, agentSessionID, input string, interactiveAgent agent.InteractiveAgent, liveState *interactiveSessionState) (*interactiveSessionState, error) {
+	if err := liveState.session.Send(input); err != nil {
+		r.removeInteractiveSession(sess.ID)
+		if !isSessionNotRunningError(err) {
+			return nil, err
+		}
+
+		restartedState, _, restartErr := r.getOrCreateInteractiveSession(ctx, sess, sessionKey, agentSessionID, interactiveAgent)
+		if restartErr != nil {
+			return nil, restartErr
+		}
+		if err := restartedState.session.Send(input); err != nil {
+			r.removeInteractiveSession(sess.ID)
+			return nil, err
+		}
+		return restartedState, nil
+	}
+
+	return liveState, nil
 }
 
 func (r *Router) discardBufferedInteractiveEvents(sess *session.Session, sessionKey string, liveState *interactiveSessionState) {
@@ -779,7 +822,7 @@ func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *sessio
 		delete(r.liveSessions, sess.ID)
 	}
 
-	liveSession, err := interactiveAgent.StartSession(ctx, agentSessionID)
+	liveSession, err := interactiveAgent.StartSession(context.WithoutCancel(ctx), agentSessionID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -977,6 +1020,14 @@ func agentSessionContextKey(agentType string) string {
 	default:
 		return ""
 	}
+}
+
+func isSessionNotRunningError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "session is not running")
 }
 
 func formatApprovalPrompt(toolName, toolInput string) string {

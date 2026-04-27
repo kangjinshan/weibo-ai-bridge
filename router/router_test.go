@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,10 @@ type MockInteractiveAgent struct {
 	name      string
 	available bool
 	session   *MockInteractiveSession
+	startFn   func(ctx context.Context, sessionID string) (agent.InteractiveSession, error)
+
+	startCalls      int
+	startSessionIDs []string
 }
 
 func (m *MockInteractiveAgent) Name() string {
@@ -141,6 +146,11 @@ func (m *MockInteractiveAgent) IsAvailable() bool {
 }
 
 func (m *MockInteractiveAgent) StartSession(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+	m.startCalls++
+	m.startSessionIDs = append(m.startSessionIDs, sessionID)
+	if m.startFn != nil {
+		return m.startFn(ctx, sessionID)
+	}
 	if m.session == nil {
 		m.session = NewMockInteractiveSession()
 	}
@@ -148,10 +158,13 @@ func (m *MockInteractiveAgent) StartSession(ctx context.Context, sessionID strin
 }
 
 type MockInteractiveSession struct {
-	events      chan agent.Event
-	sendFn      func(input string)
-	interruptFn func()
-	approveFn   func(action agent.ApprovalAction)
+	events       chan agent.Event
+	sendFn       func(input string)
+	sendErrFn    func(input string) error
+	interruptFn  func()
+	approveFn    func(action agent.ApprovalAction)
+	approveErrFn func(action agent.ApprovalAction) error
+	closeFn      func() error
 
 	sentInputs []string
 	interrupts int
@@ -167,6 +180,11 @@ func NewMockInteractiveSession() *MockInteractiveSession {
 
 func (m *MockInteractiveSession) Send(input string) error {
 	m.sentInputs = append(m.sentInputs, input)
+	if m.sendErrFn != nil {
+		if err := m.sendErrFn(input); err != nil {
+			return err
+		}
+	}
 	if m.sendFn != nil {
 		m.sendFn(input)
 	}
@@ -175,6 +193,11 @@ func (m *MockInteractiveSession) Send(input string) error {
 
 func (m *MockInteractiveSession) RespondApproval(action agent.ApprovalAction) error {
 	m.actions = append(m.actions, action)
+	if m.approveErrFn != nil {
+		if err := m.approveErrFn(action); err != nil {
+			return err
+		}
+	}
 	if m.approveFn != nil {
 		m.approveFn(action)
 	}
@@ -198,6 +221,9 @@ func (m *MockInteractiveSession) CurrentSessionID() string {
 }
 
 func (m *MockInteractiveSession) Close() error {
+	if m.closeFn != nil {
+		return m.closeFn()
+	}
 	return nil
 }
 
@@ -357,6 +383,81 @@ func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
 	assert.Equal(t, "Codex response", platform.replies[2]["content"])
 	assert.Equal(t, "", platform.replies[3]["content"])
 	assert.Equal(t, true, platform.replies[3]["done"])
+}
+
+func TestHandleMessage_RestartsClosedInteractiveSession(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sessionID = "claude-session-1"
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{Type: agent.EventTypeSession, SessionID: firstSession.sessionID}
+		firstSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "first reply"}
+		firstSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sessionID = "claude-session-1"
+	secondSession.sendFn = func(input string) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeSession, SessionID: secondSession.sessionID}
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "second reply"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	agentMgr := agent.NewManager()
+	mockAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+	}
+	mockAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		switch mockAgent.startCalls {
+		case 1:
+			return firstSession, nil
+		case 2:
+			return secondSession, nil
+		default:
+			t.Fatalf("unexpected StartSession call %d", mockAgent.startCalls)
+			return nil, nil
+		}
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-1",
+		Type:      weibo.MessageTypeText,
+		Content:   "hello",
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{""}, mockAgent.startSessionIDs)
+
+	firstSession.sendErrFn = func(input string) error {
+		return errors.New("claude session is not running")
+	}
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-2",
+		Type:      weibo.MessageTypeText,
+		Content:   "follow up",
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567891,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, 2, mockAgent.startCalls)
+	assert.Equal(t, []string{"", "claude-session-1"}, mockAgent.startSessionIDs)
+	assert.Equal(t, []string{"follow up"}, secondSession.sentInputs)
+	assert.Len(t, platform.streams, 2)
+	assert.Equal(t, "second reply", platform.streams[1].chunks[0]["content"])
 }
 
 func TestHandleMessage_CommandReplyEndsWithDoneChunk(t *testing.T) {
@@ -1214,6 +1315,165 @@ func TestHandleMessage_AllowAndCancelContinuePendingInteractiveSession(t *testin
 			assert.Equal(t, true, platform.replies[3]["done"])
 		})
 	}
+}
+
+func TestHandleMessage_ApprovalReplyRestartsClosedInteractiveSession(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sessionID = "claude-session-approval-1"
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{Type: agent.EventTypeSession, SessionID: firstSession.sessionID}
+		firstSession.events <- agent.Event{
+			Type:      agent.EventTypeApproval,
+			ToolName:  "Read",
+			ToolInput: "/tmp/reference.md",
+		}
+	}
+	firstSession.approveFn = func(action agent.ApprovalAction) {}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sessionID = "claude-session-approval-1"
+	secondSession.approveFn = func(action agent.ApprovalAction) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "已按授权继续执行"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	mockAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+	}
+	mockAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		switch mockAgent.startCalls {
+		case 1:
+			return firstSession, nil
+		case 2:
+			return secondSession, nil
+		default:
+			t.Fatalf("unexpected StartSession call %d", mockAgent.startCalls)
+			return nil, nil
+		}
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-start",
+		Type:      weibo.MessageTypeText,
+		Content:   "先执行这个操作",
+		UserID:    "user-approval-restart",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{""}, mockAgent.startSessionIDs)
+
+	firstSession.approveErrFn = func(action agent.ApprovalAction) error {
+		return errors.New("claude session is not running")
+	}
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-approval-reply",
+		Type:      weibo.MessageTypeText,
+		Content:   "允许",
+		UserID:    "user-approval-restart",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, mockAgent.startCalls)
+	assert.Equal(t, []string{"", "claude-session-approval-1"}, mockAgent.startSessionIDs)
+	assert.Equal(t, []agent.ApprovalAction{agent.ApprovalActionAllow}, secondSession.actions)
+	assert.Equal(t, "已按授权继续执行", platform.replies[2]["content"])
+	assert.Equal(t, "", platform.replies[3]["content"])
+	assert.Equal(t, true, platform.replies[3]["done"])
+}
+
+func TestHandleMessage_ApprovalReplySurvivesOriginalRequestContextCancellation(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	var firstSessionCtx context.Context
+	firstSession := NewMockInteractiveSession()
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{
+			Type:      agent.EventTypeApproval,
+			ToolName:  "Read",
+			ToolInput: "/tmp/reference.md",
+		}
+	}
+	firstSession.approveErrFn = func(action agent.ApprovalAction) error {
+		select {
+		case <-firstSessionCtx.Done():
+			return errors.New("claude session is not running")
+		default:
+		}
+
+		firstSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "已按授权继续执行"}
+		firstSession.events <- agent.Event{Type: agent.EventTypeDone}
+		return nil
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.approveErrFn = func(action agent.ApprovalAction) error {
+		return errors.New("no pending claude approval")
+	}
+
+	mockAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+	}
+	mockAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		switch mockAgent.startCalls {
+		case 1:
+			firstSessionCtx = ctx
+			return firstSession, nil
+		case 2:
+			return secondSession, nil
+		default:
+			t.Fatalf("unexpected StartSession call %d", mockAgent.startCalls)
+			return nil, nil
+		}
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	err := router.HandleMessage(firstCtx, &weibo.Message{
+		ID:        "msg-start",
+		Type:      weibo.MessageTypeText,
+		Content:   "先执行这个操作",
+		UserID:    "user-approval-context",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	firstCancel()
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-approval-reply",
+		Type:      weibo.MessageTypeText,
+		Content:   "允许",
+		UserID:    "user-approval-context",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 1, mockAgent.startCalls)
+	assert.Equal(t, []agent.ApprovalAction{agent.ApprovalActionAllow}, firstSession.actions)
+	assert.Equal(t, "已按授权继续执行", platform.replies[2]["content"])
+	assert.Equal(t, "", platform.replies[3]["content"])
+	assert.Equal(t, true, platform.replies[3]["done"])
 }
 
 func TestHandleMessage_ByTheWayInjectsIntoExistingInteractiveSession(t *testing.T) {

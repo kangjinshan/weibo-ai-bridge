@@ -1,4 +1,4 @@
-module github.com/yourusername/weibo-ai-bridge
+module github.com/kangjinshan/weibo-ai-bridge
 
 go 1.25.0
 

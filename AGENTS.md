@@ -196,7 +196,7 @@ Claude 的认证主要由本地 CLI 环境负责。Codex 也可能依赖本地 C
 
 ## 仓库里的已知情况
 
-- 当前 `go.mod` 里的 module path 仍是 `github.com/yourusername/weibo-ai-bridge`，除非任务明确要求，否则不要顺手改
+- 当前 `go.mod` 里的 module path 仍是 `github.com/kangjinshan/weibo-ai-bridge`，除非任务明确要求，否则不要顺手改
 - 仓库中可能存在预编译或构建产物，例如根目录下的 `server` 和 `build/`
 - 已经存在一个小写的 `agents.md`，除非任务明确要求整合或删除，否则保留
 

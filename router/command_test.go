@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/yourusername/weibo-ai-bridge/agent"
-	"github.com/yourusername/weibo-ai-bridge/session"
+	"github.com/kangjinshan/weibo-ai-bridge/agent"
+	"github.com/kangjinshan/weibo-ai-bridge/session"
 )
 
 func TestNewCommandHandler(t *testing.T) {

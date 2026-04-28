@@ -63,7 +63,7 @@ mkdir -p weibo-ai-bridge/{cmd,platform/weibo,agent/{claude,codex},session,router
 
 创建 `go.mod`:
 ```go
-module github.com/yourusername/weibo-ai-bridge
+module github.com/kangjinshan/weibo-ai-bridge
 
 go 1.22
 

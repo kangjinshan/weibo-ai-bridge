@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/yourusername/weibo-ai-bridge/agent"
-	"github.com/yourusername/weibo-ai-bridge/config"
-	"github.com/yourusername/weibo-ai-bridge/platform/weibo"
-	"github.com/yourusername/weibo-ai-bridge/router"
-	"github.com/yourusername/weibo-ai-bridge/session"
+	"github.com/kangjinshan/weibo-ai-bridge/agent"
+	"github.com/kangjinshan/weibo-ai-bridge/config"
+	"github.com/kangjinshan/weibo-ai-bridge/platform/weibo"
+	"github.com/kangjinshan/weibo-ai-bridge/router"
+	"github.com/kangjinshan/weibo-ai-bridge/session"
 )
 
 type processorTestPlatform struct {
@@ -173,7 +173,7 @@ func TestMainInitialization(t *testing.T) {
 
 	// 验证配置
 	assert.Equal(t, "test-app-id", cfg.Platform.Weibo.AppID)
-	assert.Equal(t, "test-Secret", cfg.Platform.Weibo.AppSecret)
+	assert.Equal(t, "test-Secret", cfg.Platform.Weibo.Appsecret)
 	assert.Equal(t, "debug", cfg.Log.Level)
 }
 

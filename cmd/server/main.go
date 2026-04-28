@@ -14,11 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/yourusername/weibo-ai-bridge/agent"
-	"github.com/yourusername/weibo-ai-bridge/config"
-	"github.com/yourusername/weibo-ai-bridge/platform/weibo"
-	"github.com/yourusername/weibo-ai-bridge/router"
-	"github.com/yourusername/weibo-ai-bridge/session"
+	"github.com/kangjinshan/weibo-ai-bridge/agent"
+	"github.com/kangjinshan/weibo-ai-bridge/config"
+	"github.com/kangjinshan/weibo-ai-bridge/platform/weibo"
+	"github.com/kangjinshan/weibo-ai-bridge/router"
+	"github.com/kangjinshan/weibo-ai-bridge/session"
 )
 
 var (
@@ -155,7 +155,7 @@ func main() {
 	logger.Printf("Agent manager initialized: count=%d, default=%s", agentMgr.Count(), defaultAgent)
 
 	// 创建微博平台适配器
-	platform, err := weibo.NewPlatform(cfg.Platform.Weibo.AppID, cfg.Platform.Weibo.AppSecret)
+	platform, err := weibo.NewPlatform(cfg.Platform.Weibo.AppID, cfg.Platform.Weibo.Appsecret)
 	if err != nil {
 		logger.Fatalf("Failed to create platform: %v", err)
 	}

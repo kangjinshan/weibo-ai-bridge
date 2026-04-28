@@ -47,7 +47,7 @@ output = "/var/log/app.log"
 	assert.NotNil(t, cfg)
 
 	assert.Equal(t, "test-app-id", cfg.Platform.Weibo.AppID)
-	assert.Equal(t, "test-app-Secret", cfg.Platform.Weibo.AppSecret)
+	assert.Equal(t, "test-app-Secret", cfg.Platform.Weibo.Appsecret)
 	assert.Equal(t, "http://example.com/token", cfg.Platform.Weibo.TokenURL)
 	assert.Equal(t, "ws://example.com/ws", cfg.Platform.Weibo.WSURL)
 	assert.Equal(t, 60, cfg.Platform.Weibo.Timeout)
@@ -123,7 +123,7 @@ output = "stdout"
 
 	// 验证文件配置被正确加载
 	assert.Equal(t, "file-app-id", cfg.Platform.Weibo.AppID)
-	assert.Equal(t, "file-Secret", cfg.Platform.Weibo.AppSecret)
+	assert.Equal(t, "file-Secret", cfg.Platform.Weibo.Appsecret)
 	assert.False(t, cfg.Agent.Claude.Enabled)
 	assert.Equal(t, "info", cfg.Log.Level)
 

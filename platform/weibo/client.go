@@ -25,7 +25,7 @@ const (
 // Platform 微博平台适配器
 type Platform struct {
 	appID     string
-	appSecret string
+	appsecret string
 	tokenURL  string
 	wsURL     string
 
@@ -65,11 +65,11 @@ type ChunkSender interface {
 }
 
 // NewPlatform 创建微博平台实例
-func NewPlatform(appID, appSecret string) (*Platform, error) {
+func NewPlatform(appID, appsecret string) (*Platform, error) {
 	if appID == "" {
 		return nil, fmt.Errorf("weibo: app_id is required")
 	}
-	if appSecret == "" {
+	if appsecret == "" {
 		return nil, fmt.Errorf("weibo: app_secret is required")
 	}
 
@@ -77,7 +77,7 @@ func NewPlatform(appID, appSecret string) (*Platform, error) {
 
 	return &Platform{
 		appID:       appID,
-		appSecret:   appSecret,
+		appsecret:   appsecret,
 		tokenURL:    defaultTokenURL,
 		wsURL:       defaultWSURL,
 		httpClient:  &http.Client{Timeout: 30 * time.Second},
@@ -107,7 +107,7 @@ func (p *Platform) refreshToken(ctx context.Context) error {
 	// 构建请求体（JSON 格式）
 	payload := map[string]string{
 		"app_id":     p.appID,
-		"app_secret": p.appSecret,
+		"app_secret": p.appsecret,
 	}
 
 	body, err := json.Marshal(payload)

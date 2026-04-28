@@ -27,7 +27,7 @@ type PlatformConfig struct {
 // WeiboConfig 微博配置
 type WeiboConfig struct {
 	AppID     string `toml:"app_id"`
-	AppSecret string `toml:"app_secret"`
+	Appsecret string `toml:"app_secret"`
 	TokenURL  string `toml:"token_url"`
 	WSURL     string `toml:"ws_url"`
 	Timeout   int    `toml:"timeout"`
@@ -91,7 +91,7 @@ func Load() *Config {
 		cfg.Platform.Weibo.AppID = val
 	}
 	if val := firstEnv("WEIBO_APP_SECRET", "WEIBO_APP_Secret"); val != "" {
-		cfg.Platform.Weibo.AppSecret = val
+		cfg.Platform.Weibo.Appsecret = val
 	}
 	if val := os.Getenv("WEIBO_TOKEN_URL"); val != "" {
 		cfg.Platform.Weibo.TokenURL = val
@@ -203,7 +203,7 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Platform.Weibo.AppID) == "" {
 		return errors.New("platform.weibo.app_id is required")
 	}
-	if strings.TrimSpace(c.Platform.Weibo.AppSecret) == "" {
+	if strings.TrimSpace(c.Platform.Weibo.Appsecret) == "" {
 		return errors.New("platform.weibo.app_secret is required")
 	}
 

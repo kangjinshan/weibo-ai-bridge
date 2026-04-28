@@ -29,32 +29,32 @@ func TestNewPlatform(t *testing.T) {
 	tests := []struct {
 		name      string
 		appID     string
-		appSecret string
+		appsecret string
 		wantErr   bool
 	}{
 		{
 			name:      "valid config",
 			appID:     "test-app-id",
-			appSecret: "test-Secret",
+			appsecret: "test-Secret",
 			wantErr:   false,
 		},
 		{
 			name:      "empty appID",
 			appID:     "",
-			appSecret: "test-Secret",
+			appsecret: "test-Secret",
 			wantErr:   true,
 		},
 		{
-			name:      "empty appSecret",
+			name:      "empty appsecret",
 			appID:     "test-app-id",
-			appSecret: "",
+			appsecret: "",
 			wantErr:   true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			platform, err := NewPlatform(tt.appID, tt.appSecret)
+			platform, err := NewPlatform(tt.appID, tt.appsecret)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -63,7 +63,7 @@ func TestNewPlatform(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, platform)
 				assert.Equal(t, tt.appID, platform.appID)
-				assert.Equal(t, tt.appSecret, platform.appSecret)
+				assert.Equal(t, tt.appsecret, platform.appsecret)
 			}
 		})
 	}

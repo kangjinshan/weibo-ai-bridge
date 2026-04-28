@@ -11,7 +11,7 @@ func TestValidateSuccess(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},
@@ -43,7 +43,7 @@ func TestValidateEmptyAppID(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},
@@ -67,12 +67,12 @@ func TestValidateEmptyAppID(t *testing.T) {
 	assert.Contains(t, err.Error(), "app_id")
 }
 
-func TestValidateEmptyAppSecret(t *testing.T) {
+func TestValidateEmptyAppsecret(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "",
+				Appsecret: "",
 				Timeout:        30,
 			},
 		},
@@ -101,7 +101,7 @@ func TestValidateNoEnabledAgent(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},
@@ -133,7 +133,7 @@ func TestValidateCodexEnabledWithoutAPIKey(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},
@@ -166,7 +166,7 @@ func TestValidateInvalidLogLevel(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},
@@ -195,7 +195,7 @@ func TestValidateInvalidLogFormat(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},
@@ -224,7 +224,7 @@ func TestValidateInvalidTimeout(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        -1,
 			},
 		},
@@ -253,7 +253,7 @@ func TestValidateInvalidSessionTimeout(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},
@@ -282,7 +282,7 @@ func TestValidateInvalidMaxSize(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:          "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				Timeout:        30,
 			},
 		},

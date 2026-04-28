@@ -11,7 +11,7 @@ func TestConfigStruct(t *testing.T) {
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
 				AppID:     "test-app-id",
-				AppSecret: "test-Secret",
+				Appsecret: "test-Secret",
 				TokenURL:  "http://example.com/token",
 				WSURL:     "ws://example.com/ws",
 				Timeout:   30,
@@ -39,7 +39,7 @@ func TestConfigStruct(t *testing.T) {
 
 	assert.NotNil(t, cfg)
 	assert.Equal(t, "test-app-id", cfg.Platform.Weibo.AppID)
-	assert.Equal(t, "test-Secret", cfg.Platform.Weibo.AppSecret)
+	assert.Equal(t, "test-Secret", cfg.Platform.Weibo.Appsecret)
 	assert.Equal(t, 3600, cfg.Session.Timeout)
 	assert.Equal(t, "info", cfg.Log.Level)
 }
@@ -48,7 +48,7 @@ func TestPlatformConfigStruct(t *testing.T) {
 	platform := PlatformConfig{
 		Weibo: WeiboConfig{
 			AppID:     "test-app-id",
-			AppSecret: "test-Secret",
+			Appsecret: "test-Secret",
 			TokenURL:  "http://example.com/token",
 			WSURL:     "ws://example.com/ws",
 			Timeout:   30,
@@ -56,7 +56,7 @@ func TestPlatformConfigStruct(t *testing.T) {
 	}
 
 	assert.Equal(t, "test-app-id", platform.Weibo.AppID)
-	assert.Equal(t, "test-Secret", platform.Weibo.AppSecret)
+	assert.Equal(t, "test-Secret", platform.Weibo.Appsecret)
 	assert.Equal(t, 30, platform.Weibo.Timeout)
 }
 

@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yourusername/weibo-ai-bridge/agent"
-	"github.com/yourusername/weibo-ai-bridge/session"
+	"github.com/kangjinshan/weibo-ai-bridge/agent"
+	"github.com/kangjinshan/weibo-ai-bridge/session"
 )
 
 // CommandHandler 命令处理器

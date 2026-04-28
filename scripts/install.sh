@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 
 # 项目信息
 PROJECT_NAME="weibo-ai-bridge"
-REPO_URL="github.com/yourusername/weibo-ai-bridge"
+REPO_URL="github.com/kangjinshan/weibo-ai-bridge"
 INSTALL_DIR="/opt/${PROJECT_NAME}"
 CONFIG_DIR="/etc/${PROJECT_NAME}"
 BINARY_NAME="weibo-ai-bridge"

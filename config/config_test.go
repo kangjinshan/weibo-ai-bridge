@@ -20,19 +20,19 @@ func TestLoad(t *testing.T) {
 
 	assert.NotNil(t, cfg)
 	assert.Equal(t, "test-app-id", cfg.Platform.Weibo.AppID)
-	assert.Equal(t, "test-app-secret", cfg.Platform.Weibo.AppSecret)
+	assert.Equal(t, "test-app-secret", cfg.Platform.Weibo.Appsecret)
 	assert.True(t, cfg.Agent.Claude.Enabled)
 	assert.False(t, cfg.Agent.Codex.Enabled)
 }
 
-func TestLoad_LegacyWeiboAppSecretEnvStillWorks(t *testing.T) {
+func TestLoad_LegacyWeiboAppsecretEnvStillWorks(t *testing.T) {
 	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.toml"))
 	os.Unsetenv("WEIBO_APP_SECRET")
 	t.Setenv("WEIBO_APP_Secret", "legacy-secret")
 
 	cfg := Load()
 
-	assert.Equal(t, "legacy-secret", cfg.Platform.Weibo.AppSecret)
+	assert.Equal(t, "legacy-secret", cfg.Platform.Weibo.Appsecret)
 }
 
 func TestLoad_UsesConfigPathWhenProvided(t *testing.T) {
@@ -73,7 +73,7 @@ output = "stdout"
 	cfg := Load()
 
 	assert.Equal(t, "external-app-id", cfg.Platform.Weibo.AppID)
-	assert.Equal(t, "external-app-secret", cfg.Platform.Weibo.AppSecret)
+	assert.Equal(t, "external-app-secret", cfg.Platform.Weibo.Appsecret)
 	assert.False(t, cfg.Agent.Claude.Enabled)
 	assert.True(t, cfg.Agent.Codex.Enabled)
 }

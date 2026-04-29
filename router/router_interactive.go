@@ -319,5 +319,10 @@ func isSessionNotRunningError(err error) bool {
 		return false
 	}
 
-	return strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "session is not running")
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "session is not running") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "websocket: close sent")
 }

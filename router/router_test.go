@@ -1673,6 +1673,81 @@ func TestHandleMessage_ApprovalReplyRestartsClosedInteractiveSession(t *testing.
 	assert.Equal(t, true, platform.replies[3]["done"])
 }
 
+func TestHandleMessage_RestartsInteractiveSessionOnClosedNetworkConnection(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sessionID = "codex-thread-1"
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{Type: agent.EventTypeSession, SessionID: firstSession.sessionID}
+		firstSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "first reply"}
+		firstSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sessionID = "codex-thread-1"
+	secondSession.sendFn = func(input string) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeSession, SessionID: secondSession.sessionID}
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "second reply"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	agentMgr := agent.NewManager()
+	mockAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+	}
+	mockAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		switch mockAgent.startCalls {
+		case 1:
+			return firstSession, nil
+		case 2:
+			return secondSession, nil
+		default:
+			t.Fatalf("unexpected StartSession call %d", mockAgent.startCalls)
+			return nil, nil
+		}
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-1",
+		Type:      weibo.MessageTypeText,
+		Content:   "hello",
+		UserID:    "user-closed-network",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{""}, mockAgent.startSessionIDs)
+
+	firstSession.sendErrFn = func(input string) error {
+		return errors.New("write tcp 127.0.0.1:56566->127.0.0.1:40503: use of closed network connection")
+	}
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-2",
+		Type:      weibo.MessageTypeText,
+		Content:   "follow up",
+		UserID:    "user-closed-network",
+		UserName:  "test-user",
+		Timestamp: 1234567891,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, 2, mockAgent.startCalls)
+	assert.Equal(t, []string{"", "codex-thread-1"}, mockAgent.startSessionIDs)
+	assert.Equal(t, []string{"follow up"}, secondSession.sentInputs)
+	assert.Len(t, platform.streams, 2)
+	assert.Equal(t, "second reply", platform.streams[1].chunks[0]["content"])
+}
+
 func TestHandleMessage_ApprovalReplySurvivesOriginalRequestContextCancellation(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})

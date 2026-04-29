@@ -2,7 +2,7 @@
 
 #############################################
 # weibo-ai-bridge 配置向导脚本
-# 用于引导用户完成配置
+# 用于引导用户完成 config.toml 配置
 #############################################
 
 set -e
@@ -15,10 +15,11 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# 配置文件路径
-CONFIG_DIR="/etc/weibo-ai-bridge"
-CONFIG_FILE="${CONFIG_DIR}/.env"
-TEMP_CONFIG="/tmp/.env.tmp"
+PROJECT_NAME="weibo-ai-bridge"
+CONFIG_DIR="${WEIBO_AI_BRIDGE_CONFIG_DIR:-/etc/${PROJECT_NAME}}"
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
+ENV_FILE="${CONFIG_DIR}/.env"
+TEMP_CONFIG="$(mktemp "/tmp/${PROJECT_NAME}-config.XXXXXX")"
 
 # 日志函数
 log_info() {
@@ -41,6 +42,178 @@ log_step() {
     echo -e "${CYAN}[STEP]${NC} $1"
 }
 
+cleanup() {
+    rm -f "${TEMP_CONFIG}" "${TEMP_CONFIG}.tmp"
+}
+
+trap cleanup EXIT
+
+read_with_default() {
+    local prompt="$1"
+    local default_value="$2"
+    local input
+
+    if [[ -n "${default_value}" ]]; then
+        read -r -p "${prompt} [${default_value}]: " input
+        echo "${input:-${default_value}}"
+        return
+    fi
+
+    read -r -p "${prompt}: " input
+    echo "${input}"
+}
+
+prompt_bool() {
+    local prompt="$1"
+    local default_value="$2"
+    local default_hint="y/N"
+    local input
+
+    if [[ "${default_value}" == "true" ]]; then
+        default_hint="Y/n"
+    fi
+
+    read -r -p "${prompt} (${default_hint}): " input
+
+    if [[ -z "${input}" ]]; then
+        echo "${default_value}"
+        return
+    fi
+
+    local normalized_input
+    normalized_input="$(printf '%s' "${input}" | tr '[:upper:]' '[:lower:]')"
+
+    case "${normalized_input}" in
+        y|yes|true|1|是|好|好的|确认) echo "true" ;;
+        n|no|false|0|否|不|取消) echo "false" ;;
+        *)
+            log_warning "输入不合法，沿用默认值: ${default_value}"
+            echo "${default_value}"
+            ;;
+    esac
+}
+
+get_toml_value() {
+    local section="$1"
+    local key="$2"
+
+    awk -v section="${section}" -v key="${key}" '
+        BEGIN { in_section = 0 }
+        $0 ~ "^\\[" section "\\]$" { in_section = 1; next }
+        in_section && $0 ~ /^\[/ { in_section = 0 }
+        in_section && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (value ~ /^".*"$/) {
+                sub(/^"/, "", value)
+                sub(/"$/, "", value)
+            }
+            print value
+            exit
+        }
+    ' "${TEMP_CONFIG}"
+}
+
+set_toml_value() {
+    local section="$1"
+    local key="$2"
+    local value_type="$3" # string|raw
+    local value="$4"
+
+    awk -v section="${section}" -v key="${key}" -v value_type="${value_type}" -v value="${value}" '
+        function render(v, rendered) {
+            rendered = v
+            if (value_type == "string") {
+                gsub(/\\/, "\\\\", rendered)
+                gsub(/"/, "\\\"", rendered)
+                return key " = \"" rendered "\""
+            }
+            return key " = " rendered
+        }
+
+        BEGIN {
+            in_section = 0
+            section_seen = 0
+            key_written = 0
+        }
+
+        $0 ~ "^\\[" section "\\]$" {
+            in_section = 1
+            section_seen = 1
+            print
+            next
+        }
+
+        in_section && $0 ~ /^\[/ {
+            if (!key_written) {
+                print render(value)
+                key_written = 1
+            }
+            in_section = 0
+        }
+
+        in_section && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            print render(value)
+            key_written = 1
+            next
+        }
+
+        { print }
+
+        END {
+            if (!section_seen) {
+                print ""
+                print "[" section "]"
+                print render(value)
+            } else if (in_section && !key_written) {
+                print render(value)
+            }
+        }
+    ' "${TEMP_CONFIG}" > "${TEMP_CONFIG}.tmp"
+
+    mv "${TEMP_CONFIG}.tmp" "${TEMP_CONFIG}"
+}
+
+set_env_value() {
+    local key="$1"
+    local value="$2"
+
+    mkdir -p "${CONFIG_DIR}"
+    touch "${ENV_FILE}"
+
+    awk -v key="${key}" -v value="${value}" '
+        BEGIN { written = 0 }
+        $0 ~ "^[[:space:]]*" key "=" {
+            print key "=" value
+            written = 1
+            next
+        }
+        { print }
+        END {
+            if (!written) {
+                print key "=" value
+            }
+        }
+    ' "${ENV_FILE}" > "${ENV_FILE}.tmp"
+
+    mv "${ENV_FILE}.tmp" "${ENV_FILE}"
+    chmod 600 "${ENV_FILE}"
+}
+
+mask_secret() {
+    local value="$1"
+    if [[ -z "${value}" ]]; then
+        echo ""
+        return
+    fi
+    if [[ ${#value} -le 6 ]]; then
+        echo "******"
+        return
+    fi
+    echo "${value:0:3}***${value: -3}"
+}
+
 # 显示欢迎信息
 show_welcome() {
     echo ""
@@ -49,9 +222,10 @@ show_welcome() {
     echo "=========================================="
     echo ""
     log_info "此向导将帮助您配置 weibo-ai-bridge"
-    log_info "配置将保存到: ${CONFIG_FILE}"
+    log_info "主配置文件: ${CONFIG_FILE}"
+    log_info "可选环境变量覆盖文件: ${ENV_FILE}"
     echo ""
-    read -p "按 Enter 键继续..."
+    read -r -p "按 Enter 键继续..."
     echo ""
 }
 
@@ -59,218 +233,133 @@ show_welcome() {
 check_config_file() {
     if [[ ! -f "${CONFIG_FILE}" ]]; then
         log_error "配置文件不存在: ${CONFIG_FILE}"
+        if [[ -f "${ENV_FILE}" ]]; then
+            log_warning "检测到旧版环境变量文件: ${ENV_FILE}"
+            log_info "当前版本默认使用 TOML 配置文件（config.toml）"
+        fi
         log_info "请先运行安装脚本: /opt/weibo-ai-bridge/scripts/install.sh"
         exit 1
     fi
 
-    # 复制到临时文件
     cp "${CONFIG_FILE}" "${TEMP_CONFIG}"
 }
 
-# 配置服务器
-configure_server() {
-    log_step "配置服务器"
-    echo ""
-
-    # 读取当前配置
-    CURRENT_PORT=$(grep "^SERVER_PORT=" "${CONFIG_FILE}" | cut -d'=' -f2)
-    CURRENT_HOST=$(grep "^SERVER_HOST=" "${CONFIG_FILE}" | cut -d'=' -f2)
-    CURRENT_MODE=$(grep "^SERVER_MODE=" "${CONFIG_FILE}" | cut -d'=' -f2)
-
-    log_info "当前配置:"
-    echo "  服务器端口: ${CURRENT_PORT}"
-    echo "  服务器主机: ${CURRENT_HOST}"
-    echo "  运行模式: ${CURRENT_MODE}"
-    echo ""
-
-    read -p "是否修改服务器配置? (y/N): " modify_server
-    if [[ "$modify_server" =~ ^[Yy]$ ]]; then
-        read -p "输入服务器端口 [${CURRENT_PORT}]: " new_port
-        new_port=${new_port:-$CURRENT_PORT}
-
-        read -p "输入服务器主机 [${CURRENT_HOST}]: " new_host
-        new_host=${new_host:-$CURRENT_HOST}
-
-        echo "选择运行模式:"
-        echo "  1) debug (调试模式)"
-        echo "  2) release (生产模式)"
-        read -p "输入选项 [1-2, 默认: 1]: " mode_option
-        mode_option=${mode_option:-1}
-
-        case $mode_option in
-            1) new_mode="debug" ;;
-            2) new_mode="release" ;;
-            *) new_mode=$CURRENT_MODE ;;
-        esac
-
-        # 更新配置
-        sed -i "s/^SERVER_PORT=.*/SERVER_PORT=${new_port}/" "${TEMP_CONFIG}"
-        sed -i "s/^SERVER_HOST=.*/SERVER_HOST=${new_host}/" "${TEMP_CONFIG}"
-        sed -i "s/^SERVER_MODE=.*/SERVER_MODE=${new_mode}/" "${TEMP_CONFIG}"
-
-        log_success "服务器配置已更新"
-    else
-        log_info "跳过服务器配置"
-    fi
-    echo ""
-}
-
-# 配置微博
 configure_weibo() {
-    log_step "配置微博平台"
+    log_step "配置微博平台 (platform.weibo)"
     echo ""
 
-    # 显示获取凭证说明
-    echo "=========================================="
-    echo "  微博龙虾助手 Webhook 凭证获取说明"
-    echo "=========================================="
-    echo ""
-    echo "1. 下载微博龙虾助手:"
-    echo "   - 访问: https://github.com/YourUsername/weibo-lobster"
-    echo "   - 或搜索 \"微博龙虾助手\" GitHub 仓库"
-    echo ""
-    echo "2. 安装并运行微博龙虾助手:"
-    echo "   - 解压并运行应用程序"
-    echo "   - 登录您的微博账号"
-    echo ""
-    echo "3. 配置 Webhook 推送:"
-    echo "   - 在龙虾助手设置中找到 Webhook 配置"
-    echo "   - 配置 Webhook URL:"
-    echo "     http://your-server-ip:${CURRENT_PORT:-5533}/weibo/webhook"
-    echo "   - 设置 Webhook Token (自定义一个安全字符串)"
-    echo ""
-    echo "4. 获取凭证信息:"
-    echo "   - Webhook URL: 您配置的推送地址"
-    echo "   - Webhook Token: 您设置的 Token"
-    echo ""
-    echo "=========================================="
-    echo ""
+    local current_app_id current_app_secret current_token_url current_ws_url current_timeout
+    current_app_id="$(get_toml_value "platform.weibo" "app_id")"
+    current_app_secret="$(get_toml_value "platform.weibo" "app_secret")"
+    current_token_url="$(get_toml_value "platform.weibo" "token_url")"
+    current_ws_url="$(get_toml_value "platform.weibo" "ws_url")"
+    current_timeout="$(get_toml_value "platform.weibo" "timeout")"
 
-    # 读取当前配置
-    CURRENT_WEBHOOK=$(grep "^WEIBO_WEBHOOK_URL=" "${CONFIG_FILE}" | cut -d'=' -f2)
-    CURRENT_TOKEN=$(grep "^WEIBO_TOKEN=" "${CONFIG_FILE}" | cut -d'=' -f2)
+    current_token_url="${current_token_url:-http://open-im.api.weibo.com/open/auth/ws_token}"
+    current_ws_url="${current_ws_url:-ws://open-im.api.weibo.com/ws/stream}"
+    current_timeout="${current_timeout:-30}"
 
-    log_info "当前配置:"
-    echo "  Webhook URL: ${CURRENT_WEBHOOK}"
-    echo "  Webhook Token: ${CURRENT_TOKEN}"
-    echo ""
+    local new_app_id new_app_secret new_token_url new_ws_url new_timeout
+    new_app_id="$(read_with_default "输入微博 App ID" "${current_app_id}")"
+    new_app_secret="$(read_with_default "输入微博 App Secret" "${current_app_secret}")"
+    new_token_url="$(read_with_default "输入 Token URL" "${current_token_url}")"
+    new_ws_url="$(read_with_default "输入 WebSocket URL" "${current_ws_url}")"
+    new_timeout="$(read_with_default "输入请求超时(秒)" "${current_timeout}")"
 
-    read -p "是否修改微博配置? (y/N): " modify_weibo
-    if [[ "$modify_weibo" =~ ^[Yy]$ ]]; then
-        read -p "输入 Webhook URL: " new_webhook
-        read -p "输入 Webhook Token: " new_token
+    set_toml_value "platform.weibo" "app_id" "string" "${new_app_id}"
+    set_toml_value "platform.weibo" "app_secret" "string" "${new_app_secret}"
+    set_toml_value "platform.weibo" "token_url" "string" "${new_token_url}"
+    set_toml_value "platform.weibo" "ws_url" "string" "${new_ws_url}"
+    set_toml_value "platform.weibo" "timeout" "raw" "${new_timeout}"
 
-        # 更新配置
-        sed -i "s|^WEIBO_WEBHOOK_URL=.*|WEIBO_WEBHOOK_URL=${new_webhook}|" "${TEMP_CONFIG}"
-        sed -i "s|^WEIBO_TOKEN=.*|WEIBO_TOKEN=${new_token}|" "${TEMP_CONFIG}"
-
-        log_success "微博配置已更新"
-    else
-        log_info "跳过微博配置"
-    fi
+    log_success "微博平台配置已更新"
     echo ""
 }
 
-# 配置 Claude
-configure_claude() {
-    log_step "配置 Claude AI"
+configure_agents() {
+    log_step "配置 Agent"
     echo ""
 
-    # 显示配置说明
-    echo "=========================================="
-    echo "  Claude Code 配置说明"
-    echo "=========================================="
-    echo ""
-    echo "Claude API Key 和模型配置由 Claude Code CLI 管理。"
-    echo ""
-    echo "配置方式："
-    echo "  1. 环境变量：export ANTHROPIC_API_KEY=\"sk-ant-xxxxx\""
-    echo "  2. 配置文件：~/.config/claude/config.json"
-    echo "  3. Claude Code 首次运行时会自动引导配置"
-    echo ""
-    echo "获取 API Key："
-    echo "  - 访问：https://console.anthropic.com/"
-    echo "  - 创建 API 密钥并复制"
-    echo ""
-    echo "=========================================="
-    echo ""
+    local current_claude_enabled current_codex_enabled current_codex_model current_codex_api_key
+    current_claude_enabled="$(get_toml_value "agent.claude" "enabled")"
+    current_codex_enabled="$(get_toml_value "agent.codex" "enabled")"
+    current_codex_model="$(get_toml_value "agent.codex" "model")"
+    current_codex_api_key="$(get_toml_value "agent.codex" "api_key")"
 
-    # 读取当前配置
-    CURRENT_ENABLED=$(grep "^CLAUDE_ENABLED=" "${CONFIG_FILE}" | cut -d'=' -f2)
+    current_claude_enabled="${current_claude_enabled:-true}"
+    current_codex_enabled="${current_codex_enabled:-false}"
 
-    log_info "当前配置:"
-    echo "  启用状态: ${CURRENT_ENABLED}"
-    echo ""
+    local new_claude_enabled new_codex_enabled new_codex_model new_codex_api_key
+    new_claude_enabled="$(prompt_bool "是否启用 Claude Agent" "${current_claude_enabled}")"
+    new_codex_enabled="$(prompt_bool "是否启用 Codex Agent" "${current_codex_enabled}")"
+    new_codex_model="$(read_with_default "输入 Codex 模型（留空沿用本机 codex CLI 默认）" "${current_codex_model}")"
+    new_codex_api_key="$(read_with_default "输入 Codex API Key（可留空）" "${current_codex_api_key}")"
 
-    read -p "是否启用 Claude Agent? (Y/n): " enable_claude
-    enable_claude=${enable_claude:-Y}
-    if [[ "$enable_claude" =~ ^[Yy]$ ]]; then
-        new_enabled="true"
-    else
-        new_enabled="false"
-    fi
+    set_toml_value "agent.claude" "enabled" "raw" "${new_claude_enabled}"
+    set_toml_value "agent.codex" "enabled" "raw" "${new_codex_enabled}"
+    set_toml_value "agent.codex" "model" "string" "${new_codex_model}"
+    set_toml_value "agent.codex" "api_key" "string" "${new_codex_api_key}"
 
-    # 更新配置
-    sed -i "s|^CLAUDE_ENABLED=.*|CLAUDE_ENABLED=${new_enabled}|" "${TEMP_CONFIG}"
-
-    log_success "Claude 配置已更新"
+    log_success "Agent 配置已更新"
     echo ""
 }
 
-# 配置 Codex
-configure_codex() {
-    log_step "配置 Codex (可选)"
+configure_log() {
+    log_step "配置日志 (log)"
     echo ""
 
-    # 读取当前配置
-    CURRENT_API_KEY=$(grep "^CODEX_API_KEY=" "${CONFIG_FILE}" | cut -d'=' -f2)
-    CURRENT_MODEL=$(grep "^CODEX_MODEL=" "${CONFIG_FILE}" | cut -d'=' -f2)
-    CURRENT_ENABLED=$(grep "^CODEX_ENABLED=" "${CONFIG_FILE}" | cut -d'=' -f2)
+    local current_level current_format current_output
+    current_level="$(get_toml_value "log" "level")"
+    current_format="$(get_toml_value "log" "format")"
+    current_output="$(get_toml_value "log" "output")"
 
-    log_info "当前配置:"
-    echo "  API Key: ${CURRENT_API_KEY:0:10}..."
-    echo "  模型: ${CURRENT_MODEL}"
-    echo "  启用状态: ${CURRENT_ENABLED}"
-    echo ""
+    current_level="${current_level:-info}"
+    current_format="${current_format:-json}"
+    current_output="${current_output:-stdout}"
 
-    read -p "是否配置 Codex? (y/N): " configure_codex
-    if [[ "$configure_codex" =~ ^[Yy]$ ]]; then
-        read -p "输入 Codex API Key: " new_api_key
-
-        echo "选择模型:"
-        echo "  1) gpt-4"
-        echo "  2) gpt-4-turbo"
-        echo "  3) gpt-3.5-turbo"
-        echo "  4) 自定义模型"
-        read -p "输入选项 [1-4, 默认: 1]: " model_option
-        model_option=${model_option:-1}
-
-        case $model_option in
-            1) new_model="gpt-4" ;;
-            2) new_model="gpt-4-turbo" ;;
-            3) new_model="gpt-3.5-turbo" ;;
-            4)
-                read -p "输入自定义模型名称: " new_model
-                ;;
-            *) new_model=$CURRENT_MODEL ;;
-        esac
-
-        read -p "启用 Codex? (y/N): " enable_codex
-        if [[ "$enable_codex" =~ ^[Yy]$ ]]; then
-            new_enabled="true"
-        else
-            new_enabled="false"
-        fi
-
-        # 更新配置
-        sed -i "s|^CODEX_API_KEY=.*|CODEX_API_KEY=${new_api_key}|" "${TEMP_CONFIG}"
-        sed -i "s|^CODEX_MODEL=.*|CODEX_MODEL=${new_model}|" "${TEMP_CONFIG}"
-        sed -i "s|^CODEX_ENABLED=.*|CODEX_ENABLED=${new_enabled}|" "${TEMP_CONFIG}"
-
-        log_success "Codex 配置已更新"
-    else
-        log_info "跳过 Codex 配置"
+    local modify_log
+    modify_log="$(prompt_bool "是否修改日志配置" "false")"
+    if [[ "${modify_log}" != "true" ]]; then
+        log_info "跳过日志配置"
+        echo ""
+        return
     fi
+
+    local new_level new_format new_output
+    new_level="$(read_with_default "日志级别(debug/info/warn/error)" "${current_level}")"
+    new_format="$(read_with_default "日志格式(json/text)" "${current_format}")"
+    new_output="$(read_with_default "日志输出(stdout/stderr/文件路径)" "${current_output}")"
+
+    set_toml_value "log" "level" "string" "${new_level}"
+    set_toml_value "log" "format" "string" "${new_format}"
+    set_toml_value "log" "output" "string" "${new_output}"
+
+    log_success "日志配置已更新"
+    echo ""
+}
+
+configure_server_port_override() {
+    log_step "配置可选端口覆盖 (.env)"
+    echo ""
+
+    local current_port="5533"
+    if [[ -f "${ENV_FILE}" ]]; then
+        current_port="$(awk -F'=' '/^[[:space:]]*SERVER_PORT=/{print $2; exit}' "${ENV_FILE}")"
+        current_port="${current_port:-5533}"
+    fi
+
+    local modify_port
+    modify_port="$(prompt_bool "是否写入 SERVER_PORT 到 ${ENV_FILE}" "false")"
+    if [[ "${modify_port}" != "true" ]]; then
+        log_info "跳过端口覆盖配置"
+        echo ""
+        return
+    fi
+
+    local new_port
+    new_port="$(read_with_default "输入 HTTP 端口" "${current_port}")"
+    set_env_value "SERVER_PORT" "${new_port}"
+    log_success "已更新 ${ENV_FILE} 中的 SERVER_PORT"
     echo ""
 }
 
@@ -279,33 +368,33 @@ save_config() {
     log_step "保存配置"
     echo ""
 
-    # 显示配置摘要
+    local summary_app_id summary_app_secret summary_claude summary_codex
+    summary_app_id="$(get_toml_value "platform.weibo" "app_id")"
+    summary_app_secret="$(get_toml_value "platform.weibo" "app_secret")"
+    summary_claude="$(get_toml_value "agent.claude" "enabled")"
+    summary_codex="$(get_toml_value "agent.codex" "enabled")"
+
     log_info "配置摘要:"
+    echo "  app_id: ${summary_app_id}"
+    echo "  app_secret: $(mask_secret "${summary_app_secret}")"
+    echo "  claude.enabled: ${summary_claude}"
+    echo "  codex.enabled: ${summary_codex}"
     echo ""
-    cat "${TEMP_CONFIG}"
-    echo ""
 
-    read -p "确认保存配置? (Y/n): " confirm
-    confirm=${confirm:-Y}
+    local confirm
+    confirm="$(prompt_bool "确认保存配置" "true")"
 
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        # 备份原配置
-        cp "${CONFIG_FILE}" "${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
-
-        # 保存新配置
-        cp "${TEMP_CONFIG}" "${CONFIG_FILE}"
-        chmod 600 "${CONFIG_FILE}"
-
-        log_success "配置已保存"
-        log_info "备份文件: ${CONFIG_FILE}.backup.*"
-    else
+    if [[ "${confirm}" != "true" ]]; then
         log_warning "配置未保存"
-        rm -f "${TEMP_CONFIG}"
         exit 0
     fi
 
-    # 清理临时文件
-    rm -f "${TEMP_CONFIG}"
+    cp "${CONFIG_FILE}" "${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "${TEMP_CONFIG}" "${CONFIG_FILE}"
+    chmod 600 "${CONFIG_FILE}"
+
+    log_success "配置已保存: ${CONFIG_FILE}"
+    log_info "备份文件: ${CONFIG_FILE}.backup.*"
 }
 
 # 显示完成信息
@@ -315,16 +404,15 @@ show_completion() {
     log_success "配置完成！"
     log_success "=========================================="
     echo ""
-    log_info "配置文件: ${CONFIG_FILE}"
+    log_info "主配置文件: ${CONFIG_FILE}"
+    if [[ -f "${ENV_FILE}" ]]; then
+        log_info "环境变量覆盖文件: ${ENV_FILE}"
+    fi
     echo ""
     log_warning "下一步操作:"
     echo "  1. 重启服务: systemctl restart weibo-ai-bridge"
     echo "  2. 查看状态: systemctl status weibo-ai-bridge"
     echo "  3. 查看日志: journalctl -u weibo-ai-bridge -f"
-    echo ""
-    log_info "测试服务:"
-    echo "  健康检查: curl http://localhost:${CURRENT_PORT:-5533}/health"
-    echo "  统计信息: curl http://localhost:${CURRENT_PORT:-5533}/stats"
     echo ""
 }
 
@@ -332,10 +420,10 @@ show_completion() {
 main() {
     show_welcome
     check_config_file
-    configure_server
     configure_weibo
-    configure_claude
-    configure_codex
+    configure_agents
+    configure_log
+    configure_server_port_override
     save_config
     show_completion
 
@@ -344,5 +432,4 @@ main() {
     echo ""
 }
 
-# 运行主函数
 main "$@"

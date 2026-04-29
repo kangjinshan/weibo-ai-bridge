@@ -188,7 +188,7 @@ make dev
 - `make test` 实际执行 `go test -v -race -coverprofile=coverage.out ./...`
 - `make fmt` 会执行 `gofmt -w -s .`
 - `make lint` 依赖 `golangci-lint`
-- 仓库根目录可能已有预编译的 `server` 二进制，但改动源码后应以重新构建结果为准
+- 产物目录约定：`build/` 放本地构建产物，`dist/` 放发布包；仓库根目录不应出现可执行文件
 
 ## 测试要求
 
@@ -275,7 +275,7 @@ Claude 的认证主要由本地 CLI 环境负责。Codex 也可能依赖本地 C
 ## 仓库里的已知情况
 
 - 当前 `go.mod` 里的 module path 仍是 `github.com/kangjinshan/weibo-ai-bridge`，除非任务明确要求，否则不要顺手改
-- 仓库中可能存在预编译或构建产物，例如根目录下的 `server` 和 `build/`
+- 当前规范是产物集中在 `build/` 或 `dist/`，根目录若出现可执行文件应视为异常并清理
 
 ## 文档维护
 

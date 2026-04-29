@@ -27,6 +27,7 @@ TARGET_USER="${SUDO_USER:-${USER}}"
 TARGET_HOME=""
 SKILLS_INSTALL_NOTE="未执行"
 OS_NAME="$(uname -s)"
+BUILT_BINARY_PATH=""
 
 # 日志函数
 log_info() {
@@ -157,9 +158,14 @@ build_project() {
     log_info "下载 Go 依赖..."
     go mod download
 
+    local build_dir="${PROJECT_DIR}/build"
+    local output_binary="${build_dir}/${BINARY_NAME}"
+
     # 编译
     log_info "构建二进制文件..."
-    CGO_ENABLED=0 go build -o "${BINARY_NAME}" ./cmd/server
+    mkdir -p "${build_dir}"
+    CGO_ENABLED=0 go build -o "${output_binary}" ./cmd/server
+    BUILT_BINARY_PATH="${output_binary}"
 
     if [[ $? -eq 0 ]]; then
         log_success "编译成功"
@@ -173,7 +179,12 @@ build_project() {
 install_binary() {
     log_info "安装二进制文件..."
 
-    cp "${PROJECT_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/"
+    if [[ -z "${BUILT_BINARY_PATH}" || ! -f "${BUILT_BINARY_PATH}" ]]; then
+        log_error "未找到构建产物: ${BUILT_BINARY_PATH}"
+        exit 1
+    fi
+
+    cp "${BUILT_BINARY_PATH}" "${INSTALL_DIR}/"
     chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 
     # 创建软链接（可选）

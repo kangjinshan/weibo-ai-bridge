@@ -1,4 +1,4 @@
-.PHONY: all build test clean fmt lint
+.PHONY: all build test clean fmt lint check-root-executables
 
 # Go parameters
 GOCMD=go
@@ -27,6 +27,9 @@ LDFLAGS := -X 'main.version=$(VERSION)' -X 'main.gitCommit=$(GIT_COMMIT)' -X 'ma
 
 all: test build
 
+check-root-executables:
+	@bash ./scripts/check-root-executables.sh
+
 build:
 	@echo "Building..."
 	@mkdir -p $(BUILD_DIR)
@@ -34,6 +37,7 @@ build:
 
 test:
 	@echo "Running tests..."
+	@$(MAKE) check-root-executables
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 
 test-coverage: test

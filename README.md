@@ -33,10 +33,7 @@ cd weibo-ai-bridge
 cp .env.example .env
 # 编辑 .env 填入微博 App ID / App secret
 
-# 使用仓库内二进制（如果存在）
-chmod +x ./server && ./server
-
-# 或自行构建
+# 构建并运行（统一入口）
 make build && ./build/weibo-ai-bridge
 
 # 开发模式
@@ -54,6 +51,11 @@ make dev
 | `make fmt` | 格式化代码 |
 | `make lint` | 代码检查（需 golangci-lint） |
 | `make dev` | 构建并运行 |
+
+产物规范：
+- `build/`：本地构建产物
+- `dist/`：发布包产物
+- 仓库根目录不放可执行文件；统一从 `build/weibo-ai-bridge` 运行
 
 ## 用户命令
 

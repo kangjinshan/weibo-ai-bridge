@@ -4,6 +4,8 @@
 *.dll
 *.so
 *.dylib
+/weibo-ai-bridge
+/server
 
 # Test binary, built with `go test -c`
 *.test

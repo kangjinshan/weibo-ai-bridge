@@ -84,28 +84,28 @@ default_bin_path() {
         return
     fi
 
-    local candidates=(
+    local canonical_path="${REPO_ROOT}/build/weibo-ai-bridge"
+    if [[ -x "${canonical_path}" || -f "${canonical_path}" ]]; then
+        echo "${canonical_path}"
+        return
+    fi
+
+    # 兼容旧版本根目录产物（短期 fallback，一次过渡后可删除）
+    local legacy_candidates=(
         "${REPO_ROOT}/weibo-ai-bridge"
-        "${REPO_ROOT}/build/weibo-ai-bridge"
         "${REPO_ROOT}/server"
     )
 
     local p
-    for p in "${candidates[@]}"; do
-        if [[ -x "${p}" ]]; then
+    for p in "${legacy_candidates[@]}"; do
+        if [[ -x "${p}" || -f "${p}" ]]; then
+            log_warn "检测到旧版根目录二进制: ${p}；建议迁移到 ${canonical_path}" >&2
             echo "${p}"
             return
         fi
     done
 
-    for p in "${candidates[@]}"; do
-        if [[ -f "${p}" ]]; then
-            echo "${p}"
-            return
-        fi
-    done
-
-    echo "${REPO_ROOT}/build/weibo-ai-bridge"
+    echo "${canonical_path}"
 }
 
 default_config_path() {

@@ -1,253 +1,196 @@
 # Weibo AI Bridge
 
-微博私信与 AI Agent 的桥接服务，通过微博开放平台 WebSocket API 连接微博和多个 AI Agent（Claude、Codex），实现智能对话功能。
+微博私信与 AI Agent 的桥接服务。通过微博开放平台 WebSocket API 连接微博和多个 AI Agent（Claude Code、Codex CLI），实现智能对话功能。
 
-## 项目简介
+## 核心特性
 
-Weibo AI Bridge 是一个基于 Go 语言开发的中间件服务，旨在连接微博私信和 AI 智能助手。通过微博开放平台的 WebSocket API，本项目能够实时接收微博私信消息，并将其转发给配置的 AI Agent 进行处理，最终将 AI 的回复返回给微博用户。
+- **微博私信桥接** — 通过 WebSocket API 实时收发微博私信
+- **多 Agent 支持** — Claude Code 和 Codex CLI，可灵活切换
+- **流式回复** — 先发"正在处理中"提示，再逐片流式发送真实回复
+- **会话管理** — 多会话创建/切换/持久化，自动记录会话标题
+- **自动建会话** — 无活跃会话时发首条消息自动创建
+- **审批回复** — Agent 请求授权时回复 `允许` / `允许所有` / `取消`
+- **交互式插话** — `/btw` 向正在执行的 Agent turn 注入补充信息
+- **命令旁路** — `/help`、`/status` 等命令立即执行，不排队
+- **内置微博 Skills** — 仓库自带 `weibo-skill-api`，安装时同步到 Agent skills 目录
+- **SSE 调试出口** — `/chat/stream` 接口可观察内部事件流
 
-本项目采用模块化设计，支持多种 AI Agent 接入，具有良好的扩展性和可维护性。主要特点包括：
-
-- 完整的消息收发流程
-- 流式回复与微博分片发送
-- 多 Agent 支持（Claude、Codex）
-- 会话管理与会话上下文保持
-- 上下文记忆与多会话支持
-- 会话持久化存储
-- 异步消息处理
-- 完善的测试覆盖
-- 灵活的配置系统
-
-## 特性说明
-
-### 核心功能
-
-- **微博私信桥接**: 通过微博开放平台 WebSocket API 实时接收和发送微博私信
-- **多 Agent 支持**: 支持 Claude 和 Codex 两种 AI Agent，可灵活切换
-- **会话管理**: 自动管理用户会话，保持对话上下文
-- **上下文记忆**: 支持会话持久化存储，可创建、切换、恢复多个会话
-- **自动建会话**: 用户在没有活跃会话时直接发送第一条消息，会自动创建新会话，无需手动 `/new`
-- **会话标题**: 每个会话会自动记录首条真实问题作为标题，最长 50 个中文字符
-- **流式回复**: 收到用户消息后会先发送“正在处理中”提示，随后再发送真实回复内容
-- **普通提示消息**: “已收到消息，正在处理中，请稍候。” 与排队提示走普通消息发送，不占用流式 `messageId/chunkId/done` 语义
-- **可读性优化**: 长回复默认优先使用 Markdown 列表/小标题与自然分段，避免一大坨纯文本
-- **消息路由**: 智能路由消息到对应的 AI Agent
-- **命令处理**: 支持会话列表、会话切换、Agent 切换、状态查看与对进行中会话插话
-- **审批回复**: 当交互式 Agent 请求授权时，用户可直接回复 `允许`、`允许所有` 或 `取消`
-- **内置微博 Skills**: 仓库自带 `weibo-skill-api` 能力包，安装 bridge 时可同时安装到 Codex 和 Claude 的 personal skills 目录
-- **命令旁路**: 当上一条普通消息仍在处理中时，`/help`、`/list`、`/status` 等 slash 指令会立即执行，不进入消息队列
-- **健康检查**: 提供 HTTP 接口用于健康检查和统计信息
-
-### 技术特性
-
-- **Go 语言实现**: 使用 Go 1.22+ 开发，性能优异
-- **模块化架构**: 清晰的模块划分，易于扩展
-- **完整测试**: 采用 TDD 开发模式，测试覆盖率高
-- **配置灵活**: 支持 TOML 配置文件和环境变量
-- **优雅关闭**: 支持优雅关闭，确保消息不丢失
-- **自动发现**: 自动检测本地安装的 Agent CLI 工具
-- **Rune 安全切分**: 中文内容分片时按字符而不是按字节切分，避免乱码
-- **边界感知 flush**: 流式发送会优先在句号、换行、段落边界输出，兼顾速度与可读性
-
-### 流式实现说明
-
-- **Codex 增量流**: Codex 路径优先通过本地 `codex app-server` WebSocket 协议消费 `item/agentMessage/delta`，拿到多少增量就尽快向微博发送多少；如果 `app-server` 不可用，会自动回退到旧的 `codex exec --json` 路径。
-- **微博分片语义**: 同一轮回复会复用同一个 `messageId`，逐片递增 `chunkId`，最后一片或结束标记带 `done=true`。
-- **长静默分段**: 如果流式正文连续 5 秒没有任何实际输出，下一次恢复输出前会自动补一个换行，帮助用户识别新的输出段落。
-- **Markdown 友好输出**: Bridge 会引导 Agent 在长回复中使用简洁 Markdown 与自然分段；流式正文会尽量在句号、换行或段落边界再 flush，避免把格式拆得过碎。
-- **交互式会话尾部静默保护**: 对 Codex 这类可复用的 interactive session，Bridge 在发送新一轮消息前会先等待上一轮尾部事件短暂静默，避免晚到的 `done` 误吞下一轮回复，出现“只收到处理中提示、没有正文”的情况。
-- **Codex 收尾容错**: 对 Codex interactive session，如果 `turn` 已完成而底层 `app-server` WebSocket 紧接着以 EOF 或 `close 1006` 结束，Bridge 会把它视为正常收尾，而不是向用户回 `AI execution failed`。
-- **SSE 调试出口**: Bridge 提供 `/chat/stream` SSE 接口，可直接观察内部事件流，便于联调和排查。
-
-## 安装指南
+## 快速开始
 
 ### 前置要求
 
-- Go 1.22 或更高版本
-- Git
+- Go 1.22+
+- 至少安装一个 Agent CLI（`claude` 或 `codex`）
 
-### 下载源码
+### 安装运行
 
 ```bash
+# 克隆
 git clone https://github.com/kangjinshan/weibo-ai-bridge.git
 cd weibo-ai-bridge
-```
 
-### 直接使用预编译二进制
+# 配置
+cp .env.example .env
+# 编辑 .env 填入微博 App ID / App secret
 
-仓库根目录已包含预编译的 `server` 可执行文件，适用于 Linux x86_64。
+# 使用预编译二进制（Linux x86_64）
+chmod +x ./server && ./server
 
-```bash
-chmod +x ./server
-./server
-```
+# 或自行构建
+make build && ./build/weibo-ai-bridge
 
-如果你的环境不是 Linux x86_64，或希望自行重新编译，请继续参考下面的源码构建步骤。
-
-### 安装依赖
-
-```bash
-make deps
-```
-
-### 构建项目
-
-```bash
-make build
-```
-
-构建产物位于 `build/weibo-ai-bridge`
-
-### 运行测试
-
-```bash
-# 运行所有测试
-make test
-
-# 生成覆盖率报告
-make test-coverage
-```
-
-### 代码质量检查
-
-```bash
-# 格式化代码
-make fmt
-
-# 代码检查
-make lint
-```
-
-## 使用说明
-
-### 快速开始
-
-1. 配置环境变量或配置文件（详见配置说明）
-2. 使用预编译二进制 `./server`，或自行构建：`make build`
-3. 运行服务：`./server` 或 `./build/weibo-ai-bridge`
-
-### 运行模式
-
-#### 开发模式
-
-```bash
+# 开发模式
 make dev
 ```
 
-此命令会自动构建并运行服务。
+### 常用命令
 
-#### 生产模式
+| 命令 | 说明 |
+|------|------|
+| `make build` | 构建到 `build/weibo-ai-bridge` |
+| `make build-linux` | 交叉编译 Linux AMD64 |
+| `make test` | 运行测试（含覆盖率） |
+| `make test-coverage` | 生成 HTML 覆盖率报告 |
+| `make fmt` | 格式化代码 |
+| `make lint` | 代码检查（需 golangci-lint） |
+| `make dev` | 构建并运行 |
 
-```bash
-# 构建 Linux 版本
-make build-linux
+## 用户命令
 
-# 运行服务
-./build/weibo-ai-bridge
+| 命令 | 说明 |
+|------|------|
+| `/help` | 显示帮助信息 |
+| `/new [claude\|codex]` | 创建新会话（不传参数时沿用当前 Agent） |
+| `/list` | 查看所有会话（带编号） |
+| `/switch <编号>` | 按 `/list` 中的编号切换活跃会话 |
+| `/switch <agent类型>` | 切换当前会话的 Agent 类型 |
+| `/btw <内容>` | 向当前交互式会话注入补充信息 |
+| `/model` | 显示当前使用的模型 |
+| `/dir` | 显示当前工作目录 |
+| `/status` | 显示当前会话状态 |
+
+### 授权回复
+
+当 Agent 请求授权时，直接回复以下任意词汇：
+
+| 类别 | 支持的回复 |
+|------|-----------|
+| 允许 | 允许 / 同意 / 可以 / 好 / 好的 / 是 / 确认 / approve / allow / yes / y / ok |
+| 取消 | 取消 / 拒绝 / 不允许 / 不行 / 不 / 否 / deny / no / n / reject / cancel |
+| 允许所有 | 允许所有 / 允许全部 / 全部允许 / 所有允许 / 都允许 / 全部同意 / allow all / allowall / approve all / yes all |
+
+`允许所有` 仅对当前会话生效，后续授权自动通过。
+
+## 配置
+
+优先级：环境变量 > TOML 配置文件 > 默认值
+
+### 关键环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `WEIBO_APP_ID` | 微博应用 ID | 必填 |
+| `WEIBO_APP_SECRET` | 微博应用密钥（兼容旧名 `WEIBO_APP_Secret`） | 必填 |
+| `SERVER_PORT` | HTTP 端口 | 5533 |
+| `CONFIG_PATH` | TOML 配置路径 | `config/config.toml` |
+| `CLAUDE_ENABLED` | 启用 Claude | true |
+| `CODEX_ENABLED` | 启用 Codex | false |
+| `CODEX_MODEL` | Codex 模型覆盖（留空沿用本机 CLI 默认） | 空 |
+| `SESSION_TIMEOUT` | 会话超时（秒） | 3600 |
+| `SESSION_MAX_SIZE` | 最大会话数 | 1000 |
+| `SESSION_STORAGE_PATH` | 会话存储路径 | `~/.config/weibo-ai-bridge/sessions` |
+| `LOG_LEVEL` | 日志级别（debug/info/warn/error） | info |
+| `LOG_FORMAT` | 日志格式（json/text） | json |
+| `LOG_OUTPUT` | 日志输出（stdout/stderr/文件路径） | stdout |
+
+### TOML 配置文件
+
+默认路径 `config/config.toml`，可通过 `CONFIG_PATH` 指定仓库外配置文件。示例见 `config/config.example.toml`。
+
+```toml
+[platform.weibo]
+app_id = "your-app-id"
+app_secret = "your-app-secret"
+
+[agent.claude]
+enabled = true
+
+[agent.codex]
+enabled = false
+model = ""  # 留空沿用本机 codex CLI 默认配置
+
+[session]
+timeout = 3600
+max_size = 1000
+storage_path = "~/.config/weibo-ai-bridge/sessions"
+
+[log]
+level = "info"
+format = "json"
+output = "stdout"
 ```
 
-#### systemd 部署
+**注意**：
+- Claude API Key 和模型配置由 Claude Code CLI 管理，不在此配置文件中
+- `agent.codex.model` 建议留空，让 Bridge 沿用本机 CLI 的默认配置；手动指定时需确认目标 provider 上存在对应 deployment
+- 如果报 `404 deployment does not exist`，通常不是启动方式问题，而是模型名和 provider 配置不匹配
 
-仓库内提供了 `systemd` service 模板：[deploy/weibo-ai-bridge.service](/home/azureuser/weibo-ai-bridge/deploy/weibo-ai-bridge.service)。
+## 会话管理
 
-部署步骤：
+### 核心特性
 
-```bash
-# 1. 按机器实际情况修改 service 文件里的以下字段
-#    User=
-#    WorkingDirectory=
-#    ExecStart=
-#    Environment=PATH=...
+- **持久化存储** — 会话数据默认存储在 `~/.config/weibo-ai-bridge/sessions/`，服务重启后自动恢复
+- **多会话支持** — 每个用户可创建多个独立会话，按编号切换
+- **自动建会话** — 无活跃会话时发送第一条消息自动创建
+- **会话标题** — 自动记录首条真实问题作为标题（最长 50 字符）
+- **旧路径迁移** — 新版本首次启动时会自动导入旧版 `data/sessions/` 的数据
 
-# 2. 安装到 systemd
-sudo cp deploy/weibo-ai-bridge.service /etc/systemd/system/weibo-ai-bridge.service
-sudo systemctl daemon-reload
+### Agent Session ID
 
-# 3. 设置开机自启并启动
-sudo systemctl enable --now weibo-ai-bridge.service
+- **Claude** — 使用 `--output-format stream-json` 流式路径，首轮提取 `session_id`，后续用 `--resume` 继续对话
+- **Codex** — 优先通过 `codex app-server` 获取 `item/agentMessage/delta` 流式增量；不可用时回退到 `codex exec --json`。Bridge 把 `thread_id` 持久化到 `codex_session_id`
+
+### 使用示例
+
+```
+用户: 帮我看看这个 Go 项目怎么拆模块
+Bot: 已收到消息，正在处理中，请稍候。
+Bot: <随后流式返回真实回复>
 ```
 
-常用命令：
+```
+用户: /list
+Bot: Sessions:
+     【1】帮我看看这个 Go 项目怎么拆模块 (id=1639733600-1, agent=codex, active)
+     【2】未命名会话 (id=1639733600-2, agent=codex)
 
-```bash
-sudo systemctl status weibo-ai-bridge.service
-sudo systemctl restart weibo-ai-bridge.service
-sudo systemctl stop weibo-ai-bridge.service
-journalctl -u weibo-ai-bridge.service -f
+用户: /switch 1
+Bot: Switched to session 1: 帮我看看这个 Go 项目怎么拆模块
 ```
 
-说明：
-
-- 如果你使用仓库自带的 Linux x86_64 预编译二进制，`ExecStart` 可以直接指向仓库根目录的 `./server`。
-- 如果你依赖用户级安装的 CLI（例如 `claude` 在 `~/.local/bin`），请确保 service 文件里的 `PATH` 包含该目录。
-- service 模板默认从 `CONFIG_PATH` 读取 TOML 配置，并额外读取仓库根目录的 `.env`：`EnvironmentFile=-/home/azureuser/weibo-ai-bridge/.env`
-- 如果 `codex` CLI 依赖 Azure/OpenAI/Anthropic 等环境变量，必须把这些变量写进 `.env`，不能只存在于你当前 shell。
-- `Restart=always` 和 `RestartSec=5` 会让服务异常退出后自动重启。
-- 安装脚本 `scripts/install.sh` 会同时复制仓库内置的 `skills/weibo-skill-api`，并安装到目标用户的 `~/.codex/skills/weibo-skill-api` 与 `~/.claude/skills/weibo-skill-api`。
-
-#### 安装内置微博 Skills
-
-如果你是直接在仓库中开发或手动部署，而不是使用 `scripts/install.sh`，可以单独执行：
-
-```bash
-bash scripts/install-skills.sh
+```
+用户: /btw 顺便检查一下 router 和 session 层的边界
+Bot: <注入当前进行中的 Agent turn，继续处理>
 ```
 
-这会把仓库内置的 `skills/weibo-skill-api` 同时安装到当前用户的：
-
-- `~/.codex/skills/weibo-skill-api`
-- `~/.claude/skills/weibo-skill-api`
-
-该 skill 会默认复用 `weibo-ai-bridge` 的微博 `app_id` / `app_secret` 与统一 token 缓存，不再需要单独维护 `~/.weibo-skill/config.json`。
-
-### HTTP 接口
-
-服务启动后，会监听 5533 端口（可通过环境变量 `SERVER_PORT` 修改），提供以下接口：
-
-#### 健康检查
-
-```bash
-GET /health
+```
+用户: 允许所有
+Bot: 授权成功，这对话内将不再需要再次授权。
 ```
 
-返回示例：
-```json
-{
-  "status": "ok",
-  "service": "weibo-ai-bridge"
-}
-```
+## HTTP 接口
 
-#### 统计信息
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/stats` | GET | 统计信息 |
+| `/chat/stream` | GET/POST | SSE 调试流 |
 
-```bash
-GET /stats
-```
+### `/chat/stream`
 
-返回示例：
-```json
-{
-  "sessions": {
-    "count": 5
-  },
-  "agents": {
-    "count": 2,
-    "list": ["claude-code", "codex"]
-  },
-  "timestamp": 1713597123
-}
-```
+GET 请求：`/chat/stream?user_id=<user>&content=<urlencoded-content>&session_id=<optional>`
 
-#### SSE 调试流
-
-```bash
-GET /chat/stream?user_id=<user>&content=<urlencoded-content>&session_id=<optional>
-POST /chat/stream
-Content-Type: application/json
-```
-
-POST 请求体示例：
-
+POST 请求：
 ```json
 {
   "user_id": "123456",
@@ -256,656 +199,118 @@ POST 请求体示例：
 }
 ```
 
-返回为标准 `text/event-stream`，当前会输出的事件类型包括：
+返回 `text/event-stream`，事件类型：
 
-- `session`：当前 Agent 会话 ID
-- `delta`：流式正文增量
-- `message`：完整消息或最终正文
-- `tool_start` / `tool_end`：工具调用过程
-- `error`：执行错误
-- `done`：本轮结束
+| 事件 | 说明 |
+|------|------|
+| `session` | Agent 会话 ID |
+| `delta` | 流式正文增量 |
+| `message` | 完整消息 |
+| `approval` | 审批请求 |
+| `tool_start` | 工具调用开始 |
+| `tool_end` | 工具调用结束 |
+| `error` | 执行错误 |
+| `done` | 本轮结束 |
 
-### 用户命令
+## 部署
 
-用户可以在微博私信中发送以下命令：
-
-- `/help` - 显示帮助信息
-- `/new [agent_type]` - 创建新会话（可选参数：claude/codex；不传时默认沿用当前活跃会话或系统默认 Agent）
-- `/list` - 查看当前用户的所有会话，列表项前带 `【1】` 这类编号
-- `/switch [number]` - 按 `/list` 中的编号切换当前活跃会话
-- `/switch [agent_type]` - 切换当前会话的 Agent 类型
-- `/btw [content]` - 向当前正在进行的交互式会话插入一条补充消息；如果当前正在流式回复，会直接注入当前 turn，而不是打断或排队
-- `/model` - 显示当前使用的模型
-- `/dir` - 显示当前工作目录
-- `/status` - 显示当前会话状态
-
-补充说明：
-
-- `/btw` 只对当前活跃且仍在运行的交互式会话生效；当前实现已覆盖 Claude 和 Codex 两种交互式 Agent
-- 当 Agent 请求授权时，直接回复 `允许`、`允许所有` 或 `取消` 即可继续；`允许所有` 表示该对话后续授权自动通过
-
-## 配置说明
-
-### 配置方式
-
-项目支持三种配置方式，优先级从高到低：
-
-1. 环境变量
-2. TOML 配置文件
-3. 默认配置
-
-### 环境变量配置
-
-创建 `.env` 文件或直接设置环境变量：
+### systemd
 
 ```bash
-# 微博平台配置
-export WEIBO_APP_ID="your-app-id"
-export WEIBO_APP_SECRET="your-app-secret"
-export WEIBO_TOKEN_URL="http://open-im.api.weibo.com/open/auth/ws_token"
-export WEIBO_WS_URL="ws://open-im.api.weibo.com/ws/stream"
-export SERVER_PORT="5533"
-
-# Claude Agent 配置
-# Claude API Key 和模型配置请在 Claude Code CLI 中设置
-# 配置方式：export ANTHROPIC_API_KEY="sk-ant-xxxxx"
-# 或编辑 ~/.config/claude/config.json
-export CLAUDE_ENABLED="true"
-
-# Codex Agent 配置（可选）
-export CODEX_API_KEY="your-codex-api-key"
-# 留空则沿用本机 codex CLI 的默认 provider/model 配置
-export CODEX_MODEL=""
-export CODEX_ENABLED="false"
-
-# 日志配置
-export LOG_LEVEL="info"
-export LOG_FORMAT="json"
-export LOG_OUTPUT="stdout"
-
-# 会话配置
-export SESSION_TIMEOUT="3600"
-export SESSION_MAX_SIZE="1000"
+# 修改 deploy/weibo-ai-bridge.service 中的 User/WorkingDirectory/ExecStart/PATH
+sudo cp deploy/weibo-ai-bridge.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now weibo-ai-bridge.service
 ```
 
-### TOML 配置文件
-
-创建 `config.toml` 文件。默认路径是 `config/config.toml`，也可以通过 `CONFIG_PATH=/path/to/config.toml` 指定仓库外配置文件：
-
-```toml
-[platform.weibo]
-app_id = "your-app-id"
-app_secret = "your-app-secret"
-token_url = "http://open-im.api.weibo.com/open/auth/ws_token"
-ws_url = "ws://open-im.api.weibo.com/ws/stream"
-server_port = "5533"
-timeout = 30
-
-[agent.claude]
-# Claude API Key 和模型配置由 Claude Code CLI 管理
-# 配置文件位置：~/.config/claude/config.json
-enabled = true
-
-[agent.codex]
-api_key = "your-codex-api-key"
-# 留空则沿用本机 codex CLI 的默认 provider/model 配置
-model = ""
-enabled = false
-
-[session]
-timeout = 3600
-max_size = 1000
-
-[log]
-level = "info"
-format = "json"
-output = "stdout"
-```
-
-### 配置项说明
-
-#### Platform 配置
-
-| 字段 | 类型 | 说明 | 必填 | 默认值 |
-|------|------|------|------|--------|
-| `platform.weibo.app_id` | string | 微博应用 ID | 是 | - |
-| `platform.weibo.app_secret` | string | 微博应用密钥 | 是 | - |
-| `platform.weibo.token_url` | string | Token 获取 URL | 否 | `http://open-im.api.weibo.com/open/auth/ws_token` |
-| `platform.weibo.ws_url` | string | WebSocket 连接 URL | 否 | `ws://open-im.api.weibo.com/ws/stream` |
-| `platform.weibo.timeout` | int | HTTP 请求超时时间（秒） | 否 | 30 |
-| `server_port` | int | 服务器监听端口 | 否 | 5533 |
-
-#### Agent 配置
-
-| 字段 | 类型 | 说明 | 必填 | 默认值 |
-|------|------|------|------|--------|
-| `agent.claude.enabled` | bool | 是否启用 Claude | 否 | true |
-
-**注意**：Claude API Key 和模型配置由 Claude Code CLI 管理，不在此配置文件中。
-
-| 字段 | 类型 | 说明 | 必填 | 默认值 |
-|------|------|------|------|--------|
-| `agent.codex.api_key` | string | Codex API Key | 是（当启用时） | - |
-| `agent.codex.model` | string | Codex 模型覆盖值，留空则沿用本机 codex CLI 默认配置 | 否 | `""` |
-| `agent.codex.enabled` | bool | 是否启用 Codex | 否 | false |
-
-#### Session 配置
-
-| 字段 | 类型 | 说明 | 必填 | 默认值 |
-|------|------|------|------|--------|
-| `session.timeout` | int | 会话超时时间（秒） | 否 | 3600 |
-| `session.max_size` | int | 会话最大消息数 | 否 | 1000 |
-| `session.storage_path` | string | 会话持久化存储路径 | 否 | `~/.config/weibo-ai-bridge/sessions` |
-
-#### Log 配置
-
-| 字段 | 类型 | 说明 | 必填 | 默认值 |
-|------|------|------|------|--------|
-| `log.level` | string | 日志级别（debug/info/warn/error） | 否 | info |
-| `log.format` | string | 日志格式（json/text） | 否 | json |
-| `log.output` | string | 日志输出位置 | 否 | stdout |
-
-## 上下文记忆功能
-
-### 功能概述
-
-Weibo AI Bridge 支持完整的上下文记忆功能，通过会话持久化存储实现多轮对话的上下文保持。每个用户可以创建多个独立会话，并在不同会话之间切换。
-
-### 核心特性
-
-- **会话持久化**: 所有会话数据默认存储在当前系统用户目录下的稳定位置（Linux 默认 `~/.config/weibo-ai-bridge/sessions/`），服务重启或重新安装后会自动恢复
-- **多会话支持**: 每个用户可以创建多个独立会话
-- **会话恢复**: 支持恢复之前的会话继续对话
-- **自动管理**: 自动创建和管理会话，无需手动干预
-
-### 会话存储机制
-
-#### 存储位置
-```
-~/.config/weibo-ai-bridge/sessions/
-├── user_<uid>_<timestamp>.json
-├── user_<uid>_<timestamp>.json
-└── ...
-```
-
-#### 会话数据结构
-```json
-{
-  "id": "uuid-v4",
-  "user_id": "微博用户ID",
-  "agent_type": "codex",
-  "state": "active",
-  "context": {
-    "codex_session_id": "019dae29-6f16-75b3-a8d2-d42270ec4d40"
-  },
-  "created_at": "2024-01-01T00:00:00Z",
-  "updated_at": "2024-01-01T01:00:00Z"
-}
-```
-
-### Agent Session ID 支持
-
-#### Claude Agent
-- Bridge 首轮调用会从 `claude --print --output-format json` 响应中提取 `session_id`
-- 后续消息自动使用 `--resume <session_id>` 继续对话
-- Bridge 会把 Claude 返回的 `session_id` 持久化到会话 `context.claude_session_id`
-
-#### Codex Agent
-- 使用 `exec resume <session-id>` 命令恢复会话
-- Codex 内部维护会话状态
-- Bridge 会把 Codex 返回的 `thread_id` 持久化到会话 `context.codex_session_id`
-- 后续消息自动用同一个 `thread_id` 继续对话，上下文会连续保留
-- 如果本机 `codex` CLI 支持 `app-server`，Bridge 会优先使用 `app-server` 协议获取 `item/agentMessage/delta`，从而实现更细粒度的流式回复
-
-### Codex 配置建议
-
-- 如果你本机 `codex` CLI 已经能正常工作，`agent.codex.model` 和 `CODEX_MODEL` 建议留空，让 Bridge 直接沿用本机 CLI 的默认 provider 和 model 配置。
-- 只有在你明确知道目标 provider 上存在对应 deployment 时，才手动指定 `agent.codex.model`。
-- 如果 Bridge 调用报 `404 deployment does not exist`，通常不是启动方式问题，而是 Bridge 额外传入的模型名和本机 `codex` CLI 当前 provider 配置不匹配。
-
-### 使用示例
-
-#### 直接发送消息开始新会话
-```
-用户: 帮我看看这个 Go 项目怎么拆模块
-Bot: 已收到消息，正在处理中，请稍候。
-Bot: <随后继续返回真实回复>
-```
-
-#### 创建新会话
-```
-用户: /new
-Bot: New session created: 1639733600-1 (Agent: codex)
-
-用户: /new codex
-Bot: New session created: 1639733600-2 (Agent: codex)
-```
-
-#### 查看会话列表并按编号切换
-```
-用户: /list
-Bot: Sessions:
-     【1】帮我看看这个 Go 项目怎么拆模块 (id=1639733600-1, agent=codex, state=active, active)
-     【2】未命名会话 (id=1639733600-2, agent=codex, state=active)
-
-用户: /switch 1
-Bot: Switched to session 1: 帮我看看这个 Go 项目怎么拆模块 (id=1639733600-1, Agent: codex)
-```
-
-#### 向进行中的交互会话补充一条信息
-```
-用户: /btw 顺便检查一下 router 和 session 层的边界
-Bot: <会在当前进行中的同一轮 Agent 执行中继续处理这条补充信息>
-```
-
-#### 查看会话状态
-```
-用户: /status
-Bot: Session Status:
-     ID: 1639733600-1
-     Title: 帮我看看这个 Go 项目怎么拆模块
-     User ID: 1639733600
-     Agent Type: codex
-     State: active
-```
-
-#### 切换 Agent 类型
-```
-用户: /switch codex
-Bot: Switched to codex agent
-```
-
-### 技术实现
-
-#### Session Manager
-- 管理所有用户会话的生命周期
-- 提供会话创建、查询、更新、删除接口
-- 在用户没有活跃会话时自动创建编号会话（如 `user-1`、`user-2`）
-- 保存会话标题，标题来自该会话的首条真实用户问题
-- 自动清理过期会话
-- 线程安全的会话存储
-
-#### 命令处理器
-- 解析用户命令并执行相应操作
-- 支持 `/new`、`/list`、`/switch`、`/btw`、`/status` 等命令
-- 与 Session Manager 和 Agent Manager 集成
-
-#### Router 集成
-- 消息路由时自动传递 Session ID
-- 确保消息发送到正确的 Agent 会话
-- 维护用户与会话的映射关系
-- 对支持交互式会话的 Agent（如 Codex app-server）维护 live session，并支持在执行过程中注入 `/btw`
-
-### 配置选项
-
-```toml
-[session]
-timeout = 3600           # 会话超时时间（秒）
-max_size = 1000         # 会话最大消息数
-storage_path = "~/.config/weibo-ai-bridge/sessions"  # 会话存储路径；也可改成绝对路径
-```
-
-默认情况下，程序会把 Session 存到当前系统用户目录下的稳定位置，而不是仓库内的相对目录。这样在重启服务、重新构建二进制，或替换仓库目录后，已有 Session 仍可恢复。如果你需要自定义目录，可以显式设置 `session.storage_path` 或环境变量 `SESSION_STORAGE_PATH`。
-
-如果历史版本曾把 Session 存在仓库下的 `data/sessions/`，新版本首次启动时会自动把旧数据导入到当前 `session.storage_path`，避免升级后误以为会话丢失。
-
-### 测试覆盖
-
-项目包含完整的单元测试：
-- Session Manager 测试（创建、获取、更新、删除）
-- 命令处理器测试（所有命令的解析和执行）
-- Router 集成测试（Session ID 传递、自动建会话、会话标题、`/btw` 注入）
-- 持久化存储测试（文件读写）
-
-运行测试：
+常用命令：
 ```bash
-go test -v ./session
-go test -v ./router
-```
-
-## 微博开放平台凭证说明
-
-### 获取凭证步骤
-
-#### 1. 注册微博开发者账号
-
-访问微博开放平台（https://open.weibo.com）注册开发者账号。
-
-#### 2. 创建应用
-
-在微博开放平台创建应用，获取 App ID 和 App Secret。
-
-#### 3. 配置应用
-
-在应用配置中启用 WebSocket 私信功能，配置回调地址。
-
-### 凭证格式说明
-
-- **App ID**: 应用唯一标识，例如：`your-weibo-app-id`
-- **App Secret**: 应用密钥，32 位十六进制字符串
-- **Token URL**: `http://open-im.api.weibo.com/open/auth/ws_token`
-- **WebSocket URL**: `ws://open-im.api.weibo.com/ws/stream`
-
-### WebSocket 连接格式
-
-**Token 获取请求**：
-```json
-POST http://open-im.api.weibo.com/open/auth/ws_token
-Content-Type: application/json
-
-{
-  "app_id": "your-weibo-app-id",
-  "app_secret": "your-app-secret"
-}
-```
-
-**Token 获取响应**：
-```json
-{
-  "code": 0,
-  "data": {
-    "uid": 1639733600,
-    "token": "64字符token",
-    "expire_in": 7199
-  },
-  "message": "success"
-}
-```
-
-**WebSocket 连接 URL**：
-```
-ws://open-im.api.weibo.com/ws/stream?app_id=your-weibo-app-id&token=your-64-char-token
-```
-
-### Bridge 上行消息格式
-
-Bridge 当前向微博 WebSocket 发送的回复格式如下：
-
-```json
-{
-  "type": "send_message",
-  "payload": {
-    "toUserId": "123456789",
-    "text": "这是一段回复内容",
-    "messageId": "msg_1741080000000_abcd",
-    "chunkId": 0,
-    "done": false
-  }
-}
+sudo systemctl status weibo-ai-bridge.service
+sudo systemctl restart weibo-ai-bridge.service
+journalctl -u weibo-ai-bridge.service -f
 ```
 
 说明：
+- 预编译二进制可直接指向仓库根目录的 `./server`
+- service 模板从 `CONFIG_PATH` 读取 TOML 配置，额外读取 `.env`
+- `Restart=always` + `RestartSec=5` 会在异常退出后自动重启
 
-- 同一轮流式回复复用同一个 `messageId`
-- 每发送一片 `chunkId` 加一
-- 最后一片或空结束片使用 `done=true`
-- 中文内容在 Bridge 内部按 rune 安全切分，避免半个汉字导致乱码
-- 上面的分片语义只用于真实正文和审批提示等流式回复；“正在处理中”这类即时提示走普通消息发送
+### 安装内置微博 Skills
 
-### 安全建议
+```bash
+bash scripts/install-skills.sh
+```
 
-1. 不要将 App Secret 提交到代码仓库
-2. 定期更换凭证
-3. 使用环境变量管理敏感信息
-4. 在生产环境中启用 HTTPS
-5. 监控异常访问
+安装到 `~/.codex/skills/weibo-skill-api` 和 `~/.claude/skills/weibo-skill-api`，自动复用 bridge 的微博配置与 token 缓存。
+
+## 微博凭证获取
+
+1. 在微博私信中找到"微博龙虾助手"，发送"连接龙虾"
+2. 获取 App ID 和 App secret
+3. 填入 `.env` 或 `config/config.toml`
+
+安全建议：不要将 App secret 提交到代码仓库；定期更换凭证；使用环境变量管理敏感信息。
 
 ## 故障排除
 
-### 常见问题
+| 问题 | 解决方法 |
+|------|---------|
+| 配置验证失败 | 检查 `WEIBO_APP_ID` 和 `WEIBO_APP_SECRET`（兼容 `WEIBO_APP_Secret`） |
+| Claude 不可用 | 确认 `claude --version` 可用，API Key 已在 CLI 中配置 |
+| Codex 404 deployment | `CODEX_MODEL` 留空，让 Bridge 沿用本机 CLI 默认配置 |
+| WebSocket 断连 | 检查网络、Token 是否过期、心跳配置 |
+| 会话丢失 | 检查 `SESSION_TIMEOUT` 和 `SESSION_STORAGE_PATH` |
+| 消息处理超时 | 增加超时时间，检查 Agent 服务可用性 |
 
-#### 1. 服务启动失败：配置验证错误
-
-**错误信息**:
-```
-Configuration validation failed: platform.weibo.app_id is required
-```
-
-**解决方法**:
-检查环境变量或配置文件中是否正确设置了 `WEIBO_APP_ID` 和 `WEIBO_APP_SECRET`。
-兼容说明：当前程序仍兼容旧别名 `WEIBO_APP_Secret`，但新配置应统一使用 `WEIBO_APP_SECRET`。
-
-#### 2. Agent 初始化失败
-
-**错误信息**:
-```
-claude.api_key is required when claude agent is enabled
-```
-
-**解决方法**:
-1. 确保在 Claude Code CLI 中配置了 API Key（环境变量或配置文件）
-2. 检查 `claude` 命令是否可用：`claude --version`
-3. 查看 Claude Code 配置文档
-
-#### 3. 微博平台连接失败
-
-**错误信息**:
-```
-Failed to create platform: invalid token URL
-```
-
-**解决方法**:
-检查 Token URL 格式是否正确，确保以 `https://` 或 `http://` 开头。
-
-#### 4. 消息处理超时
-
-**错误信息**:
-```
-Failed to handle message: context deadline exceeded
-```
-
-**解决方法**:
-- 检查网络连接是否正常
-- 增加超时时间配置：`platform.weibo.timeout`
-- 检查 AI Agent 服务是否可用
-
-#### 5. 会话丢失
-
-**症状**:
-AI 无法记住之前的对话内容
-
-**解决方法**:
-检查会话配置：
-- `session.timeout`: 会话超时时间，默认 3600 秒
-- `session.max_size`: 会话最大消息数，默认 1000 条
-
-#### 6. WebSocket 连接断开
-
-**症状**:
-频繁出现 WebSocket 连接断开和重连
-
-**解决方法**:
-- 检查网络稳定性
-- 检查 Token 是否过期
-- 增加心跳间隔
-- 检查微博 API 限制
-
-### 日志调试
-
-启用调试日志以获取更详细的信息：
-
-```bash
-export LOG_LEVEL="debug"
-./bin/weibo-ai-bridge
-```
-
-### 健康检查
-
-使用健康检查接口验证服务状态：
-
-```bash
-curl http://localhost:5533/health
-```
-
-### 查看统计信息
-
-使用统计接口查看服务运行状态：
-
-```bash
-curl http://localhost:5533/stats
-```
-
-### 性能问题
-
-如果遇到性能问题：
-
-1. 检查会话数量：`curl http://localhost:5533/stats`
-2. 调整会话配置：减少 `session.max_size`
-3. 增加服务器资源
-
-### 依赖问题
-
-如果遇到依赖问题：
-
-```bash
-# 清理并重新下载依赖
-make clean
-make deps
-make tidy
-```
-
-### 测试失败
-
-如果测试失败：
-
-```bash
-# 查看详细测试输出
-go test -v ./...
-
-# 检查特定包的测试
-go test -v ./platform/weibo
-```
-
-### 获取帮助
-
-如果以上方法都无法解决问题：
-
-1. 查看项目 Issues: https://github.com/kangjinshan/weibo-ai-bridge/issues
-2. 创建新 Issue 并附带：
-   - 错误日志
-   - 配置信息（隐藏敏感信息）
-   - 复现步骤
-   - 环境信息（操作系统、Go 版本等）
+详细日志：`export LOG_LEVEL="debug"`
 
 ## 项目结构
 
 ```
 weibo-ai-bridge/
-├── cmd/                  # 应用入口
-│   └── server/          # 主服务入口
-│       └── main.go      # 服务主程序
-├── platform/            # 平台适配器
-│   └── weibo/          # 微博平台集成
-│       ├── client.go     # WebSocket 连接实现
-│       └── message.go    # 消息定义和解析
-├── agent/               # AI Agent 集成
-│   ├── agent.go         # Agent 接口
-│   ├── manager.go       # Agent 管理器
-│   ├── claude.go        # Claude Agent
-│   └── codex.go         # Codex Agent
-├── session/             # 会话管理
-│   └── manager.go       # 会话管理实现
-├── router/              # 消息路由
-│   ├── router.go        # 路由实现
-│   └── command.go       # 命令处理
-├── config/              # 配置管理
-│   └── config.go        # 配置实现
-├── scripts/             # 部署和运维脚本
-├── bin/                # 编译产物
-├── config.toml         # 配置文件
-├── config.example.toml  # 示例配置文件
-├── go.mod              # Go 模块定义
-├── Makefile            # 构建脚本
-├── README.md           # 项目文档
-├── agents.md           # Agent 配置文档
-└── LICENSE             # 许可证文件
+├── cmd/server/               # 服务入口
+│   └── main.go               # HTTP 服务、消息排队、平台生命周期
+├── router/                   # 消息路由
+│   ├── router_core.go        # Router 类型、Handle 主入口
+│   ├── router_stream.go      # 统一流式路径、forwardStreamToPlatform
+│   ├── router_agent.go       # Agent 选择与调用
+│   ├── router_interactive.go # 交互式会话管理、liveSessions
+│   ├── router_approval.go    # 审批提示与同义词解析
+│   ├── router_bytheway.go    # /btw 插话
+│   ├── stream_sender.go      # 流式分片发送器、边界感知 flush
+│   ├── agent_repair.go       # Agent 可用性自动修复
+│   ├── command.go            # 斜杠命令处理
+│   └── router_utils.go       # rune 安全切分等辅助函数
+├── agent/                    # Agent 抽象层
+│   ├── agent.go              # Agent 接口、EventType 定义
+│   ├── manager.go            # Agent 注册与解析
+│   ├── claude.go             # Claude 流式执行
+│   ├── claude_session.go     # Claude 交互式会话 + 审批
+│   ├── codex.go              # Codex 流式执行（app-server 优先）
+│   ├── codex_interactive_session.go  # Codex 交互式会话 + 审批
+│   ├── codex_appserver.go    # Codex app-server 客户端
+│   └── prompt.go             # 用户提示包装
+├── session/                  # 会话管理与持久化
+│   └── session.go            # Session Manager、JSON 持久化
+├── config/                   # 配置管理
+│   ├── config.go             # TOML + 环境变量加载与校验
+│   ├── config.toml           # 默认配置文件
+│   └── config.example.toml   # 示例配置文件
+├── platform/weibo/           # 微博平台适配
+│   ├── client.go             # WebSocket 连接、心跳、分片发送
+│   └── message.go            # 消息类型定义与解析
+├── skills/weibo-skill-api/   # 内置微博 Skill
+├── deploy/                   # systemd service 模板
+├── scripts/                  # 安装脚本
+├── docs/                     # 设计文档
+├── build/                    # 构建产物
+├── Makefile                  # 构建脚本
+├── go.mod / go.sum           # Go 模块定义
+├── .env.example              # 环境变量示例
+├── README.md                 # 本文件
+└── AGENTS.md                 # 开发协作手册
 ```
-
-## 架构设计
-
-### 模块职责
-
-1. **Platform Layer**: 负责与微博 API 交互，接收和发送消息
-2. **Agent Layer**: 封装不同 AI Agent 的调用接口，提供统一的 Agent 抽象，支持 Session ID 传递
-3. **Session Layer**: 管理用户会话状态，保持对话上下文，支持会话持久化存储
-4. **Router Layer**: 消息分发与路由逻辑，处理命令和消息转发
-5. **Config Layer**: 配置文件管理与加载，支持多种配置方式
-
-### 数据流
-
-```
-微博私信 → WebSocket → Platform → Router → Session Manager (带 Session ID)
-                                         ↓
-                                    Agent Manager → AI Agent (Claude/Codex, 支持会话恢复)
-                                         ↓
-                                    Router → Platform → WebSocket → 微博用户
-
-会话持久化:
-Session Manager → ~/.config/weibo-ai-bridge/sessions/ (持久化存储)
-```
-
-## 开发指南
-
-### 代码格式化
-
-```bash
-make fmt
-```
-
-### 代码检查
-
-```bash
-make lint
-```
-
-### 清理构建产物
-
-```bash
-make clean
-```
-
-### 添加新的 AI Agent
-
-1. 在 `agent/` 目录创建新文件，实现 `Agent` 接口
-2. 在 `agent/manager.go` 中注册新 Agent
-3. 在配置中添加新 Agent 的配置项
-4. 编写测试用例
-
-## 贡献指南
-
-我们欢迎所有形式的贡献！
-
-### 贡献流程
-
-1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 编写代码和测试
-4. 确保所有测试通过 (`make test`)
-5. 提交更改 (`git commit -m 'Add some amazing feature'`)
-6. 推送到分支 (`git push origin feature/amazing-feature`)
-7. 创建 Pull Request
-
-### 代码规范
-
-- 遵循 Go 语言官方代码规范
-- 为所有公开函数编写文档注释
-- 为新功能编写单元测试
-- 保持测试覆盖率在 80% 以上
 
 ## 许可证
 
-本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
-
-## 联系方式
-
-项目维护者：kangjinshan
-
-问题反馈：https://github.com/kangjinshan/weibo-ai-bridge/issues
-
-## 致谢
-
-感谢以下项目和服务的支持：
-
-- [Anthropic Claude](https://www.anthropic.com/)
-- [微博开放平台](https://open.weibo.com/)
-- 所有贡献者
+MIT License

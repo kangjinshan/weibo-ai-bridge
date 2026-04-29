@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -279,6 +280,12 @@ func TestShouldIgnoreCodexAppServerReadError(t *testing.T) {
 	}
 	if shouldIgnoreCodexAppServerReadError(err, true) {
 		t.Fatal("expected active-turn abnormal closure to surface as error")
+	}
+}
+
+func TestCodexAppServerReadTimeout(t *testing.T) {
+	if codexAppServerReadTimeout != 5*time.Minute {
+		t.Fatalf("unexpected codex app-server read timeout: %v", codexAppServerReadTimeout)
 	}
 }
 

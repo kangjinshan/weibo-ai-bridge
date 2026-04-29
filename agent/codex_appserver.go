@@ -17,7 +17,7 @@ import (
 
 const (
 	codexAppServerReadyTimeout = 10 * time.Second
-	codexAppServerReadTimeout  = 60 * time.Second
+	codexAppServerReadTimeout  = 5 * time.Minute
 )
 
 type codexAppServerClient struct {

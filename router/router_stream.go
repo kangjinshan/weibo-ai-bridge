@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/platform/weibo"
 )
+
+const bufferedDeltaFlushPollInterval = 100 * time.Millisecond
 
 // StreamMessage 处理消息并返回结构化事件流。
 func (r *Router) StreamMessage(ctx context.Context, msg *weibo.Message) (<-chan agent.Event, error) {
@@ -54,7 +57,7 @@ func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan 
 		content := strings.TrimSpace(msg.Content)
 		if strings.HasPrefix(content, "/") && r.commandHandler != nil {
 			if handled, err := r.emitSpecialCommandEvents(ctx, events, msg); handled {
-				if err != nil && !isBenignCancellation(err) {
+				if err != nil && !IsBenignCancellation(err) {
 					events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
 				}
 				events <- agent.Event{Type: agent.EventTypeDone}
@@ -64,7 +67,7 @@ func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan 
 			return
 		}
 
-		if err := r.streamAIMessage(ctx, msg, events); err != nil && !isBenignCancellation(err) {
+		if err := r.streamAIMessage(ctx, msg, events); err != nil && !IsBenignCancellation(err) {
 			events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
 		}
 
@@ -84,6 +87,8 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 		return err
 	}
 	sender := newStreamReplySender(writer)
+	ticker := time.NewTicker(bufferedDeltaFlushPollInterval)
+	defer ticker.Stop()
 
 	var streamErr error
 
@@ -118,7 +123,7 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 					return err
 				}
 			case agent.EventTypeError:
-				if strings.TrimSpace(event.Error) != "" && !isBenignCancellation(errors.New(event.Error)) {
+				if strings.TrimSpace(event.Error) != "" && !IsBenignCancellation(errors.New(event.Error)) {
 					if err := sender.PushDeliverText(ctx, "AI execution failed: "+event.Error, true); err != nil {
 						return err
 					}
@@ -129,11 +134,15 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 					return err
 				}
 			}
+		case <-ticker.C:
+			if err := sender.FlushPendingIfDelayed(ctx); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-func isBenignCancellation(err error) bool {
+func IsBenignCancellation(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/platform/weibo"
@@ -115,7 +116,34 @@ func (r *Router) Handle(msg *Message) (*Response, error) {
 		return r.commandHandler.Handle(msg)
 	}
 
-	return r.handleAIMessage(context.Background(), msg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	stream, err := r.streamRouterMessage(ctx, msg)
+	if err != nil {
+		return &Response{Success: false, Content: err.Error()}, nil
+	}
+
+	var parts []string
+	var errMsg string
+	for event := range stream {
+		switch event.Type {
+		case agent.EventTypeDelta, agent.EventTypeMessage:
+			if strings.TrimSpace(event.Content) != "" {
+				parts = append(parts, event.Content)
+			}
+		case agent.EventTypeError:
+			if strings.TrimSpace(event.Error) != "" {
+				errMsg = event.Error
+			}
+		}
+	}
+
+	if errMsg != "" {
+		return &Response{Success: false, Content: errMsg}, nil
+	}
+
+	return &Response{Success: true, Content: strings.Join(parts, "")}, nil
 }
 
 // Route 路由消息

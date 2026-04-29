@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -104,11 +105,12 @@ func newSessionManager(cfg *config.Config) *session.Manager {
 }
 
 func main() {
-	// 初始化日志
-	initLogger()
-
 	// 加载配置
 	cfg := config.Load()
+
+	// 初始化日志
+	initLogger(cfg.Log)
+
 	logger.Printf("Configuration loaded: log_level=%s, log_format=%s", cfg.Log.Level, cfg.Log.Format)
 
 	// 验证配置
@@ -193,7 +195,7 @@ func main() {
 
 	// 创建 HTTP 服务器
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         "127.0.0.1:" + port,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -237,8 +239,28 @@ func main() {
 }
 
 // initLogger 初始化日志
-func initLogger() {
-	logger = log.New(os.Stdout, "[weibo-ai-bridge] ", log.LstdFlags|log.Lshortfile)
+func initLogger(logCfg config.LogConfig) {
+	var output io.Writer = os.Stdout
+
+	switch strings.ToLower(strings.TrimSpace(logCfg.Output)) {
+	case "stderr":
+		output = os.Stderr
+	case "stdout", "":
+		output = os.Stdout
+	default:
+		if f, err := os.OpenFile(logCfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			output = f
+		} else {
+			fmt.Fprintf(os.Stderr, "failed to open log file %q, falling back to stdout: %v\n", logCfg.Output, err)
+			output = os.Stdout
+		}
+	}
+
+	if strings.ToLower(strings.TrimSpace(logCfg.Format)) == "json" {
+		output = &jsonLogWriter{w: output}
+	}
+
+	logger = log.New(output, "[weibo-ai-bridge] ", log.LstdFlags|log.Lshortfile)
 }
 
 // processMessages 处理消息循环
@@ -347,7 +369,7 @@ func (p *messageProcessor) handle(ctx context.Context, msg *weibo.Message) {
 		}
 
 		if err := p.router.HandleMessage(runCtx, current); err != nil {
-			if !isBenignCancellation(err) {
+			if !router.IsBenignCancellation(err) {
 				p.logger.Printf("Failed to handle message: id=%s, error=%v", current.ID, err)
 			}
 			cancel()
@@ -397,6 +419,11 @@ func (p *messageProcessor) tryInjectByTheWay(ctx context.Context, msg *weibo.Mes
 	handled, err := injector.InjectByTheWay(ctx, msg)
 	if err != nil {
 		p.logger.Printf("Failed to inject /btw message: id=%s, error=%v", msg.ID, err)
+		if p.platform != nil {
+			if replyErr := p.platform.Reply(context.WithoutCancel(ctx), msg.UserID, err.Error()); replyErr != nil {
+				p.logger.Printf("Failed to send /btw error reply: id=%s, error=%v", msg.ID, replyErr)
+			}
+		}
 	}
 	return handled
 }
@@ -414,7 +441,7 @@ func (p *messageProcessor) tryHandleBusySlashCommand(ctx context.Context, msg *w
 	}
 
 	go func() {
-		if err := p.router.HandleMessage(ctx, msg); err != nil && !isBenignCancellation(err) {
+		if err := p.router.HandleMessage(ctx, msg); err != nil && !router.IsBenignCancellation(err) {
 			p.logger.Printf("Failed to handle slash command immediately: id=%s, error=%v", msg.ID, err)
 		}
 	}()
@@ -471,15 +498,6 @@ func shouldSendProcessingAck(msg *weibo.Message) bool {
 	return first != '/'
 }
 
-func shouldInterruptInFlight(msg *weibo.Message) bool {
-	if msg == nil {
-		return false
-	}
-
-	content := strings.TrimSpace(msg.Content)
-	return strings.HasPrefix(content, "/btw")
-}
-
 func isByTheWayMessage(content string) bool {
 	content = strings.TrimSpace(content)
 	return strings.HasPrefix(content, "/btw")
@@ -488,15 +506,6 @@ func isByTheWayMessage(content string) bool {
 func isSlashCommandMessage(content string) bool {
 	content = strings.TrimSpace(content)
 	return strings.HasPrefix(content, "/")
-}
-
-func isBenignCancellation(err error) bool {
-	if err == context.Canceled || err == context.DeadlineExceeded {
-		return true
-	}
-
-	text := strings.TrimSpace(err.Error())
-	return text == context.Canceled.Error() || text == context.DeadlineExceeded.Error()
 }
 
 // healthHandler 健康检查处理器
@@ -648,4 +657,26 @@ func getAgentNames(agentMgr *agent.Manager) []string {
 		names = append(names, a.Name())
 	}
 	return names
+}
+
+type jsonLogWriter struct {
+	w io.Writer
+}
+
+func (j *jsonLogWriter) Write(p []byte) (int, error) {
+	entry := map[string]string{
+		"ts":  time.Now().Format(time.RFC3339Nano),
+		"msg": strings.TrimRight(string(p), "\n"),
+		"app": "weibo-ai-bridge",
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return j.w.Write(p)
+	}
+	data = append(data, '\n')
+	n, err := j.w.Write(data)
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -78,22 +79,24 @@ func (m *Manager) ResolveAgent(agentType string) Agent {
 }
 
 func (m *Manager) getDefaultAgentLocked() Agent {
-	// 如果设置了默认 Agent，返回它
 	if m.defaultAgent != "" {
 		if agent, exists := m.agents[m.defaultAgent]; exists {
 			return agent
 		}
 	}
 
-	// 如果设置了默认 Agent，返回它
-	// 否则返回第一个可用的 Agent
-	for _, agent := range m.agents {
-		if agent.IsAvailable() {
-			return agent
+	names := make([]string, 0, len(m.agents))
+	for name := range m.agents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if m.agents[name].IsAvailable() {
+			return m.agents[name]
 		}
 	}
 
-	// 如果没有可用 Agent，返回 nil
 	return nil
 }
 
@@ -120,14 +123,20 @@ func (m *Manager) SetDefault(name string) {
 	}
 }
 
-// ListAgents 列出所有 Agent
+// ListAgents 列出所有 Agent（按名称排序）
 func (m *Manager) ListAgents() []Agent {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	names := make([]string, 0, len(m.agents))
+	for name := range m.agents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	agents := make([]Agent, 0, len(m.agents))
-	for _, agent := range m.agents {
-		agents = append(agents, agent)
+	for _, name := range names {
+		agents = append(agents, m.agents[name])
 	}
 
 	return agents

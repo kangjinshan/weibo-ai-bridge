@@ -35,20 +35,6 @@ func TestClaudeCodeAgent_Execute(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeAgent_buildArgs_NewSession(t *testing.T) {
-	agent := NewClaudeCodeAgent()
-	got := agent.buildArgs("", "hello")
-	want := []string{"--print", "--output-format", "json", wrapUserPrompt("hello")}
-	assertSliceEqual(t, got, want)
-}
-
-func TestClaudeCodeAgent_buildArgs_ResumeSession(t *testing.T) {
-	agent := NewClaudeCodeAgent()
-	got := agent.buildArgs("11111111-1111-1111-1111-111111111111", "hello again")
-	want := []string{"--print", "--output-format", "json", "--resume", "11111111-1111-1111-1111-111111111111", wrapUserPrompt("hello again")}
-	assertSliceEqual(t, got, want)
-}
-
 func TestClaudeCodeAgent_buildStreamArgs_NewSession(t *testing.T) {
 	agent := NewClaudeCodeAgent()
 	got := agent.buildStreamArgs("", "hello")
@@ -61,41 +47,6 @@ func TestClaudeCodeAgent_buildStreamArgs_ResumeSession(t *testing.T) {
 	got := agent.buildStreamArgs("11111111-1111-1111-1111-111111111111", "hello again")
 	want := []string{"--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--resume", "11111111-1111-1111-1111-111111111111", wrapUserPrompt("hello again")}
 	assertSliceEqual(t, got, want)
-}
-
-func TestParseClaudePrintOutput_Success(t *testing.T) {
-	result, err := parseClaudePrintOutput(`{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc-123"}`)
-	if err != nil {
-		t.Fatalf("parseClaudePrintOutput returned error: %v", err)
-	}
-	if result.Result != "hello" {
-		t.Fatalf("unexpected result text: %q", result.Result)
-	}
-	if result.SessionID != "abc-123" {
-		t.Fatalf("unexpected session id: %q", result.SessionID)
-	}
-	if result.IsError {
-		t.Fatal("expected non-error result")
-	}
-}
-
-func TestParseClaudePrintOutput_Error(t *testing.T) {
-	result, err := parseClaudePrintOutput(`{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"abc-123"}`)
-	if err != nil {
-		t.Fatalf("parseClaudePrintOutput returned error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected error result")
-	}
-	if result.Result != "Not logged in · Please run /login" {
-		t.Fatalf("unexpected result text: %q", result.Result)
-	}
-}
-
-func TestParseClaudePrintOutput_InvalidJSON(t *testing.T) {
-	if _, err := parseClaudePrintOutput("not json"); err == nil {
-		t.Fatal("expected parse error for invalid json")
-	}
 }
 
 func TestParseClaudeStreamEvent_AssistantPartial(t *testing.T) {

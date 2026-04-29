@@ -8,17 +8,20 @@ import (
 )
 
 const deltaFallbackFlushRunes = 24
+const maxBufferedDeltaDelay = 700 * time.Millisecond
 
 type streamReplySender struct {
 	writer              streamReplyWriter
 	lastPartialSnapshot string
 	pendingDelta        strings.Builder
+	pendingSince        time.Time
 	hasSeenPartial      bool
 	hasEmittedChunks    bool
 	hasEmittedDone      bool
 	lastEmitAt          time.Time
 	now                 func() time.Time
 	idleLineBreakAfter  time.Duration
+	maxBufferDelay      time.Duration
 }
 
 func newStreamReplySender(writer streamReplyWriter) *streamReplySender {
@@ -26,6 +29,7 @@ func newStreamReplySender(writer streamReplyWriter) *streamReplySender {
 		writer:             writer,
 		now:                time.Now,
 		idleLineBreakAfter: 5 * time.Second,
+		maxBufferDelay:     maxBufferedDeltaDelay,
 	}
 }
 
@@ -38,9 +42,20 @@ func (s *streamReplySender) PushDelta(ctx context.Context, delta string) error {
 	}
 
 	s.hasSeenPartial = true
+	if s.pendingDelta.Len() == 0 {
+		s.pendingSince = s.currentTime()
+	}
 	s.pendingDelta.WriteString(delta)
 
-	return s.flushBufferedDelta(ctx, false)
+	flushed, err := s.flushBufferedDelta(ctx, false)
+	if err != nil {
+		return err
+	}
+	if !flushed && s.shouldForceFlushPendingDelta() {
+		_, err = s.flushBufferedDelta(ctx, true)
+		return err
+	}
+	return nil
 }
 
 func (s *streamReplySender) PushPartialSnapshot(ctx context.Context, snapshot string) error {
@@ -70,7 +85,7 @@ func (s *streamReplySender) PushDeliverText(ctx context.Context, text string, is
 	}
 
 	if s.hasSeenPartial {
-		if err := s.flushBufferedDelta(ctx, true); err != nil {
+		if _, err := s.flushBufferedDelta(ctx, true); err != nil {
 			return err
 		}
 		if text != "" {
@@ -99,7 +114,7 @@ func (s *streamReplySender) PushInformationalText(ctx context.Context, text stri
 		return nil
 	}
 
-	if err := s.flushBufferedDelta(ctx, true); err != nil {
+	if _, err := s.flushBufferedDelta(ctx, true); err != nil {
 		return err
 	}
 
@@ -107,10 +122,19 @@ func (s *streamReplySender) PushInformationalText(ctx context.Context, text stri
 }
 
 func (s *streamReplySender) Settle(ctx context.Context) error {
-	if err := s.flushBufferedDelta(ctx, true); err != nil {
+	if _, err := s.flushBufferedDelta(ctx, true); err != nil {
 		return err
 	}
 	return s.finalize(ctx)
+}
+
+func (s *streamReplySender) FlushPendingIfDelayed(ctx context.Context) error {
+	if !s.shouldForceFlushPendingDelta() {
+		return nil
+	}
+
+	_, err := s.flushBufferedDelta(ctx, true)
+	return err
 }
 
 func (s *streamReplySender) finalize(ctx context.Context) error {
@@ -162,23 +186,55 @@ func (s *streamReplySender) shouldPrependIdleLineBreak(content string) bool {
 	return s.now().Sub(s.lastEmitAt) >= s.idleLineBreakAfter
 }
 
-func (s *streamReplySender) flushBufferedDelta(ctx context.Context, force bool) error {
+func (s *streamReplySender) currentTime() time.Time {
+	if s.now == nil {
+		return time.Time{}
+	}
+	return s.now()
+}
+
+func (s *streamReplySender) shouldForceFlushPendingDelta() bool {
+	if s.pendingDelta.Len() == 0 || s.maxBufferDelay <= 0 {
+		return false
+	}
+	if s.pendingSince.IsZero() {
+		return false
+	}
+
+	now := s.currentTime()
+	if now.IsZero() {
+		return false
+	}
+
+	return now.Sub(s.pendingSince) >= s.maxBufferDelay
+}
+
+func (s *streamReplySender) flushBufferedDelta(ctx context.Context, force bool) (bool, error) {
 	buffered := s.pendingDelta.String()
 	if buffered == "" {
-		return nil
+		return false, nil
 	}
 
 	flushLen := findDeltaFlushBoundary(buffered, force)
 	if flushLen <= 0 {
-		return nil
+		return false, nil
 	}
 
 	flushText := buffered[:flushLen]
 	remainText := buffered[flushLen:]
 	s.pendingDelta.Reset()
 	s.pendingDelta.WriteString(remainText)
+	if remainText == "" {
+		s.pendingSince = time.Time{}
+	} else {
+		s.pendingSince = s.currentTime()
+	}
 
-	return s.emitText(ctx, flushText, false)
+	if err := s.emitText(ctx, flushText, false); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 type legacyStreamReplyWriter struct {
@@ -207,16 +263,20 @@ func resolveDeltaFromSnapshot(previous, next string) (string, string) {
 		return "", next
 	}
 
-	prefixLen := 0
-	maxLen := len(previous)
-	if len(next) < maxLen {
-		maxLen = len(next)
-	}
-	for prefixLen < maxLen && previous[prefixLen] == next[prefixLen] {
-		prefixLen++
+	commonBytes := 0
+	prevIdx, nextIdx := 0, 0
+	for prevIdx < len(previous) && nextIdx < len(next) {
+		prevRune, prevSize := utf8.DecodeRuneInString(previous[prevIdx:])
+		nextRune, nextSize := utf8.DecodeRuneInString(next[nextIdx:])
+		if prevRune != nextRune {
+			break
+		}
+		commonBytes = nextIdx + nextSize
+		prevIdx += prevSize
+		nextIdx += nextSize
 	}
 
-	return next[prefixLen:], next
+	return next[commonBytes:], next
 }
 
 func findDeltaFlushBoundary(buffered string, force bool) int {

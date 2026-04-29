@@ -42,16 +42,17 @@ func (r *Router) removeInteractiveSession(sessionID string) {
 
 func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, interactiveAgent agent.InteractiveAgent) (*interactiveSessionState, bool, error) {
 	r.liveMu.Lock()
-	defer r.liveMu.Unlock()
-
 	if existing, ok := r.liveSessions[sess.ID]; ok {
 		if existing.agentType == sess.AgentType {
+			r.liveMu.Unlock()
 			return existing, false, nil
 		}
 		_ = existing.session.Close()
 		delete(r.liveSessions, sess.ID)
 	}
+	r.liveMu.Unlock()
 
+	// StartSession 是耗时操作（启动子进程/网络），在锁外执行避免阻塞其他会话。
 	liveSession, err := interactiveAgent.StartSession(context.WithoutCancel(ctx), agentSessionID)
 	if err != nil {
 		return nil, false, err
@@ -61,7 +62,16 @@ func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *sessio
 		agentType: sess.AgentType,
 		session:   liveSession,
 	}
+
+	r.liveMu.Lock()
+	if existing, ok := r.liveSessions[sess.ID]; ok {
+		// 并发场景下另一个 goroutine 已创建了会话，放弃刚启动的副本。
+		r.liveMu.Unlock()
+		_ = liveSession.Close()
+		return existing, false, nil
+	}
 	r.liveSessions[sess.ID] = state
+	r.liveMu.Unlock()
 
 	if sessionKey != "" {
 		if sid := strings.TrimSpace(liveSession.CurrentSessionID()); sid != "" {

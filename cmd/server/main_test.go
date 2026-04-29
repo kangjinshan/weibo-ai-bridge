@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/config"
 	"github.com/kangjinshan/weibo-ai-bridge/platform/weibo"
 	"github.com/kangjinshan/weibo-ai-bridge/router"
 	"github.com/kangjinshan/weibo-ai-bridge/session"
+	"github.com/stretchr/testify/assert"
 )
 
 type processorTestPlatform struct {
@@ -53,11 +53,12 @@ func (p *processorTestPlatform) Replies() []string {
 }
 
 type processorTestRouter struct {
-	delay    time.Duration
-	started  chan string
-	canceled chan string
-	injected chan string
-	release  <-chan struct{}
+	delay     time.Duration
+	started   chan string
+	canceled  chan string
+	injected  chan string
+	injectErr error
+	release   <-chan struct{}
 }
 
 type sseTestAgent struct {
@@ -151,7 +152,7 @@ func (r *processorTestRouter) InjectByTheWay(ctx context.Context, msg *weibo.Mes
 	if r.injected != nil {
 		r.injected <- msg.UserID + ":" + msg.ID
 	}
-	return true, nil
+	return true, r.injectErr
 }
 
 func TestMainInitialization(t *testing.T) {
@@ -542,6 +543,64 @@ func TestMessageProcessor_ByTheWayInjectsIntoBusySessionWithoutInterrupt(t *test
 	replies := platform.Replies()
 	assert.Len(t, replies, 1)
 	assert.True(t, strings.Contains(replies[0], processingAckMessage))
+	close(release)
+}
+
+func TestMessageProcessor_ByTheWayInjectionFailureRepliesToUser(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	release := make(chan struct{})
+	router := &processorTestRouter{
+		started:   make(chan string, 2),
+		canceled:  make(chan string, 1),
+		injected:  make(chan string, 1),
+		injectErr: assert.AnError,
+		release:   release,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+	ctx := context.Background()
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-1",
+		UserID:  "user-btw-error",
+		Content: "先执行第一条",
+	})
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-btw-error:msg-1", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first message did not start")
+	}
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-btw",
+		UserID:  "user-btw-error",
+		Content: "/btw 顺便继续",
+	})
+
+	select {
+	case injected := <-router.injected:
+		assert.Equal(t, "user-btw-error:msg-btw", injected)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("/btw message was not injected")
+	}
+
+	assert.Eventually(t, func() bool {
+		replies := platform.Replies()
+		return len(replies) >= 2 &&
+			strings.Contains(replies[0], processingAckMessage) &&
+			strings.Contains(replies[1], assert.AnError.Error())
+	}, time.Second, 20*time.Millisecond)
+
+	select {
+	case canceled := <-router.canceled:
+		t.Fatalf("first message should not be interrupted, got %s", canceled)
+	case started := <-router.started:
+		t.Fatalf("/btw failure should not start a second processor turn, got %s", started)
+	case <-time.After(150 * time.Millisecond):
+	}
+
 	close(release)
 }
 

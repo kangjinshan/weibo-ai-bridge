@@ -47,6 +47,8 @@ type Platform struct {
 
 	dedupMu sync.Mutex
 	dedup   map[string]time.Time
+
+	wg sync.WaitGroup
 }
 
 // ReplyStream 表示一轮微博回复流，整轮复用同一个 messageId。
@@ -205,10 +207,17 @@ func (p *Platform) Start(ctx context.Context) error {
 	p.logger.Printf("✅ Platform started successfully")
 
 	// 启动心跳
-	go p.heartbeatLoop(ctx)
+	p.wg.Add(2)
+	go func() {
+		defer p.wg.Done()
+		p.heartbeatLoop(p.ctx)
+	}()
 
 	// 启动消息循环
-	go p.messageLoop(ctx)
+	go func() {
+		defer p.wg.Done()
+		p.messageLoop(p.ctx)
+	}()
 
 	return nil
 }
@@ -216,18 +225,18 @@ func (p *Platform) Start(ctx context.Context) error {
 // Stop 停止平台
 func (p *Platform) Stop() error {
 	p.connMutex.Lock()
-	defer p.connMutex.Unlock()
-
+	var closeErr error
 	if p.conn != nil {
-		if err := p.conn.Close(); err != nil {
-			return err
-		}
+		closeErr = p.conn.Close()
 	}
+	p.running = false
+	p.connMutex.Unlock()
 
 	p.cancel()
-	p.running = false
+	p.wg.Wait()
+
 	p.logger.Printf("Platform stopped")
-	return nil
+	return closeErr
 }
 
 // IsRunning 检查运行状态
@@ -485,13 +494,20 @@ func (p *Platform) messageLoop(ctx context.Context) {
 			}
 
 			var data string
+			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+				p.logger.Printf("❌ Set read deadline error: %v", err)
+			}
 			err := websocket.Message.Receive(conn, &data)
 			if err != nil {
 				p.logger.Printf("❌ Read message error: %v", err)
 				// 尝试重连
 				if err := p.reconnect(ctx); err != nil {
 					p.logger.Printf("❌ Reconnect failed: %v", err)
-					time.Sleep(5 * time.Second)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Second):
+					}
 				}
 				continue
 			}

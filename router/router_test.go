@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/platform/weibo"
 	"github.com/kangjinshan/weibo-ai-bridge/session"
+	"github.com/stretchr/testify/assert"
 )
 
 // MockPlatform 模拟平台
@@ -62,6 +62,32 @@ func (s *MockReplyStream) SendChunk(ctx context.Context, content string, done bo
 		"content":    content,
 		"done":       done,
 	})
+	return nil
+}
+
+type timedStreamChunk struct {
+	content string
+	done    bool
+}
+
+type timedStreamPlatform struct {
+	stream *timedReplyStream
+}
+
+func (p *timedStreamPlatform) Reply(ctx context.Context, messageID string, content string) error {
+	return nil
+}
+
+func (p *timedStreamPlatform) OpenReplyStream(ctx context.Context, userID string) (weibo.ChunkSender, error) {
+	return p.stream, nil
+}
+
+type timedReplyStream struct {
+	chunks chan timedStreamChunk
+}
+
+func (s *timedReplyStream) SendChunk(ctx context.Context, content string, done bool) error {
+	s.chunks <- timedStreamChunk{content: content, done: done}
 	return nil
 }
 
@@ -965,6 +991,91 @@ func TestStreamReplySender_DoesNotPrependLineBreakBeforeIdleGap(t *testing.T) {
 	assert.Len(t, writer.chunks, 2)
 	assert.Equal(t, "第一句。", writer.chunks[0]["content"])
 	assert.Equal(t, "第二句。", writer.chunks[1]["content"])
+}
+
+func TestStreamReplySender_FlushesShortDeltaAfterBufferDelay(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-delay", messageID: "stream-msg-user-delay"}
+	now := time.Unix(100, 0)
+
+	sender := newStreamReplySender(writer)
+	sender.now = func() time.Time { return now }
+	sender.maxBufferDelay = 700 * time.Millisecond
+
+	err := sender.PushDelta(context.Background(), "哈")
+	assert.NoError(t, err)
+	assert.Len(t, writer.chunks, 0)
+
+	now = now.Add(800 * time.Millisecond)
+	err = sender.PushDelta(context.Background(), "哈")
+	assert.NoError(t, err)
+
+	assert.Len(t, writer.chunks, 1)
+	assert.Equal(t, "哈哈", writer.chunks[0]["content"])
+	assert.Equal(t, false, writer.chunks[0]["done"])
+}
+
+func TestStreamReplySender_FlushesSingleShortDeltaAfterBufferDelay(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-single-delay", messageID: "stream-msg-user-single-delay"}
+	now := time.Unix(100, 0)
+
+	sender := newStreamReplySender(writer)
+	sender.now = func() time.Time { return now }
+	sender.maxBufferDelay = 700 * time.Millisecond
+
+	err := sender.PushDelta(context.Background(), "哈")
+	assert.NoError(t, err)
+	assert.Len(t, writer.chunks, 0)
+
+	now = now.Add(800 * time.Millisecond)
+	err = sender.FlushPendingIfDelayed(context.Background())
+	assert.NoError(t, err)
+
+	assert.Len(t, writer.chunks, 1)
+	assert.Equal(t, "哈", writer.chunks[0]["content"])
+	assert.Equal(t, false, writer.chunks[0]["done"])
+}
+
+func TestForwardStreamToPlatform_FlushesIdleShortDeltaWithoutNextChunk(t *testing.T) {
+	platform := &timedStreamPlatform{
+		stream: &timedReplyStream{chunks: make(chan timedStreamChunk, 4)},
+	}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 2)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- router.forwardStreamToPlatform(context.Background(), "user-idle-delay", stream)
+	}()
+
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "哈"}
+
+	select {
+	case chunk := <-platform.stream.chunks:
+		assert.Equal(t, "哈", chunk.content)
+		assert.False(t, chunk.done)
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("timed out waiting for idle short delta flush")
+	}
+
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	select {
+	case chunk := <-platform.stream.chunks:
+		assert.Equal(t, "", chunk.content)
+		assert.True(t, chunk.done)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for final done chunk")
+	}
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for forwardStreamToPlatform to finish")
+	}
 }
 
 func TestForwardStreamToPlatform_DoesNotDropRepeatedDelta(t *testing.T) {

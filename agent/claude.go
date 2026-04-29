@@ -9,17 +9,12 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"unicode/utf8"
 )
 
 // ClaudeCodeAgent Claude Code CLI Agent 实现
 type ClaudeCodeAgent struct {
 	name string
-}
-
-type claudePrintResult struct {
-	Result    string `json:"result"`
-	SessionID string `json:"session_id"`
-	IsError   bool   `json:"is_error"`
 }
 
 type claudeStreamState struct {
@@ -138,17 +133,6 @@ func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, i
 	return events, nil
 }
 
-func (a *ClaudeCodeAgent) buildArgs(sessionID string, input string) []string {
-	prompt := wrapUserPrompt(input)
-
-	args := []string{"--print", "--output-format", "json"}
-	if strings.TrimSpace(sessionID) != "" {
-		args = append(args, "--resume", strings.TrimSpace(sessionID))
-	}
-	args = append(args, prompt)
-	return args
-}
-
 func (a *ClaudeCodeAgent) buildStreamArgs(sessionID string, input string) []string {
 	prompt := wrapUserPrompt(input)
 
@@ -163,14 +147,6 @@ func (a *ClaudeCodeAgent) buildStreamArgs(sessionID string, input string) []stri
 	}
 	args = append(args, prompt)
 	return args
-}
-
-func parseClaudePrintOutput(output string) (*claudePrintResult, error) {
-	var result claudePrintResult
-	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
 }
 
 func (a *ClaudeCodeAgent) streamClaudeOutput(stdout io.ReadCloser, state *claudeStreamState, events chan<- Event) error {
@@ -368,16 +344,20 @@ func resolveTextDelta(previous, next string) (string, string) {
 		return "", next
 	}
 
-	prefixLen := 0
-	maxLen := len(previous)
-	if len(next) < maxLen {
-		maxLen = len(next)
-	}
-	for prefixLen < maxLen && previous[prefixLen] == next[prefixLen] {
-		prefixLen++
+	commonBytes := 0
+	prevIdx, nextIdx := 0, 0
+	for prevIdx < len(previous) && nextIdx < len(next) {
+		prevRune, prevSize := utf8.DecodeRuneInString(previous[prevIdx:])
+		nextRune, nextSize := utf8.DecodeRuneInString(next[nextIdx:])
+		if prevRune != nextRune {
+			break
+		}
+		commonBytes = nextIdx + nextSize
+		prevIdx += prevSize
+		nextIdx += nextSize
 	}
 
-	return next[prefixLen:], next
+	return next[commonBytes:], next
 }
 
 func resolveClaudeCommand() (string, error) {

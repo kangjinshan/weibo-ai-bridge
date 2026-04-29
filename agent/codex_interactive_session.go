@@ -336,6 +336,7 @@ func (s *codexInteractiveSession) readLoop() {
 
 	for {
 		var msg map[string]any
+		_ = s.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		if err := s.conn.ReadJSON(&msg); err != nil {
 			if s.ctx.Err() == nil {
 				currentTurnID, _ := s.turnID.Load().(string)

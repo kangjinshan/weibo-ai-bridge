@@ -74,12 +74,13 @@ func (r *Router) handleByTheWayCommand(ctx context.Context, msg *Message, events
 }
 
 func (r *Router) injectByTheWay(msg *Message) (string, error) {
-	_, liveState, content, err := r.resolveByTheWayTarget(msg)
+	sess, liveState, content, err := r.resolveByTheWayTarget(msg)
 	if err != nil {
 		return "", err
 	}
 
 	if err := liveState.session.Send(content); err != nil {
+		r.removeInteractiveSession(sess.ID)
 		return "", err
 	}
 

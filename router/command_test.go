@@ -54,6 +54,8 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.Contains(t, resp.Content, "/new")
 	assert.Contains(t, resp.Content, "/list")
 	assert.Contains(t, resp.Content, "/switch")
+	assert.Contains(t, resp.Content, "/claude")
+	assert.Contains(t, resp.Content, "/codex")
 	assert.Contains(t, resp.Content, "/btw")
 	assert.Contains(t, resp.Content, "/model")
 	assert.Contains(t, resp.Content, "/dir")
@@ -568,8 +570,26 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 		checkResult func(t *testing.T, resp *Response)
 	}{
 		{
-			name:      "切换到 codex",
-			content:   "/switch codex",
+			name:      "切换到 codex（大小写混合）",
+			content:   "/SWITCH CoDeX",
+			sessionID: "session-1",
+			checkResult: func(t *testing.T, resp *Response) {
+				assert.True(t, resp.Success)
+				assert.Contains(t, resp.Content, "Switched to codex agent")
+			},
+		},
+		{
+			name:      "别名切换到 claude（大小写混合）",
+			content:   "/ClAuDe",
+			sessionID: "session-1",
+			checkResult: func(t *testing.T, resp *Response) {
+				assert.True(t, resp.Success)
+				assert.Contains(t, resp.Content, "Switched to claude agent")
+			},
+		},
+		{
+			name:      "别名切换到 codex",
+			content:   "/codex",
 			sessionID: "session-1",
 			checkResult: func(t *testing.T, resp *Response) {
 				assert.True(t, resp.Success)

@@ -64,6 +64,8 @@ make dev
 | `/list` | 查看原生会话列表（带编号） |
 | `/switch <编号>` | 按 `/list` 中的编号切换活跃会话 |
 | `/switch <agent类型>` | 切换当前会话的 Agent 类型 |
+| `/claude` | 等价于 `/switch claude`（大小写不敏感） |
+| `/codex` | 等价于 `/switch codex`（大小写不敏感） |
 | `/btw <内容>` | 向当前交互式会话注入补充信息 |
 | `/model` | 显示当前使用的模型 |
 | `/dir` | 显示当前工作目录 |

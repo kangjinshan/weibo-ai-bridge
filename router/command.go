@@ -62,7 +62,7 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 		}, nil
 	}
 
-	command := parts[0]
+	command := strings.ToLower(parts[0])
 	args := parts[1:]
 
 	// 路由到不同的处理函数
@@ -75,6 +75,10 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 		return h.handleList(msg.UserID)
 	case "/switch":
 		return h.handleSwitch(msg.UserID, msg.SessionID, args)
+	case "/claude":
+		return h.handleSwitch(msg.UserID, msg.SessionID, append([]string{"claude"}, args...))
+	case "/codex":
+		return h.handleSwitch(msg.UserID, msg.SessionID, append([]string{"codex"}, args...))
 	case "/model":
 		return h.handleModel(msg.UserID, msg.SessionID, args)
 	case "/dir":
@@ -97,6 +101,8 @@ func (h *CommandHandler) handleHelp() (*Response, error) {
 /list - 查看当前用户的原生会话
 /switch [number] - 切换当前活跃会话
 /switch [agent_type] - 切换当前会话的 Agent 类型
+/claude - 等价于 /switch claude（大小写不敏感）
+/codex - 等价于 /switch codex（大小写不敏感）
 /btw [content] - 向当前正在进行的交互会话插入一条补充消息
 /model - 显示当前使用的模型
 /dir - 显示当前工作目录
@@ -264,7 +270,7 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 		return h.handleSwitchByListNumber(userID, index)
 	}
 
-	agentType := target
+	agentType := strings.ToLower(target)
 
 	// 验证 agent 类型
 	if agentType != "claude" && agentType != "codex" {

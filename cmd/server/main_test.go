@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -223,29 +224,35 @@ func TestNewSessionManager_UsesConfiguredStoragePath(t *testing.T) {
 }
 
 func TestHealthHandler(t *testing.T) {
+	oldVersion, oldCommit, oldBuildTime := version, gitCommit, buildTime
+	version = "1.2.3"
+	gitCommit = "abc1234"
+	buildTime = "2026-04-29T10:11:12Z"
+	t.Cleanup(func() {
+		version = oldVersion
+		gitCommit = oldCommit
+		buildTime = oldBuildTime
+	})
+
 	tests := []struct {
 		name           string
 		method         string
 		expectedStatus int
-		expectedBody   string
 	}{
 		{
 			name:           "GET 请求成功",
 			method:         http.MethodGet,
 			expectedStatus: http.StatusOK,
-			expectedBody:   `{"status":"ok","service":"weibo-ai-bridge"}`,
 		},
 		{
 			name:           "POST 请求失败",
 			method:         http.MethodPost,
 			expectedStatus: http.StatusMethodNotAllowed,
-			expectedBody:   "Method not allowed\n",
 		},
 		{
 			name:           "PUT 请求失败",
 			method:         http.MethodPut,
 			expectedStatus: http.StatusMethodNotAllowed,
-			expectedBody:   "Method not allowed\n",
 		},
 	}
 
@@ -257,7 +264,22 @@ func TestHealthHandler(t *testing.T) {
 			healthHandler(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
-			assert.Equal(t, tt.expectedBody, w.Body.String())
+
+			if tt.method == http.MethodGet {
+				var body map[string]interface{}
+				err := json.Unmarshal(w.Body.Bytes(), &body)
+				assert.NoError(t, err)
+				assert.Equal(t, "ok", body["status"])
+				assert.Equal(t, "weibo-ai-bridge", body["service"])
+
+				build, ok := body["build"].(map[string]interface{})
+				assert.True(t, ok)
+				assert.Equal(t, "1.2.3", build["version"])
+				assert.Equal(t, "abc1234", build["git_commit"])
+				assert.Equal(t, "2026-04-29T10:11:12Z", build["build_time"])
+			} else {
+				assert.Equal(t, "Method not allowed\n", w.Body.String())
+			}
 		})
 	}
 }

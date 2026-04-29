@@ -24,7 +24,8 @@ SERVICE_NAME="${PROJECT_NAME}.service"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
 SKILL_NAME="weibo-skill-api"
 TARGET_USER="${SUDO_USER:-${USER}}"
-TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
+TARGET_HOME=""
+OS_NAME="$(uname -s)"
 
 # 日志函数
 log_info() {
@@ -41,6 +42,42 @@ log_warning() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+resolve_target_home() {
+    local user="$1"
+
+    if [[ "${user}" == "${USER}" && -n "${HOME}" ]]; then
+        echo "${HOME}"
+        return
+    fi
+
+    if command -v getent &> /dev/null; then
+        local home
+        home="$(getent passwd "${user}" | cut -d: -f6 || true)"
+        if [[ -n "${home}" ]]; then
+            echo "${home}"
+            return
+        fi
+    fi
+
+    if command -v dscl &> /dev/null; then
+        local home
+        home="$(dscl . -read "/Users/${user}" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+        if [[ -n "${home}" ]]; then
+            echo "${home}"
+            return
+        fi
+    fi
+
+    local expanded_home
+    expanded_home="$(eval echo "~${user}" 2>/dev/null || true)"
+    if [[ -n "${expanded_home}" && "${expanded_home}" != "~${user}" ]]; then
+        echo "${expanded_home}"
+        return
+    fi
+
+    echo ""
 }
 
 # 检查是否以 root 权限运行
@@ -121,7 +158,7 @@ build_project() {
 
     # 编译
     log_info "构建二进制文件..."
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${BINARY_NAME}" ./cmd/server
+    CGO_ENABLED=0 go build -o "${BINARY_NAME}" ./cmd/server
 
     if [[ $? -eq 0 ]]; then
         log_success "编译成功"
@@ -181,42 +218,51 @@ install_config() {
     exit 1
 }
 
-# 创建 systemd 服务（可选）
+# 创建服务（Linux: systemd, macOS: launchd）
 create_service() {
-    if command -v systemctl &> /dev/null; then
-        log_info "创建 systemd 服务..."
-
-        cat > "/etc/systemd/system/${SERVICE_NAME}" << EOF
-[Unit]
-Description=Weibo AI Bridge Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/${BINARY_NAME}
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=${PROJECT_NAME}
-
-# 环境变量
-Environment="CONFIG_PATH=${CONFIG_FILE}"
-EnvironmentFile=-${CONFIG_DIR}/.env
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        systemctl daemon-reload
-        log_success "服务已创建: ${SERVICE_NAME}"
-        log_info "启动服务: systemctl start ${PROJECT_NAME}"
-        log_info "开机自启: systemctl enable ${PROJECT_NAME}"
-    else
-        log_warning "systemd 不可用，跳过服务创建"
+    local service_script="${INSTALL_DIR}/scripts/service.sh"
+    if [[ ! -x "${service_script}" ]]; then
+        log_warning "未找到服务管理脚本，跳过服务创建: ${service_script}"
+        return
     fi
+
+    case "${OS_NAME}" in
+        Linux)
+            if ! command -v systemctl &> /dev/null; then
+                log_warning "systemd 不可用，跳过服务创建"
+                return
+            fi
+
+            log_info "创建 Linux systemd 服务..."
+            WEIBO_AI_BRIDGE_BIN="${INSTALL_DIR}/${BINARY_NAME}" \
+            WEIBO_AI_BRIDGE_CONFIG_PATH="${CONFIG_FILE}" \
+            WEIBO_AI_BRIDGE_ENV_FILE="${CONFIG_DIR}/.env" \
+            WEIBO_AI_BRIDGE_SERVICE_USER="${TARGET_USER}" \
+            "${service_script}" install --scope system
+
+            log_success "服务已创建: ${SERVICE_NAME}"
+            log_info "启动服务: ${service_script} start --scope system"
+            log_info "开机自启: 已通过 systemd enable 配置"
+            ;;
+        Darwin)
+            if [[ -z "${TARGET_USER}" || -z "${TARGET_HOME}" ]]; then
+                log_warning "无法解析 macOS 目标用户，跳过 launchd 服务创建"
+                return
+            fi
+
+            log_info "创建 macOS launchd 服务（用户级）..."
+            su - "${TARGET_USER}" -c "WEIBO_AI_BRIDGE_BIN='${INSTALL_DIR}/${BINARY_NAME}' WEIBO_AI_BRIDGE_CONFIG_PATH='${CONFIG_FILE}' WEIBO_AI_BRIDGE_ENV_FILE='${CONFIG_DIR}/.env' '${service_script}' install" || {
+                log_warning "launchd 服务创建失败，请手动执行: su - ${TARGET_USER} -c '${service_script} install'"
+                return
+            }
+
+            log_success "launchd 服务已创建"
+            log_info "启动服务: su - ${TARGET_USER} -c '${service_script} start'"
+            ;;
+        *)
+            log_warning "当前系统(${OS_NAME})不支持自动创建服务，跳过"
+            ;;
+    esac
 }
 
 install_user_skills() {
@@ -264,8 +310,15 @@ show_completion() {
     echo "  1. 运行配置向导: ${INSTALL_DIR}/scripts/setup.sh"
     echo "  2. 或手动编辑配置文件: vi ${CONFIG_FILE}"
     echo "  3. 如需环境变量补充配置，可编辑: ${CONFIG_DIR}/.env"
-    echo "  4. 启动服务: systemctl start ${PROJECT_NAME}"
-    echo "  5. 查看状态: systemctl status ${PROJECT_NAME}"
+    if [[ "${OS_NAME}" == "Linux" ]]; then
+        echo "  4. 启动服务: ${INSTALL_DIR}/scripts/service.sh start --scope system"
+        echo "  5. 查看状态: ${INSTALL_DIR}/scripts/service.sh status --scope system"
+    elif [[ "${OS_NAME}" == "Darwin" ]]; then
+        echo "  4. 启动服务: su - ${TARGET_USER} -c '${INSTALL_DIR}/scripts/service.sh start'"
+        echo "  5. 查看状态: su - ${TARGET_USER} -c '${INSTALL_DIR}/scripts/service.sh status'"
+    else
+        echo "  4. 手动前台运行: ${INSTALL_DIR}/${BINARY_NAME}"
+    fi
     echo ""
     log_info "获取帮助: ${INSTALL_DIR}/${BINARY_NAME} --help"
 }
@@ -279,6 +332,7 @@ main() {
     echo ""
 
     check_root
+    TARGET_HOME="$(resolve_target_home "${TARGET_USER}")"
     check_dependencies
     create_directories
     download_project

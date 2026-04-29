@@ -1,0 +1,18 @@
+[Unit]
+Description=Weibo AI Bridge Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+__USER_DIRECTIVE__
+WorkingDirectory=__WORKDIR__
+ExecStart=__EXECSTART__
+Restart=on-failure
+RestartSec=5
+Environment=PATH=__PATH__
+Environment=CONFIG_PATH=__CONFIG_PATH__
+EnvironmentFile=-__ENV_FILE__
+
+[Install]
+WantedBy=__WANTED_BY__

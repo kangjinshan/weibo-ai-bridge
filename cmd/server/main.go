@@ -24,6 +24,10 @@ import (
 
 var (
 	logger *log.Logger
+
+	version   = "dev"
+	gitCommit = "unknown"
+	buildTime = "unknown"
 )
 
 const (
@@ -79,6 +83,12 @@ type activeRun struct {
 	cancel context.CancelFunc
 }
 
+type buildInfo struct {
+	Version   string `json:"version"`
+	GitCommit string `json:"git_commit"`
+	BuildTime string `json:"build_time"`
+}
+
 func newMessageProcessor(platform replyPlatform, router messageHandler, logger *log.Logger) *messageProcessor {
 	if logger == nil {
 		logger = log.Default()
@@ -111,6 +121,7 @@ func main() {
 	// 初始化日志
 	initLogger(cfg.Log)
 
+	logger.Printf("Build info: version=%s, git_commit=%s, build_time=%s", version, gitCommit, buildTime)
 	logger.Printf("Configuration loaded: log_level=%s, log_format=%s", cfg.Log.Level, cfg.Log.Format)
 
 	// 验证配置
@@ -515,9 +526,19 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	payload, err := json.Marshal(map[string]interface{}{
+		"status":  "ok",
+		"service": "weibo-ai-bridge",
+		"build":   currentBuildInfo(),
+	})
+	if err != nil {
+		http.Error(w, "Failed to build health response", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"status":"ok","service":"weibo-ai-bridge"}`)
+	_, _ = w.Write(payload)
 }
 
 // statsHandler 统计信息处理器
@@ -536,6 +557,7 @@ func statsHandler(sessionMgr *session.Manager, agentMgr *agent.Manager) http.Han
 				"count": agentMgr.Count(),
 				"list":  getAgentNames(agentMgr),
 			},
+			"build":     currentBuildInfo(),
 			"timestamp": time.Now().Unix(),
 		}
 
@@ -647,6 +669,26 @@ func writeSSEEvent(w http.ResponseWriter, event agent.Event) error {
 
 func generateHTTPMessageID() string {
 	return fmt.Sprintf("http_%d", time.Now().UnixNano())
+}
+
+func currentBuildInfo() buildInfo {
+	info := buildInfo{
+		Version:   strings.TrimSpace(version),
+		GitCommit: strings.TrimSpace(gitCommit),
+		BuildTime: strings.TrimSpace(buildTime),
+	}
+
+	if info.Version == "" {
+		info.Version = "dev"
+	}
+	if info.GitCommit == "" {
+		info.GitCommit = "unknown"
+	}
+	if info.BuildTime == "" {
+		info.BuildTime = "unknown"
+	}
+
+	return info
 }
 
 // getAgentNames 获取所有 Agent 名称

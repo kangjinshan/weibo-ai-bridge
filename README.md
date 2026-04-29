@@ -33,7 +33,7 @@ cd weibo-ai-bridge
 cp .env.example .env
 # 编辑 .env 填入微博 App ID / App secret
 
-# 使用预编译二进制（Linux x86_64）
+# 使用仓库内二进制（如果存在）
 chmod +x ./server && ./server
 
 # 或自行构建
@@ -188,6 +188,23 @@ Bot: 授权成功，这对话内将不再需要再次授权。
 | `/stats` | GET | 统计信息 |
 | `/chat/stream` | GET/POST | SSE 调试流 |
 
+`/health` 返回示例：
+```json
+{
+  "status": "ok",
+  "service": "weibo-ai-bridge",
+  "build": {
+    "version": "dev",
+    "git_commit": "abc1234",
+    "build_time": "2026-04-29T10:11:12Z"
+  }
+}
+```
+
+说明：
+- `build_time` 为二进制编译时间（UTC，RFC3339），可用于确认当前进程是否为最新构建
+- `make build` / `make build-linux` 会自动注入 `version`、`git_commit`、`build_time`
+
 ### `/chat/stream`
 
 GET 请求：`/chat/stream?user_id=<user>&content=<urlencoded-content>&session_id=<optional>`
@@ -216,26 +233,55 @@ POST 请求：
 
 ## 部署
 
-### systemd
+### 统一服务管理（Linux + macOS）
 
 ```bash
-# 修改 deploy/weibo-ai-bridge.service 中的 User/WorkingDirectory/ExecStart/PATH
-sudo cp deploy/weibo-ai-bridge.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now weibo-ai-bridge.service
+# 安装服务定义
+scripts/service.sh install
+
+# 启动/重启/停止
+scripts/service.sh start
+scripts/service.sh restart
+scripts/service.sh stop
+
+# 状态与日志
+scripts/service.sh status
+scripts/service.sh logs
 ```
 
-常用命令：
+Linux 说明：
 ```bash
-sudo systemctl status weibo-ai-bridge.service
-sudo systemctl restart weibo-ai-bridge.service
-journalctl -u weibo-ai-bridge.service -f
+# root 默认安装为 system service（/etc/systemd/system）
+sudo scripts/service.sh install --scope system
+sudo scripts/service.sh start --scope system
+sudo scripts/service.sh status --scope system
+sudo scripts/service.sh logs --scope system
+
+# 非 root 可用 user service（~/.config/systemd/user）
+scripts/service.sh install --scope user
+scripts/service.sh start --scope user
 ```
+
+macOS 说明：
+```bash
+# 用户级 launchd（~/Library/LaunchAgents/com.weibo-ai-bridge.plist）
+scripts/service.sh install
+scripts/service.sh start
+scripts/service.sh status
+scripts/service.sh logs
+```
+
+可选环境变量（覆盖自动探测）：
+- `WEIBO_AI_BRIDGE_BIN`
+- `WEIBO_AI_BRIDGE_CONFIG_PATH`
+- `WEIBO_AI_BRIDGE_ENV_FILE`
+- `WEIBO_AI_BRIDGE_SCOPE`（Linux）
+- `WEIBO_AI_BRIDGE_SERVICE_USER`（Linux system scope）
 
 说明：
-- 预编译二进制可直接指向仓库根目录的 `./server`
-- service 模板从 `CONFIG_PATH` 读取 TOML 配置，额外读取 `.env`
-- `Restart=always` + `RestartSec=5` 会在异常退出后自动重启
+- 统一入口脚本会根据系统自动选择 Linux `systemd` 或 macOS `launchd`
+- 服务进程通过 `CONFIG_PATH` 读取 TOML，并按现有逻辑自动尝试加载 `.env`
+- 模板文件位于 `deploy/weibo-ai-bridge.service.tmpl` 与 `deploy/com.weibo-ai-bridge.plist.tmpl`
 
 ### 安装内置微博 Skills
 
@@ -302,8 +348,8 @@ weibo-ai-bridge/
 │   ├── client.go             # WebSocket 连接、心跳、分片发送
 │   └── message.go            # 消息类型定义与解析
 ├── skills/weibo-skill-api/   # 内置微博 Skill
-├── deploy/                   # systemd service 模板
-├── scripts/                  # 安装脚本
+├── deploy/                   # systemd/launchd 模板
+├── scripts/                  # 安装与服务管理脚本
 ├── docs/                     # 设计文档
 ├── build/                    # 构建产物
 ├── Makefile                  # 构建脚本

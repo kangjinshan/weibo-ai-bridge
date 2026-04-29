@@ -1,17 +1,18 @@
 [Unit]
 Description=Weibo AI Bridge Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=azureuser
-WorkingDirectory=/home/azureuser/weibo-ai-bridge
-ExecStart=/home/azureuser/weibo-ai-bridge/server
-Restart=always
+User=weibo
+WorkingDirectory=/opt/weibo-ai-bridge
+ExecStart=/opt/weibo-ai-bridge/weibo-ai-bridge
+Restart=on-failure
 RestartSec=5
-Environment=PATH=/home/azureuser/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=CONFIG_PATH=/home/azureuser/weibo-ai-bridge/config/config.toml
-EnvironmentFile=-/home/azureuser/weibo-ai-bridge/.env
+Environment=PATH=/home/weibo/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CONFIG_PATH=/etc/weibo-ai-bridge/config.toml
+EnvironmentFile=-/etc/weibo-ai-bridge/.env
 
 [Install]
 WantedBy=multi-user.target

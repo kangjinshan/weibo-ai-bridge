@@ -75,13 +75,16 @@
 
 ### `deploy/`
 
-- `weibo-ai-bridge.service` — systemd service 模板。
+- `weibo-ai-bridge.service` — systemd 示例配置。
+- `weibo-ai-bridge.service.tmpl` — 供 `scripts/service.sh` 渲染的 systemd 模板。
+- `com.weibo-ai-bridge.plist.tmpl` — 供 `scripts/service.sh` 渲染的 macOS launchd 模板。
 
 ### `scripts/`
 
 - `install.sh` — 完整安装（含 skills）。
 - `install-skills.sh` — 仅安装 skills。
 - `setup.sh` — 初始设置。
+- `service.sh` — 跨平台服务管理入口（Linux systemd / macOS launchd）。
 
 ### `docs/`
 

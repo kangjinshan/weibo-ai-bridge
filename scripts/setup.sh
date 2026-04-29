@@ -20,6 +20,7 @@ CONFIG_DIR="${WEIBO_AI_BRIDGE_CONFIG_DIR:-/etc/${PROJECT_NAME}}"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
 ENV_FILE="${CONFIG_DIR}/.env"
 TEMP_CONFIG="$(mktemp "/tmp/${PROJECT_NAME}-config.XXXXXX")"
+OS_NAME="$(uname -s)"
 
 # 日志函数
 log_info() {
@@ -237,7 +238,7 @@ check_config_file() {
             log_warning "检测到旧版环境变量文件: ${ENV_FILE}"
             log_info "当前版本默认使用 TOML 配置文件（config.toml）"
         fi
-        log_info "请先运行安装脚本: /opt/weibo-ai-bridge/scripts/install.sh"
+        log_info "请先运行安装脚本: scripts/install.sh"
         exit 1
     fi
 
@@ -410,9 +411,17 @@ show_completion() {
     fi
     echo ""
     log_warning "下一步操作:"
-    echo "  1. 重启服务: systemctl restart weibo-ai-bridge"
-    echo "  2. 查看状态: systemctl status weibo-ai-bridge"
-    echo "  3. 查看日志: journalctl -u weibo-ai-bridge -f"
+    if [[ "${OS_NAME}" == "Linux" ]]; then
+        echo "  1. 重启服务: scripts/service.sh restart --scope system"
+        echo "  2. 查看状态: scripts/service.sh status --scope system"
+        echo "  3. 查看日志: scripts/service.sh logs --scope system"
+    elif [[ "${OS_NAME}" == "Darwin" ]]; then
+        echo "  1. 重启服务: scripts/service.sh restart"
+        echo "  2. 查看状态: scripts/service.sh status"
+        echo "  3. 查看日志: scripts/service.sh logs"
+    else
+        echo "  1. 前台运行: ./build/weibo-ai-bridge"
+    fi
     echo ""
 }
 

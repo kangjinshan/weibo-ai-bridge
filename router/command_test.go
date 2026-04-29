@@ -77,10 +77,9 @@ func TestCommandHandler_Handle_List(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
 	assert.Contains(t, resp.Content, "Sessions:")
-	assert.Contains(t, resp.Content, "【1】第一个问题")
-	assert.Contains(t, resp.Content, "【2】未命名会话")
-	assert.Contains(t, resp.Content, "id=session-1")
+	// 活跃 session 是 codex (session-2)，所以只显示 codex 的 session
 	assert.Contains(t, resp.Content, "id=session-2")
+	assert.Contains(t, resp.Content, "agent=codex")
 	assert.Contains(t, resp.Content, "active")
 }
 

@@ -3,7 +3,9 @@ package router
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/session"
@@ -79,6 +81,42 @@ func TestCommandHandler_Handle_List(t *testing.T) {
 	assert.Contains(t, resp.Content, "| 编号 | 标题 | 时间 |")
 	// 活跃 session 是 codex (session-2)，所以只显示 codex 的 session
 	assert.Contains(t, resp.Content, "| 1 | 未命名会话（当前） |")
+}
+
+func TestCommandHandler_Handle_List_SortsBridgeSessionsByUpdatedAtDesc(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	first := sessionManager.Create("session-1", "user-1", "codex")
+	assert.NotNil(t, first)
+	first.SetTitleIfEmpty("会话A")
+
+	time.Sleep(10 * time.Millisecond)
+
+	second := sessionManager.Create("session-2", "user-1", "codex")
+	assert.NotNil(t, second)
+	second.SetTitleIfEmpty("会话B")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-list-order",
+		Type:    TypeText,
+		Content: "/list",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+
+	rowA := "| 1 | 会话B（当前） |"
+	rowB := "| 2 | 会话A |"
+	assert.Contains(t, resp.Content, rowA)
+	assert.Contains(t, resp.Content, rowB)
+	assert.Less(t, strings.Index(resp.Content, rowA), strings.Index(resp.Content, rowB))
 }
 
 func TestCommandHandler_Handle_New(t *testing.T) {

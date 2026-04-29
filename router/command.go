@@ -193,6 +193,14 @@ func (h *CommandHandler) handleList(userID string) (*Response, error) {
 		}
 	}
 
+	// bridge session 按最近更新时间倒序，时间相同按 ID 升序保证稳定。
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].UpdatedAt.Equal(filtered[j].UpdatedAt) {
+			return filtered[i].ID < filtered[j].ID
+		}
+		return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
+	})
+
 	if len(filtered) == 0 && len(sessions) == 0 {
 		return &Response{
 			Success: false,

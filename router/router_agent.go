@@ -44,12 +44,8 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 
 	if sessionKey != "" {
 		if newSessionID := extractSessionID(response); newSessionID != "" {
-			if sess.Context == nil {
-				sess.Context = make(map[string]interface{})
-			}
-			sess.Context[sessionKey] = newSessionID
+			sess = r.bindAgentNativeSessionID(sess, sessionKey, newSessionID)
 			response = removeSessionIDMarker(response)
-			r.sessionMgr.UpdateSession(sess.ID, sessionKey, newSessionID)
 		}
 	}
 
@@ -87,11 +83,7 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 		}
 
 		if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
-			if sess.Context == nil {
-				sess.Context = make(map[string]interface{})
-			}
-			sess.Context[sessionKey] = event.SessionID
-			r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+			sess = r.bindAgentNativeSessionID(sess, sessionKey, event.SessionID)
 		}
 
 		events <- event
@@ -112,11 +104,16 @@ func (r *Router) resolveAgentExecution(msg *Message) (*session.Session, string, 
 
 	if strings.TrimSpace(msg.SessionID) != "" {
 		currentSession = r.sessionMgr.GetOrCreateSession(msg.SessionID, msg.UserID, agentType)
+	} else if active, ok := r.sessionMgr.GetActiveSession(msg.UserID); ok {
+		currentSession = active
 	} else {
-		currentSession = r.sessionMgr.GetOrCreateActiveSession(msg.UserID, agentType)
+		currentSession = r.sessionMgr.GetOrCreateSession(pendingNativeSessionID(msg.UserID), msg.UserID, agentType)
 	}
 	if currentSession == nil {
 		return nil, "", "", nil, errors.New("Failed to create or get session")
+	}
+	if strings.TrimSpace(currentSession.AgentType) == "" {
+		currentSession.AgentType = agentType
 	}
 
 	if r.sessionMgr != nil {

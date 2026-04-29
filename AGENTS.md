@@ -56,7 +56,7 @@
 
 ### `session/`
 
-- `session.go` — 会话 CRUD、持久化存储（默认启用 `storagePath`，JSON 文件存储）、`CreateNext`（递增编号 `<userID>-<n>`）、`SetTitleIfEmpty`、过期清理、旧路径迁移、原子文件写入。
+- `session.go` — 会话 CRUD、持久化存储（默认启用 `storagePath`，JSON 文件存储）、`CreateNext`（历史兼容）、`AdoptSessionID`（pending/session ID 收敛到 native ID）、`SetTitleIfEmpty`、过期清理、旧路径迁移、原子文件写入。
 
 ### `config/`
 
@@ -108,7 +108,7 @@
 - 至少要启用一个 Agent，否则服务会在启动时失败
 - 会话层的 Agent 类型统一使用 `claude` 或 `codex`
 - Agent Manager 内部把 Claude 注册为 `claude-code`，并把 `claude` 解析到 `claude-code`
-- 新建会话按用户递增编号，格式是 `<userID>-<n>`
+- 会话管理采用 native-first：`/new` 只准备 pending 会话锚点，收到 Agent `session/thread` 事件后会把会话 ID 收敛为 native ID
 - 非命令消息会进入当前活跃会话路径；命令消息由 `router/command.go` 处理
 - `/btw` 是特殊命令，它会把补充内容注入当前活跃的交互式会话，而不是走普通命令逻辑
 - 当用户已有普通消息在处理中时，其它 slash 指令应旁路消息队列并立即执行；不要把 `/help`、`/status` 之类命令排到当前回复之后
@@ -128,12 +128,15 @@
 
 - `/help`
 - `/new [claude|codex]`
-- `/list`
+- `/list`（仅展示 native 会话列表）
 - `/switch [index|claude|codex]`
 - `/model`
 - `/dir`
 - `/status`
 - `/btw <content>`（实际在 `router_core.go` 和 `router_bytheway.go` 中处理，不走 command.go）
+
+命令语义备注：
+- `/new` 不直接创建 bridge 自增会话，而是准备下一条消息要使用的新 native 会话
 
 交互式授权回复：
 

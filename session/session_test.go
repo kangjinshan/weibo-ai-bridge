@@ -361,6 +361,52 @@ func TestManager_UpdateSession_NonExistent(t *testing.T) {
 	assert.Equal(t, 0, mgr.Count())
 }
 
+func TestManager_AdoptSessionID_RekeysSessionAndActivePointer(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	original := mgr.Create("user-1-1", "user-1", "codex")
+	assert.NotNil(t, original)
+	original.Update("codex_session_id", "thread-123")
+
+	adopted, ok := mgr.AdoptSessionID("user-1-1", "thread-123")
+	assert.True(t, ok)
+	assert.NotNil(t, adopted)
+	assert.Equal(t, "thread-123", adopted.ID)
+	assert.Equal(t, "thread-123", mgr.GetActiveSessionID("user-1"))
+
+	_, exists := mgr.Get("user-1-1")
+	assert.False(t, exists)
+	restored, exists := mgr.Get("thread-123")
+	assert.True(t, exists)
+	assert.Equal(t, "thread-123", restored.ID)
+	assert.Equal(t, "thread-123", restored.Context["codex_session_id"])
+}
+
+func TestManager_AdoptSessionID_MergesIntoExistingNativeSession(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	oldSess := mgr.Create("user-1-2", "user-1", "codex")
+	assert.NotNil(t, oldSess)
+	oldSess.Update("work_dir", "/tmp/work")
+	oldSess.SetTitleIfEmpty("旧标题")
+
+	nativeSess := mgr.Create("thread-456", "user-1", "codex")
+	assert.NotNil(t, nativeSess)
+	nativeSess.Update("codex_session_id", "thread-456")
+
+	adopted, ok := mgr.AdoptSessionID("user-1-2", "thread-456")
+	assert.True(t, ok)
+	assert.NotNil(t, adopted)
+	assert.Equal(t, "thread-456", adopted.ID)
+
+	_, exists := mgr.Get("user-1-2")
+	assert.False(t, exists)
+
+	merged, exists := mgr.Get("thread-456")
+	assert.True(t, exists)
+	assert.Equal(t, "/tmp/work", merged.Context["work_dir"])
+}
+
 func TestManager_Create_MaxSize(t *testing.T) {
 	mgr := NewManager(ManagerConfig{
 		Timeout: 3600,

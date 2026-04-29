@@ -75,11 +75,7 @@ func (r *Router) getOrCreateInteractiveSession(ctx context.Context, sess *sessio
 
 	if sessionKey != "" {
 		if sid := strings.TrimSpace(liveSession.CurrentSessionID()); sid != "" {
-			if sess.Context == nil {
-				sess.Context = make(map[string]interface{})
-			}
-			sess.Context[sessionKey] = sid
-			r.sessionMgr.UpdateSession(sess.ID, sessionKey, sid)
+			sess = r.bindAgentNativeSessionID(sess, sessionKey, sid)
 		}
 	}
 
@@ -190,11 +186,7 @@ func (r *Router) discardBufferedInteractiveEvents(sess *session.Session, session
 			}
 
 			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
-				if sess.Context == nil {
-					sess.Context = make(map[string]interface{})
-				}
-				sess.Context[sessionKey] = event.SessionID
-				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+				sess = r.bindAgentNativeSessionID(sess, sessionKey, event.SessionID)
 			}
 		default:
 			return
@@ -217,11 +209,7 @@ func (r *Router) waitInteractiveEventsQuiesced(sess *session.Session, sessionKey
 			}
 
 			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
-				if sess.Context == nil {
-					sess.Context = make(map[string]interface{})
-				}
-				sess.Context[sessionKey] = event.SessionID
-				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+				sess = r.bindAgentNativeSessionID(sess, sessionKey, event.SessionID)
 			}
 
 			if !timer.Stop() {
@@ -247,11 +235,7 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 			}
 
 			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
-				if sess.Context == nil {
-					sess.Context = make(map[string]interface{})
-				}
-				sess.Context[sessionKey] = event.SessionID
-				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+				sess = r.bindAgentNativeSessionID(sess, sessionKey, event.SessionID)
 			}
 
 			switch event.Type {
@@ -300,11 +284,7 @@ func (r *Router) drainInteractiveTailAfterDone(ctx context.Context, sess *sessio
 			}
 
 			if event.Type == agent.EventTypeSession && sessionKey != "" && strings.TrimSpace(event.SessionID) != "" {
-				if sess.Context == nil {
-					sess.Context = make(map[string]interface{})
-				}
-				sess.Context[sessionKey] = event.SessionID
-				r.sessionMgr.UpdateSession(sess.ID, sessionKey, event.SessionID)
+				sess = r.bindAgentNativeSessionID(sess, sessionKey, event.SessionID)
 			}
 
 			switch event.Type {

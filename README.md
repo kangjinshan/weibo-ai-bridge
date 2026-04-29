@@ -7,8 +7,8 @@
 - **微博私信桥接** — 通过 WebSocket API 实时收发微博私信
 - **多 Agent 支持** — Claude Code 和 Codex CLI，可灵活切换
 - **流式回复** — 先发"正在处理中"提示，再逐片流式发送真实回复
-- **会话管理** — 多会话创建/切换/持久化，自动记录会话标题
-- **自动建会话** — 无活跃会话时发首条消息自动创建
+- **会话管理** — native session 优先，bridge 仅维护索引与持久化
+- **自动建会话** — 无活跃会话时自动准备原生会话，首轮拿到 `session/thread` 后收敛为 native ID
 - **审批回复** — Agent 请求授权时回复 `允许` / `允许所有` / `取消`
 - **交互式插话** — `/btw` 向正在执行的 Agent turn 注入补充信息
 - **命令旁路** — `/help`、`/status` 等命令立即执行，不排队
@@ -60,8 +60,8 @@ make dev
 | 命令 | 说明 |
 |------|------|
 | `/help` | 显示帮助信息 |
-| `/new [claude\|codex]` | 创建新会话（不传参数时沿用当前 Agent） |
-| `/list` | 查看所有会话（带编号） |
+| `/new [claude\|codex]` | 准备新的原生会话（不传参数时沿用当前 Agent） |
+| `/list` | 查看原生会话列表（带编号） |
 | `/switch <编号>` | 按 `/list` 中的编号切换活跃会话 |
 | `/switch <agent类型>` | 切换当前会话的 Agent 类型 |
 | `/btw <内容>` | 向当前交互式会话注入补充信息 |
@@ -142,15 +142,16 @@ output = "stdout"
 ### 核心特性
 
 - **持久化存储** — 会话数据默认存储在 `~/.config/weibo-ai-bridge/sessions/`，服务重启后自动恢复
-- **多会话支持** — 每个用户可创建多个独立会话，按编号切换
-- **自动建会话** — 无活跃会话时发送第一条消息自动创建
-- **会话标题** — 自动记录首条真实问题作为标题（最长 50 字符）
+- **多会话支持** — 每个用户可切换多个原生会话（Claude/Codex），按编号切换
+- **自动建会话** — 无活跃会话时先建立 pending 锚点，首轮自动绑定为 native 会话 ID
+- **会话标题** — 自动记录首条真实问题作为标题（存储最长 50 字符；`/list` 展示截断为 30 字符）
 - **旧路径迁移** — 新版本首次启动时会自动导入旧版 `data/sessions/` 的数据
 
 ### Agent Session ID
 
 - **Claude** — 使用 `--output-format stream-json` 流式路径，首轮提取 `session_id`，后续用 `--resume` 继续对话
 - **Codex** — 优先通过 `codex app-server` 获取 `item/agentMessage/delta` 流式增量；不可用时回退到 `codex exec --json`。Bridge 把 `thread_id` 持久化到 `codex_session_id`。续接已存在线程时使用最小 `thread/resume` 参数（不覆盖原线程策略），并在运行中同步 `threadId` 变化，确保持续续写同一线程
+- **ID 收敛策略** — bridge 只在首轮创建 pending 锚点；一旦收到 Agent `session/thread` 事件，会将会话 ID 收敛为 native ID，避免长期保留 bridge 自增 ID
 
 ### 使用示例
 

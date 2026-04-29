@@ -135,6 +135,119 @@ func TestListNativeClaudeSessions_InBridge(t *testing.T) {
 	}
 }
 
+func TestListNativeClaudeSessions_UsesSessionsIndexMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectsDir := filepath.Join(tmpDir, ".claude", "projects")
+	projectDir := filepath.Join(projectsDir, "-home-ubuntu-testproject")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	sessionFile := filepath.Join(projectDir, sessionID+".jsonl")
+	sessionContent := `{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","content":"jsonl 里的老标题"}
+`
+	if err := os.WriteFile(sessionFile, []byte(sessionContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	indexFile := filepath.Join(projectDir, "sessions-index.json")
+	indexContent := `{
+  "version": 1,
+  "entries": [
+    {
+      "sessionId": "80b2c6c6-273a-49a7-bcab-8333d6582276",
+      "fullPath": "/tmp/fake.jsonl",
+      "fileMtime": 1776652200123,
+      "firstPrompt": "index 里的 firstPrompt",
+      "summary": "index 里的摘要标题",
+      "messageCount": 12,
+      "created": "2026-04-20T07:00:00.000Z",
+      "modified": "2026-04-20T09:10:00.000Z",
+      "gitBranch": "main",
+      "projectPath": "/home/ubuntu/testproject",
+      "isSidechain": false
+    }
+  ],
+  "originalPath": "/home/ubuntu/testproject"
+}
+`
+	if err := os.WriteFile(indexFile, []byte(indexContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	sessions, err := ListNativeClaudeSessions(map[string]bool{})
+	if err != nil {
+		t.Fatalf("ListNativeClaudeSessions error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+
+	if sessions[0].Title != "index 里的摘要标题" {
+		t.Fatalf("title = %q, want %q", sessions[0].Title, "index 里的摘要标题")
+	}
+	expectedModified, _ := time.Parse(time.RFC3339Nano, "2026-04-20T09:10:00.000Z")
+	if !sessions[0].StartedAt.Equal(expectedModified) {
+		t.Fatalf("StartedAt = %v, want %v", sessions[0].StartedAt, expectedModified)
+	}
+	if sessions[0].Project != "/home/ubuntu/testproject" {
+		t.Fatalf("project = %q, want %q", sessions[0].Project, "/home/ubuntu/testproject")
+	}
+}
+
+func TestListNativeClaudeSessionsForProject_FiltersByProjectPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectsDir := filepath.Join(tmpDir, ".claude", "projects")
+	projectA := filepath.Join(projectsDir, "-home-ubuntu-project-a")
+	projectB := filepath.Join(projectsDir, "-home-ubuntu-project-b")
+	if err := os.MkdirAll(projectA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionA := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	sessionB := "0a8ea231-4406-4dd3-8065-0510acbbc071"
+	if err := os.WriteFile(filepath.Join(projectA, sessionA+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","content":"A"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, sessionB+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","content":"B"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	indexA := `{"version":1,"entries":[{"sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","summary":"项目A","projectPath":"/home/ubuntu/project-a","modified":"2026-04-20T09:10:00.000Z"}]}`
+	indexB := `{"version":1,"entries":[{"sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","summary":"项目B","projectPath":"/home/ubuntu/project-b","modified":"2026-04-20T09:10:00.000Z"}]}`
+	if err := os.WriteFile(filepath.Join(projectA, "sessions-index.json"), []byte(indexA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, "sessions-index.json"), []byte(indexB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	sessions, err := ListNativeClaudeSessionsForProject(map[string]bool{}, "/home/ubuntu/project-a")
+	if err != nil {
+		t.Fatalf("ListNativeClaudeSessionsForProject error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].ID != sessionA {
+		t.Fatalf("session id = %q, want %q", sessions[0].ID, sessionA)
+	}
+}
+
 func TestParseClaudeSessionFile_InvalidFirstLine(t *testing.T) {
 	tmpDir := t.TempDir()
 	// 创建一个首行不是 queue-operation 的文件
@@ -166,6 +279,67 @@ func TestParseClaudeSessionFile_ReadsTitleFromLaterLine(t *testing.T) {
 	}
 	if ns.Title != "后续补充标题" {
 		t.Fatalf("title = %q, want %q", ns.Title, "后续补充标题")
+	}
+}
+
+func TestParseClaudeSessionFile_UsesLastPromptEventTitle(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionID := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	file := filepath.Join(tmpDir, sessionID+".jsonl")
+	content := fmt.Sprintf(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"%s","content":"旧标题"}
+{"type":"last-prompt","lastPrompt":"最新标题","sessionId":"%s"}
+`, sessionID, sessionID)
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ns, ok := parseClaudeSessionFile(file, sessionID, "/home/ubuntu/testproject", nil)
+	if !ok {
+		t.Fatal("expected parseClaudeSessionFile to parse successfully")
+	}
+	if ns.Title != "最新标题" {
+		t.Fatalf("title = %q, want %q", ns.Title, "最新标题")
+	}
+}
+
+func TestParseClaudeSessionFile_UsesLatestQueueTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionID := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	file := filepath.Join(tmpDir, sessionID+".jsonl")
+	content := fmt.Sprintf(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"%s","content":"早期"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T09:29:43.967Z","sessionId":"%s","content":"后续"}
+`, sessionID, sessionID)
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ns, ok := parseClaudeSessionFile(file, sessionID, "/home/ubuntu/testproject", nil)
+	if !ok {
+		t.Fatal("expected parseClaudeSessionFile to parse successfully")
+	}
+	expected, _ := time.Parse(time.RFC3339Nano, "2026-04-20T09:29:43.967Z")
+	if !ns.StartedAt.Equal(expected) {
+		t.Fatalf("StartedAt = %v, want %v", ns.StartedAt, expected)
+	}
+}
+
+func TestParseClaudeSessionFile_UsesCwdFromTranscript(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionID := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	file := filepath.Join(tmpDir, sessionID+".jsonl")
+	content := fmt.Sprintf(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"%s","content":"测试"}
+{"type":"user","message":{"role":"user","content":"测试"},"sessionId":"%s","cwd":"/Users/kanayama/Desktop/AI/weibo-ai-bridge"}
+`, sessionID, sessionID)
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ns, ok := parseClaudeSessionFile(file, sessionID, "/Users/kanayama/Desktop/AI/weibo/ai/bridge", nil)
+	if !ok {
+		t.Fatal("expected parseClaudeSessionFile to parse successfully")
+	}
+	if ns.Project != "/Users/kanayama/Desktop/AI/weibo-ai-bridge" {
+		t.Fatalf("project = %q, want %q", ns.Project, "/Users/kanayama/Desktop/AI/weibo-ai-bridge")
 	}
 }
 

@@ -394,7 +394,7 @@ func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
 		Timestamp: 1234567890,
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, "user-1-1", sessionMgr.GetActiveSessionID("user-1"))
+	assert.Equal(t, pendingNativeSessionID("user-1"), sessionMgr.GetActiveSessionID("user-1"))
 
 	err = router.HandleMessage(context.Background(), &weibo.Message{
 		ID:        "msg-ai",
@@ -547,7 +547,7 @@ func TestHandleMessage_AutoCreatesSessionOnFirstUserMessage(t *testing.T) {
 
 	activeSession, ok := sessionMgr.GetActiveSession("user-auto")
 	assert.True(t, ok)
-	assert.Equal(t, "user-auto-1", activeSession.ID)
+	assert.Equal(t, pendingNativeSessionID("user-auto"), activeSession.ID)
 	assert.Equal(t, "第一条消息直接开始", activeSession.Title)
 	assert.Len(t, platform.replies, 2)
 	assert.Equal(t, "Codex response", platform.replies[0]["content"])
@@ -771,6 +771,46 @@ func TestHandleAIMessage_PersistsCodexSessionID(t *testing.T) {
 	sess, ok := sessionMgr.Get("session-1")
 	assert.True(t, ok)
 	assert.Equal(t, "codex-thread-1", sess.Context["codex_session_id"])
+}
+
+func TestHandleAIMessage_AdoptsPendingOrBridgeSessionIDToNativeSessionID(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
+	mockAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		response:  "Codex response\n\n__SESSION_ID__: codex-thread-9",
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("codex")
+
+	sessionMgr.Create("user-1-1", "user-1", "codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	resp, err := router.handleAIMessage(context.Background(), &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "Hello Codex",
+		UserID:    "user-1",
+		SessionID: "user-1-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, "Codex response", resp.Content)
+	assert.Equal(t, "codex-thread-9", sessionMgr.GetActiveSessionID("user-1"))
+
+	_, oldExists := sessionMgr.Get("user-1-1")
+	assert.False(t, oldExists)
+
+	adopted, adoptedExists := sessionMgr.Get("codex-thread-9")
+	assert.True(t, adoptedExists)
+	assert.Equal(t, "codex-thread-9", adopted.Context["codex_session_id"])
 }
 
 func TestHandleAIMessage_SetsSessionTitleFromFirstQuestionOnly(t *testing.T) {

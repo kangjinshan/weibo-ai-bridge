@@ -26,6 +26,13 @@ func TestNewCommandHandler(t *testing.T) {
 	assert.NotNil(t, handler.agentManager)
 }
 
+func isolateNativeSessionSources(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+}
+
 func TestCommandHandler_Handle_Help(t *testing.T) {
 	sessionManager := session.NewManager(session.ManagerConfig{})
 	agentManager := agent.NewManager()
@@ -54,6 +61,8 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 }
 
 func TestCommandHandler_Handle_List(t *testing.T) {
+	isolateNativeSessionSources(t)
+
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
 		MaxSize: 100,
@@ -61,11 +70,13 @@ func TestCommandHandler_Handle_List(t *testing.T) {
 	agentManager := agent.NewManager()
 	handler := NewCommandHandler(sessionManager, agentManager)
 
-	first := sessionManager.Create("session-1", "user-1", "claude")
+	first := sessionManager.Create("session-1", "user-1", "codex")
 	assert.NotNil(t, first)
 	first.SetTitleIfEmpty("第一个问题")
+	first.Update("claude_session_id", "claude-native-1")
 	second := sessionManager.Create("session-2", "user-1", "codex")
 	assert.NotNil(t, second)
+	second.Update("codex_session_id", "codex-native-2")
 	sessionManager.Create("session-3", "user-2", "claude")
 
 	resp, err := handler.Handle(&Message{
@@ -84,6 +95,8 @@ func TestCommandHandler_Handle_List(t *testing.T) {
 }
 
 func TestCommandHandler_Handle_List_SortsBridgeSessionsByUpdatedAtDesc(t *testing.T) {
+	isolateNativeSessionSources(t)
+
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
 		MaxSize: 100,
@@ -94,12 +107,14 @@ func TestCommandHandler_Handle_List_SortsBridgeSessionsByUpdatedAtDesc(t *testin
 	first := sessionManager.Create("session-1", "user-1", "codex")
 	assert.NotNil(t, first)
 	first.SetTitleIfEmpty("会话A")
+	first.Update("codex_session_id", "codex-native-a")
 
 	time.Sleep(10 * time.Millisecond)
 
 	second := sessionManager.Create("session-2", "user-1", "codex")
 	assert.NotNil(t, second)
 	second.SetTitleIfEmpty("会话B")
+	second.Update("codex_session_id", "codex-native-b")
 
 	resp, err := handler.Handle(&Message{
 		ID:      "msg-list-order",
@@ -117,6 +132,216 @@ func TestCommandHandler_Handle_List_SortsBridgeSessionsByUpdatedAtDesc(t *testin
 	assert.Contains(t, resp.Content, rowA)
 	assert.Contains(t, resp.Content, rowB)
 	assert.Less(t, strings.Index(resp.Content, rowA), strings.Index(resp.Content, rowB))
+}
+
+func TestCommandHandler_Handle_List_HidesBridgeOnlySessionsWithoutNativeBinding(t *testing.T) {
+	isolateNativeSessionSources(t)
+
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	bridgeOnly := sessionManager.Create("user-1-1", "user-1", "codex")
+	assert.NotNil(t, bridgeOnly)
+	bridgeOnly.SetTitleIfEmpty("bridge-only")
+
+	nativeBacked := sessionManager.Create("native-session-1", "user-1", "codex")
+	assert.NotNil(t, nativeBacked)
+	nativeBacked.SetTitleIfEmpty("native-backed")
+	nativeBacked.Update("codex_session_id", "native-thread-1")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-list-native-only",
+		Type:    TypeText,
+		Content: "/list",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "native-backed")
+	assert.NotContains(t, resp.Content, "bridge-only")
+}
+
+func TestCommandHandler_Handle_List_ClaudeFiltersByWorkDirProject(t *testing.T) {
+	isolateNativeSessionSources(t)
+
+	home := os.Getenv("HOME")
+	projectsDir := filepath.Join(home, ".claude", "projects")
+	projectA := filepath.Join(projectsDir, "-home-ubuntu-project-a")
+	projectB := filepath.Join(projectsDir, "-home-ubuntu-project-b")
+	if err := os.MkdirAll(projectA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionA := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	sessionB := "0a8ea231-4406-4dd3-8065-0510acbbc071"
+	if err := os.WriteFile(filepath.Join(projectA, sessionA+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","content":"A"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, sessionB+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","content":"B"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	indexA := `{"version":1,"entries":[{"sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","summary":"项目A会话","projectPath":"/home/ubuntu/project-a","modified":"2026-04-20T09:10:00.000Z"}]}`
+	indexB := `{"version":1,"entries":[{"sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","summary":"项目B会话","projectPath":"/home/ubuntu/project-b","modified":"2026-04-20T09:10:00.000Z"}]}`
+	if err := os.WriteFile(filepath.Join(projectA, "sessions-index.json"), []byte(indexA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, "sessions-index.json"), []byte(indexB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	active := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, active)
+	active.Update("work_dir", "/home/ubuntu/project-a")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-list-claude-project",
+		Type:    TypeText,
+		Content: "/list",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "项目A会话")
+	assert.NotContains(t, resp.Content, "项目B会话")
+}
+
+func TestCommandHandler_Handle_List_ClaudeWithoutWorkDirDoesNotForceCwdFilter(t *testing.T) {
+	isolateNativeSessionSources(t)
+
+	home := os.Getenv("HOME")
+	projectsDir := filepath.Join(home, ".claude", "projects")
+	projectA := filepath.Join(projectsDir, "-home-ubuntu-project-a")
+	projectB := filepath.Join(projectsDir, "-home-ubuntu-project-b")
+	if err := os.MkdirAll(projectA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionA := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	sessionB := "0a8ea231-4406-4dd3-8065-0510acbbc071"
+	if err := os.WriteFile(filepath.Join(projectA, sessionA+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","content":"A"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, sessionB+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","content":"B"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	indexA := `{"version":1,"entries":[{"sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","summary":"项目A会话","projectPath":"/home/ubuntu/project-a","modified":"2026-04-20T09:10:00.000Z"}]}`
+	indexB := `{"version":1,"entries":[{"sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","summary":"项目B会话","projectPath":"/home/ubuntu/project-b","modified":"2026-04-20T09:10:00.000Z"}]}`
+	if err := os.WriteFile(filepath.Join(projectA, "sessions-index.json"), []byte(indexA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, "sessions-index.json"), []byte(indexB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	active := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, active)
+	// 不设置 work_dir，期望不做当前进程 cwd 过滤
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-list-claude-no-workdir",
+		Type:    TypeText,
+		Content: "/list",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "项目A会话")
+	assert.Contains(t, resp.Content, "项目B会话")
+}
+
+func TestCommandHandler_Handle_List_ClaudeUsesNativeSessionProjectWhenWorkDirMissing(t *testing.T) {
+	isolateNativeSessionSources(t)
+
+	home := os.Getenv("HOME")
+	projectsDir := filepath.Join(home, ".claude", "projects")
+	projectA := filepath.Join(projectsDir, "-home-ubuntu-project-a")
+	projectB := filepath.Join(projectsDir, "-home-ubuntu-project-b")
+	if err := os.MkdirAll(projectA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionA := "80b2c6c6-273a-49a7-bcab-8333d6582276"
+	sessionB := "0a8ea231-4406-4dd3-8065-0510acbbc071"
+	if err := os.WriteFile(filepath.Join(projectA, sessionA+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","content":"A"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, sessionB+".jsonl"), []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","content":"B"}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	indexA := `{"version":1,"entries":[{"sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276","summary":"项目A会话","projectPath":"/home/ubuntu/project-a","modified":"2026-04-20T09:10:00.000Z"}]}`
+	indexB := `{"version":1,"entries":[{"sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071","summary":"项目B会话","projectPath":"/home/ubuntu/project-b","modified":"2026-04-20T09:10:00.000Z"}]}`
+	if err := os.WriteFile(filepath.Join(projectA, "sessions-index.json"), []byte(indexA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, "sessions-index.json"), []byte(indexB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	active := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, active)
+	active.Update("claude_session_id", sessionA)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-list-claude-native-project",
+		Type:    TypeText,
+		Content: "/list",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "项目A会话")
+	assert.NotContains(t, resp.Content, "项目B会话")
 }
 
 func TestCommandHandler_Handle_New(t *testing.T) {
@@ -141,7 +366,7 @@ func TestCommandHandler_Handle_New(t *testing.T) {
 			content: "/new",
 			checkResult: func(t *testing.T, resp *Response) {
 				assert.True(t, resp.Success)
-				assert.Contains(t, resp.Content, "New session created")
+				assert.Contains(t, resp.Content, "Prepared a new native session")
 				assert.Contains(t, resp.Content, "claude")
 			},
 		},
@@ -258,6 +483,37 @@ func TestCommandHandler_Handle_New_RepairsUnavailableAgent(t *testing.T) {
 	assert.Equal(t, "codex", activeSession.AgentType)
 }
 
+func TestCommandHandler_Handle_New_DoesNotSilentlyFallbackFromActiveAgentType(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "claude-code", available: true})
+	agentManager.SetDefault("claude-code")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	// 当前活跃会话是 codex，但 codex 当前不可用。
+	sessionManager.Create("session-1", "user-1", "codex")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-1",
+		Type:    TypeText,
+		Content: "/new",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Content, "Requested agent is not available: codex")
+
+	activeSession, ok := sessionManager.GetActiveSession("user-1")
+	assert.True(t, ok)
+	assert.Equal(t, "session-1", activeSession.ID)
+	assert.Equal(t, "codex", activeSession.AgentType)
+}
+
 func TestCommandHandler_Handle_New_DefaultsToActiveSessionAgentType(t *testing.T) {
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
@@ -286,7 +542,7 @@ func TestCommandHandler_Handle_New_DefaultsToActiveSessionAgentType(t *testing.T
 	activeSession, ok := sessionManager.GetActiveSession("user-1")
 	assert.True(t, ok)
 	assert.Equal(t, "codex", activeSession.AgentType)
-	assert.Equal(t, "user-1-1", activeSession.ID)
+	assert.Equal(t, pendingNativeSessionID("user-1"), activeSession.ID)
 }
 
 func TestCommandHandler_Handle_Switch(t *testing.T) {
@@ -373,6 +629,8 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 }
 
 func TestCommandHandler_Handle_SwitchSessionByNumber(t *testing.T) {
+	isolateNativeSessionSources(t)
+
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
 		MaxSize: 100,
@@ -380,16 +638,18 @@ func TestCommandHandler_Handle_SwitchSessionByNumber(t *testing.T) {
 	agentManager := agent.NewManager()
 	handler := NewCommandHandler(sessionManager, agentManager)
 
-	first := sessionManager.Create("session-1", "user-1", "claude")
+	first := sessionManager.Create("session-1", "user-1", "codex")
 	second := sessionManager.Create("session-2", "user-1", "codex")
 	assert.NotNil(t, first)
 	assert.NotNil(t, second)
+	first.Update("codex_session_id", "native-thread-1")
+	second.Update("codex_session_id", "native-thread-2")
 	assert.Equal(t, "session-2", sessionManager.GetActiveSessionID("user-1"))
 
 	resp, err := handler.Handle(&Message{
 		ID:        "msg-switch-session",
 		Type:      TypeText,
-		Content:   "/switch 1",
+		Content:   "/switch 2",
 		UserID:    "user-1",
 		SessionID: "session-2",
 	})
@@ -397,12 +657,14 @@ func TestCommandHandler_Handle_SwitchSessionByNumber(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
-	assert.Contains(t, resp.Content, "Switched to session 1: 未命名会话")
+	assert.Contains(t, resp.Content, "Switched to session 2: 未命名会话")
 	assert.Contains(t, resp.Content, "id=session-1")
 	assert.Equal(t, "session-1", sessionManager.GetActiveSessionID("user-1"))
 }
 
 func TestCommandHandler_Handle_SwitchSessionByNumber_RejectsInvalidIndex(t *testing.T) {
+	isolateNativeSessionSources(t)
+
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
 		MaxSize: 100,
@@ -411,11 +673,13 @@ func TestCommandHandler_Handle_SwitchSessionByNumber_RejectsInvalidIndex(t *test
 	handler := NewCommandHandler(sessionManager, agentManager)
 
 	sessionManager.Create("session-1", "user-1", "claude")
+	sess, _ := sessionManager.Get("session-1")
+	sess.Update("claude_session_id", "native-claude-1")
 
 	resp, err := handler.Handle(&Message{
 		ID:      "msg-switch-session",
 		Type:    TypeText,
-		Content: "/switch 3",
+		Content: "/switch 9999",
 		UserID:  "user-1",
 	})
 
@@ -744,4 +1008,16 @@ func TestCommandHandler_Handle_EmptyCommand(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.False(t, resp.Success)
 	assert.Contains(t, resp.Content, "Unknown command")
+}
+
+func TestNativeListTitle_TruncatesTo30AndOmitsBridgeMarker(t *testing.T) {
+	title := strings.Repeat("你", 35)
+	got := nativeListTitle(NativeSession{
+		Title:    title,
+		InBridge: true,
+	})
+
+	assert.NotContains(t, got, "已关联")
+	assert.Equal(t, 33, len([]rune(got))) // 30 + "..."
+	assert.True(t, strings.HasSuffix(got, "..."))
 }

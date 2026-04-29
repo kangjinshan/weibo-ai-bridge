@@ -626,6 +626,105 @@ func (m *Manager) SetSessionTitleIfEmpty(id, title string) bool {
 	return updated
 }
 
+// AdoptSessionID 将会话 ID 迁移为原生会话 ID。
+// 当目标 ID 已存在且属于同一用户时，会合并两条会话并保持目标 ID。
+func (m *Manager) AdoptSessionID(oldID, newID string) (*Session, bool) {
+	oldID = strings.TrimSpace(oldID)
+	newID = strings.TrimSpace(newID)
+	if oldID == "" || newID == "" {
+		return nil, false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, exists := m.sessions[oldID]
+	if !exists || sess == nil {
+		return nil, false
+	}
+
+	if oldID == newID {
+		return sess, true
+	}
+
+	if existing, ok := m.sessions[newID]; ok {
+		if existing == nil || existing.UserID != sess.UserID {
+			return sess, false
+		}
+
+		mergeSessionLocked(existing, sess)
+		delete(m.sessions, oldID)
+		if activeID, ok := m.activeByUser[sess.UserID]; ok && activeID == oldID {
+			m.activeByUser[sess.UserID] = newID
+		}
+
+		if m.storagePath != "" {
+			m.saveSessionLocked(existing)
+			m.deleteSessionStorage(oldID)
+			m.saveMetadataLocked()
+		}
+
+		return existing, true
+	}
+
+	delete(m.sessions, oldID)
+	sess.mu.Lock()
+	sess.ID = newID
+	sess.UpdatedAt = time.Now()
+	sess.mu.Unlock()
+	m.sessions[newID] = sess
+	if activeID, ok := m.activeByUser[sess.UserID]; ok && activeID == oldID {
+		m.activeByUser[sess.UserID] = newID
+	}
+
+	if m.storagePath != "" {
+		m.saveSessionLocked(sess)
+		m.deleteSessionStorage(oldID)
+		m.saveMetadataLocked()
+	}
+
+	return sess, true
+}
+
+func mergeSessionLocked(dst, src *Session) {
+	if dst == nil || src == nil {
+		return
+	}
+
+	dst.mu.Lock()
+	defer dst.mu.Unlock()
+
+	src.mu.RLock()
+	defer src.mu.RUnlock()
+
+	if strings.TrimSpace(dst.Title) == "" && strings.TrimSpace(src.Title) != "" {
+		dst.Title = src.Title
+	}
+
+	if dst.Context == nil {
+		dst.Context = make(map[string]interface{})
+	}
+	for key, value := range src.Context {
+		if _, exists := dst.Context[key]; !exists {
+			dst.Context[key] = value
+		}
+	}
+
+	if dst.CreatedAt.IsZero() || (!src.CreatedAt.IsZero() && src.CreatedAt.Before(dst.CreatedAt)) {
+		dst.CreatedAt = src.CreatedAt
+	}
+	if src.UpdatedAt.After(dst.UpdatedAt) {
+		dst.UpdatedAt = src.UpdatedAt
+	}
+
+	if strings.TrimSpace(dst.AgentType) == "" && strings.TrimSpace(src.AgentType) != "" {
+		dst.AgentType = src.AgentType
+	}
+	if dst.State == "" && src.State != "" {
+		dst.State = src.State
+	}
+}
+
 func (m *Manager) saveMetadataLocked() {
 	if m.storagePath == "" {
 		return

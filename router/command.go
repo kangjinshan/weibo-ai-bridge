@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,8 +93,8 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 func (h *CommandHandler) handleHelp() (*Response, error) {
 	helpText := `可用命令：
 /help - 显示帮助信息
-/new [agent_type] - 创建新会话（可选参数：claude/codex）
-/list - 查看当前用户的所有会话（含原生 Claude 会话）
+/new [agent_type] - 准备一个新的原生会话（可选参数：claude/codex）
+/list - 查看当前用户的原生会话
 /switch [number] - 切换当前活跃会话
 /switch [agent_type] - 切换当前会话的 Agent 类型
 /btw [content] - 向当前正在进行的交互会话插入一条补充消息
@@ -141,26 +142,28 @@ func (h *CommandHandler) handleNew(userID string, args []string) (*Response, err
 		}, nil
 	}
 
-	// 创建新会话
-	newSession := h.sessionManager.CreateNext(userID, agentType)
-
+	// /new 不再创建 bridge 自增会话，改为准备一个待创建的 native 会话锚点。
+	newSession := h.sessionManager.GetOrCreateSession(pendingNativeSessionID(userID), userID, agentType)
 	if newSession == nil {
 		return &Response{
 			Success: false,
 			Content: "Failed to create new session. Maximum sessions reached.",
 		}, nil
 	}
+	h.sessionManager.SetSessionAgentType(newSession.ID, agentType)
+	h.sessionManager.UpdateSession(newSession.ID, "claude_session_id", "")
+	h.sessionManager.UpdateSession(newSession.ID, "codex_session_id", "")
 
 	return &Response{
 		Success: true,
-		Content: fmt.Sprintf("New session created: %s (Agent: %s)", newSession.ID, agentType),
+		Content: fmt.Sprintf("Prepared a new native session (Agent: %s). Send your next message to create it.", agentType),
 	}, nil
 }
 
 func (h *CommandHandler) defaultNewSessionAgentType(userID string) string {
 	if h.sessionManager != nil {
 		if activeSession, ok := h.sessionManager.GetActiveSession(userID); ok {
-			if strings.TrimSpace(activeSession.AgentType) != "" && h.isAgentTypeAvailable(activeSession.AgentType) {
+			if strings.TrimSpace(activeSession.AgentType) != "" {
 				return activeSession.AgentType
 			}
 		}
@@ -176,89 +179,41 @@ func (h *CommandHandler) defaultNewSessionAgentType(userID string) string {
 }
 
 func (h *CommandHandler) handleList(userID string) (*Response, error) {
-	sessions := h.sessionManager.ListByUser(userID)
+	managedNativeSessions, allNative, _, activeNativeID := h.collectSwitchCandidates(userID)
 
-	// 确定当前活跃 agent 类型
-	activeSess, hasActive := h.sessionManager.GetActiveSession(userID)
-	activeAgentType := ""
-	if hasActive {
-		activeAgentType = activeSess.AgentType
-	}
-
-	// 按 agent 类型过滤 bridge session
-	var filtered []*session.Session
-	for _, sess := range sessions {
-		if activeAgentType == "" || sess.AgentType == activeAgentType {
-			filtered = append(filtered, sess)
-		}
-	}
-
-	// bridge session 按最近更新时间倒序，时间相同按 ID 升序保证稳定。
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].UpdatedAt.Equal(filtered[j].UpdatedAt) {
-			return filtered[i].ID < filtered[j].ID
-		}
-		return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
-	})
-
-	if len(filtered) == 0 && len(sessions) == 0 {
-		return &Response{
-			Success: false,
-			Content: "No sessions found. Use /new to create a new session.",
-		}, nil
-	}
-
-	// 收集 bridge 中已关联的原生 session ID
-	bridgeNativeIDs := make(map[string]bool)
-	for _, sess := range sessions {
-		if nativeID := nativeSessionIDFromContext(sess.AgentType, sess.Context); nativeID != "" {
-			bridgeNativeIDs[nativeID] = true
-		}
-	}
-
-	activeSessionID := h.sessionManager.GetActiveSessionID(userID)
 	type listRow struct {
 		Number string
 		Title  string
 		When   time.Time
 	}
-	rows := make([]listRow, 0, len(filtered))
+	rows := make([]listRow, 0, len(allNative))
 
-	for i, sess := range filtered {
-		title := displaySessionTitle(sess)
-		if sess.ID == activeSessionID {
-			title += "（当前）"
+	if len(allNative) > 0 {
+		for i, ns := range allNative {
+			title := nativeListTitle(ns)
+			if strings.TrimSpace(ns.ID) != "" && strings.TrimSpace(ns.ID) == strings.TrimSpace(activeNativeID) {
+				title += "（当前）"
+			}
+			rows = append(rows, listRow{
+				Number: strconv.Itoa(i + 1),
+				Title:  title,
+				When:   ns.StartedAt,
+			})
 		}
-
-		rows = append(rows, listRow{
-			Number: strconv.Itoa(i + 1),
-			Title:  title,
-			When:   sess.UpdatedAt,
-		})
-	}
-
-	// 追加原生会话（只显示当前活跃 agent 类型）
-	var allNative []NativeSession
-	if activeAgentType == "claude" || activeAgentType == "" {
-		if claudeNatives, err := ListNativeClaudeSessions(bridgeNativeIDs); err == nil {
-			allNative = append(allNative, claudeNatives...)
+	} else {
+		// native 列表不可用时，回退到已绑定 native ID 的会话，避免空列表。
+		activeSessionID := h.sessionManager.GetActiveSessionID(userID)
+		for i, sess := range managedNativeSessions {
+			title := truncateListTitle(displaySessionTitle(sess))
+			if sess.ID == activeSessionID {
+				title += "（当前）"
+			}
+			rows = append(rows, listRow{
+				Number: strconv.Itoa(i + 1),
+				Title:  title,
+				When:   sess.UpdatedAt,
+			})
 		}
-	}
-	if activeAgentType == "codex" || activeAgentType == "" {
-		if codexNatives, err := ListNativeCodexSessions(bridgeNativeIDs); err == nil {
-			allNative = append(allNative, codexNatives...)
-		}
-	}
-
-	sort.Slice(allNative, func(i, j int) bool {
-		return allNative[i].StartedAt.After(allNative[j].StartedAt)
-	})
-	for i, ns := range allNative {
-		rows = append(rows, listRow{
-			Number: fmt.Sprintf("N%d", i+1),
-			Title:  nativeListTitle(ns),
-			When:   ns.StartedAt,
-		})
 	}
 
 	if len(rows) == 0 {
@@ -298,15 +253,15 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 
 	target := strings.TrimSpace(args[0])
 
-	// 处理原生会话编号（N1, N2, ...）
+	// 兼容旧写法 N1 / N2 ...
 	if strings.HasPrefix(strings.ToUpper(target), "N") && len(target) > 1 {
 		if index, err := strconv.Atoi(target[1:]); err == nil {
-			return h.handleSwitchNativeSession(userID, index)
+			return h.handleSwitchByListNumber(userID, index)
 		}
 	}
 
 	if index, err := strconv.Atoi(target); err == nil {
-		return h.handleSwitchSession(userID, index)
+		return h.handleSwitchByListNumber(userID, index)
 	}
 
 	agentType := target
@@ -350,30 +305,35 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 	}, nil
 }
 
-func (h *CommandHandler) handleSwitchSession(userID string, index int) (*Response, error) {
-	sessions := h.sessionManager.ListByUser(userID)
-	if len(sessions) == 0 {
+func (h *CommandHandler) handleSwitchByListNumber(userID string, index int) (*Response, error) {
+	managedNativeSessions, allNative, bridgeNativeToSessionID, _ := h.collectSwitchCandidates(userID)
+
+	if len(allNative) > 0 {
+		return h.handleSwitchNativeSessionWithCandidates(userID, index, allNative, bridgeNativeToSessionID)
+	}
+
+	total := len(managedNativeSessions)
+	if total == 0 {
 		return &Response{
 			Success: false,
 			Content: "No sessions found. Use /new to create a new session.",
 		}, nil
 	}
 
-	if index < 1 || index > len(sessions) {
+	if index < 1 || index > total {
 		return &Response{
 			Success: false,
-			Content: fmt.Sprintf("Invalid session number. Use /list to see valid sessions (1-%d).", len(sessions)),
+			Content: fmt.Sprintf("Invalid session number. Use /list to see valid sessions (1-%d).", total),
 		}, nil
 	}
 
-	selected := sessions[index-1]
+	selected := managedNativeSessions[index-1]
 	if ok := h.sessionManager.SetActiveSession(userID, selected.ID); !ok {
 		return &Response{
 			Success: false,
 			Content: "Failed to switch active session.",
 		}, nil
 	}
-
 	return &Response{
 		Success: true,
 		Content: fmt.Sprintf("Switched to session %d: %s (id=%s, Agent: %s)", index, displaySessionTitle(selected), selected.ID, selected.AgentType),
@@ -382,36 +342,11 @@ func (h *CommandHandler) handleSwitchSession(userID string, index int) (*Respons
 
 // handleSwitchNativeSession 领养原生会话并切换到它
 func (h *CommandHandler) handleSwitchNativeSession(userID string, index int) (*Response, error) {
-	bridgeNativeIDs := make(map[string]bool)
-	bridgeNativeToSessionID := make(map[string]string)
-	for _, sess := range h.sessionManager.ListByUser(userID) {
-		if nativeID := nativeSessionIDFromContext(sess.AgentType, sess.Context); nativeID != "" {
-			bridgeNativeIDs[nativeID] = true
-			bridgeNativeToSessionID[nativeID] = sess.ID
-		}
-	}
+	_, allNative, bridgeNativeToSessionID, _ := h.collectSwitchCandidates(userID)
+	return h.handleSwitchNativeSessionWithCandidates(userID, index, allNative, bridgeNativeToSessionID)
+}
 
-	// 只扫描当前活跃 agent 类型的原生会话
-	activeSess, hasActive := h.sessionManager.GetActiveSession(userID)
-	activeAgentType := ""
-	if hasActive {
-		activeAgentType = activeSess.AgentType
-	}
-	var allNative []NativeSession
-	if activeAgentType == "claude" || activeAgentType == "" {
-		if claudeNatives, err := ListNativeClaudeSessions(bridgeNativeIDs); err == nil {
-			allNative = append(allNative, claudeNatives...)
-		}
-	}
-	if activeAgentType == "codex" || activeAgentType == "" {
-		if codexNatives, err := ListNativeCodexSessions(bridgeNativeIDs); err == nil {
-			allNative = append(allNative, codexNatives...)
-		}
-	}
-	sort.Slice(allNative, func(i, j int) bool {
-		return allNative[i].StartedAt.After(allNative[j].StartedAt)
-	})
-
+func (h *CommandHandler) handleSwitchNativeSessionWithCandidates(userID string, index int, allNative []NativeSession, bridgeNativeToSessionID map[string]string) (*Response, error) {
 	if len(allNative) == 0 {
 		return &Response{
 			Success: false,
@@ -422,7 +357,7 @@ func (h *CommandHandler) handleSwitchNativeSession(userID string, index int) (*R
 	if index < 1 || index > len(allNative) {
 		return &Response{
 			Success: false,
-			Content: fmt.Sprintf("Invalid native session number. Use /list to see valid sessions (N1-N%d).", len(allNative)),
+			Content: fmt.Sprintf("Invalid session number. Use /list to see valid sessions (1-%d).", len(allNative)),
 		}, nil
 	}
 
@@ -439,7 +374,7 @@ func (h *CommandHandler) handleSwitchNativeSession(userID string, index int) (*R
 		}
 		return &Response{
 			Success: true,
-			Content: fmt.Sprintf("Switched to existing session: %s (id=%s)", selected.Title, existingID),
+			Content: fmt.Sprintf("Switched to existing session: %s (id=%s)", truncateListTitle(selected.Title), existingID),
 		}, nil
 	}
 
@@ -453,17 +388,20 @@ func (h *CommandHandler) handleSwitchNativeSession(userID string, index int) (*R
 		}, nil
 	}
 
-	// 创建 bridge session 并关联原生 session ID
-	newSession := h.sessionManager.CreateNext(userID, agentType)
-	if newSession == nil {
+	if existing, exists := h.sessionManager.Get(selected.ID); exists && existing.UserID != userID {
 		return &Response{
 			Success: false,
-			Content: "Failed to create new session. Maximum sessions reached.",
+			Content: "Failed to switch native session: it belongs to another user.",
 		}, nil
 	}
 
 	contextKey := agentSessionContextKey(agentType)
+	newSession := h.sessionManager.GetOrCreateSession(selected.ID, userID, agentType)
+	h.sessionManager.SetSessionAgentType(newSession.ID, agentType)
 	h.sessionManager.UpdateSession(newSession.ID, contextKey, selected.ID)
+	if strings.TrimSpace(selected.Project) != "" {
+		h.sessionManager.UpdateSession(newSession.ID, "work_dir", selected.Project)
+	}
 	if selected.Title != "" {
 		h.sessionManager.SetSessionTitleIfEmpty(newSession.ID, selected.Title)
 	}
@@ -475,8 +413,62 @@ func (h *CommandHandler) handleSwitchNativeSession(userID string, index int) (*R
 
 	return &Response{
 		Success: true,
-		Content: fmt.Sprintf("Adopted & switched to: %s (%s, id=%s, native=%s)", selected.Title, agentType, newSession.ID, short),
+		Content: fmt.Sprintf("Switched to native session: %s (%s, native=%s)", truncateListTitle(selected.Title), agentType, short),
 	}, nil
+}
+
+func (h *CommandHandler) collectSwitchCandidates(userID string) ([]*session.Session, []NativeSession, map[string]string, string) {
+	sessions := h.sessionManager.ListByUser(userID)
+
+	activeSess, hasActive := h.sessionManager.GetActiveSession(userID)
+	activeAgentType := ""
+	activeNativeID := ""
+	if hasActive {
+		activeAgentType = activeSess.AgentType
+		activeNativeID = nativeSessionIDFromContext(activeSess.AgentType, activeSess.Context)
+		if strings.TrimSpace(activeNativeID) == "" && !strings.HasPrefix(activeSess.ID, pendingNativeSessionPrefix) {
+			activeNativeID = strings.TrimSpace(activeSess.ID)
+		}
+	}
+
+	managedNativeSessions := make([]*session.Session, 0, len(sessions))
+	bridgeNativeIDs := make(map[string]bool)
+	bridgeNativeToSessionID := make(map[string]string)
+	for _, sess := range sessions {
+		if nativeID := nativeSessionIDFromContext(sess.AgentType, sess.Context); nativeID != "" {
+			if activeAgentType != "" && sess.AgentType != activeAgentType {
+				continue
+			}
+			managedNativeSessions = append(managedNativeSessions, sess)
+			bridgeNativeIDs[nativeID] = true
+			bridgeNativeToSessionID[nativeID] = sess.ID
+		}
+	}
+
+	sort.Slice(managedNativeSessions, func(i, j int) bool {
+		if managedNativeSessions[i].UpdatedAt.Equal(managedNativeSessions[j].UpdatedAt) {
+			return managedNativeSessions[i].ID < managedNativeSessions[j].ID
+		}
+		return managedNativeSessions[i].UpdatedAt.After(managedNativeSessions[j].UpdatedAt)
+	})
+
+	allNative := make([]NativeSession, 0, 20)
+	if activeAgentType == "claude" || activeAgentType == "" {
+		claudeProjectPath := currentClaudeNativeProjectPath(activeSess)
+		if claudeNatives, err := ListNativeClaudeSessionsForProject(bridgeNativeIDs, claudeProjectPath); err == nil {
+			allNative = append(allNative, claudeNatives...)
+		}
+	}
+	if activeAgentType == "codex" || activeAgentType == "" {
+		if codexNatives, err := ListNativeCodexSessions(bridgeNativeIDs); err == nil {
+			allNative = append(allNative, codexNatives...)
+		}
+	}
+	sort.Slice(allNative, func(i, j int) bool {
+		return allNative[i].StartedAt.After(allNative[j].StartedAt)
+	})
+
+	return managedNativeSessions, allNative, bridgeNativeToSessionID, activeNativeID
 }
 
 func displaySessionTitle(sess *session.Session) string {
@@ -494,9 +486,20 @@ func nativeListTitle(ns NativeSession) string {
 	if title == "" {
 		title = "未命名原生会话"
 	}
-	if ns.InBridge {
-		title += "（已关联）"
+	return truncateListTitle(title)
+}
+
+func truncateListTitle(title string) string {
+	title = strings.Join(strings.Fields(strings.TrimSpace(title)), " ")
+	if title == "" {
+		return "未命名会话"
 	}
+
+	runes := []rune(title)
+	if len(runes) > 30 {
+		return string(runes[:30]) + "..."
+	}
+
 	return title
 }
 
@@ -528,6 +531,120 @@ func nativeSessionIDFromContext(agentType string, ctx map[string]interface{}) st
 		return ""
 	}
 	return val
+}
+
+func currentClaudeNativeProjectPath(activeSess *session.Session) string {
+	if activeSess != nil {
+		if workDir, ok := activeSess.Context["work_dir"].(string); ok {
+			if normalized := normalizeNativeProjectPath(workDir); normalized != "" {
+				return normalized
+			}
+		}
+		if nativeID := nativeSessionIDFromContext("claude", activeSess.Context); nativeID != "" {
+			if resolved := resolveClaudeProjectPathBySessionID(nativeID); resolved != "" {
+				return resolved
+			}
+		}
+	}
+	return ""
+}
+
+type claudeRuntimeSession struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+}
+
+func resolveClaudeProjectPathBySessionID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+
+	if runtimeCwd := resolveClaudeRuntimeSessionCwd(sessionID); runtimeCwd != "" {
+		return runtimeCwd
+	}
+
+	return resolveClaudeProjectFromProjectsDir(sessionID)
+}
+
+func resolveClaudeRuntimeSessionCwd(sessionID string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	sessionsDir := filepath.Join(homeDir, ".claude", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return ""
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(sessionsDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var runtime claudeRuntimeSession
+		if err := json.Unmarshal(data, &runtime); err != nil {
+			continue
+		}
+		if strings.TrimSpace(runtime.SessionID) != sessionID {
+			continue
+		}
+		if normalized := normalizeNativeProjectPath(runtime.Cwd); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
+}
+
+func resolveClaudeProjectFromProjectsDir(sessionID string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	projectsDir := filepath.Join(homeDir, ".claude", "projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return ""
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		projectDir := filepath.Join(projectsDir, entry.Name())
+		indexPath := filepath.Join(projectDir, "sessions-index.json")
+		data, err := os.ReadFile(indexPath)
+		if err == nil {
+			var index claudeSessionIndex
+			if json.Unmarshal(data, &index) == nil {
+				for _, item := range index.Entries {
+					if strings.TrimSpace(item.SessionID) != sessionID {
+						continue
+					}
+					if normalized := normalizeNativeProjectPath(item.ProjectPath); normalized != "" {
+						return normalized
+					}
+				}
+			}
+		}
+
+		if _, err := os.Stat(filepath.Join(projectDir, sessionID+".jsonl")); err == nil {
+			sessionFile := filepath.Join(projectDir, sessionID+".jsonl")
+			fallbackProject := decodeProjectPath(entry.Name())
+			if ns, ok := parseClaudeSessionFile(sessionFile, sessionID, fallbackProject, nil); ok {
+				if normalized := normalizeNativeProjectPath(ns.Project); normalized != "" {
+					return normalized
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (h *CommandHandler) isAgentTypeAvailable(agentType string) bool {

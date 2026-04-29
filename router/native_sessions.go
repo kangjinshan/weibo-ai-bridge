@@ -36,6 +36,20 @@ type codexThreadRecord struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+type claudeSessionIndex struct {
+	Entries []claudeSessionIndexEntry `json:"entries"`
+}
+
+type claudeSessionIndexEntry struct {
+	SessionID   string `json:"sessionId"`
+	FileMtime   int64  `json:"fileMtime"`
+	FirstPrompt string `json:"firstPrompt"`
+	Summary     string `json:"summary"`
+	Created     string `json:"created"`
+	Modified    string `json:"modified"`
+	ProjectPath string `json:"projectPath"`
+}
+
 // claudeQueueOp 是 Claude Code .jsonl 文件首行的 JSON 结构
 type claudeQueueOp struct {
 	Type      string `json:"type"`
@@ -49,6 +63,15 @@ const maxNativeSessions = 20
 
 // ListNativeClaudeSessions 扫描 ~/.claude/projects/ 目录，列出原生 Claude 会话
 func ListNativeClaudeSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, error) {
+	return listNativeClaudeSessions(bridgeNativeIDs, "")
+}
+
+// ListNativeClaudeSessionsForProject 扫描并仅返回指定项目目录的 Claude 原生会话
+func ListNativeClaudeSessionsForProject(bridgeNativeIDs map[string]bool, projectPath string) ([]NativeSession, error) {
+	return listNativeClaudeSessions(bridgeNativeIDs, projectPath)
+}
+
+func listNativeClaudeSessions(bridgeNativeIDs map[string]bool, projectPath string) ([]NativeSession, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("cannot determine home directory: %w", err)
@@ -64,6 +87,7 @@ func ListNativeClaudeSessions(bridgeNativeIDs map[string]bool) ([]NativeSession,
 	}
 
 	var sessions []NativeSession
+	projectFilter := normalizeNativeProjectPath(projectPath)
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -72,6 +96,18 @@ func ListNativeClaudeSessions(bridgeNativeIDs map[string]bool) ([]NativeSession,
 
 		projectDir := filepath.Join(projectsDir, entry.Name())
 		projectPath := decodeProjectPath(entry.Name())
+		indexedIDs := make(map[string]struct{})
+
+		indexSessions, idsFromIndex := listClaudeSessionsFromIndex(projectDir, projectPath, bridgeNativeIDs)
+		if len(indexSessions) > 0 {
+			indexedIDs = idsFromIndex
+			for _, ns := range indexSessions {
+				if !matchesNativeProjectFilter(ns.Project, projectFilter) {
+					continue
+				}
+				sessions = append(sessions, ns)
+			}
+		}
 
 		fileEntries, err := os.ReadDir(projectDir)
 		if err != nil {
@@ -90,15 +126,22 @@ func ListNativeClaudeSessions(bridgeNativeIDs map[string]bool) ([]NativeSession,
 			if !isValidUUID(sessionID) {
 				continue
 			}
+			if _, exists := indexedIDs[sessionID]; exists {
+				continue
+			}
 
 			ns, ok := parseClaudeSessionFile(filepath.Join(projectDir, fe.Name()), sessionID, projectPath, bridgeNativeIDs)
 			if !ok {
+				continue
+			}
+			if !matchesNativeProjectFilter(ns.Project, projectFilter) {
 				continue
 			}
 			sessions = append(sessions, ns)
 		}
 	}
 
+	sessions = dedupeNativeSessionsByID(sessions)
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
 	})
@@ -108,6 +151,88 @@ func ListNativeClaudeSessions(bridgeNativeIDs map[string]bool) ([]NativeSession,
 	}
 
 	return sessions, nil
+}
+
+func normalizeNativeProjectPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+
+	cleaned := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		cleaned = filepath.Clean(resolved)
+	}
+	return cleaned
+}
+
+func matchesNativeProjectFilter(sessionProjectPath, projectFilter string) bool {
+	if projectFilter == "" {
+		return true
+	}
+	normalized := normalizeNativeProjectPath(sessionProjectPath)
+	if normalized == "" {
+		return false
+	}
+	return normalized == projectFilter
+}
+
+func listClaudeSessionsFromIndex(projectDir, fallbackProjectPath string, bridgeNativeIDs map[string]bool) ([]NativeSession, map[string]struct{}) {
+	indexPath := filepath.Join(projectDir, "sessions-index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, map[string]struct{}{}
+	}
+
+	var index claudeSessionIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, map[string]struct{}{}
+	}
+
+	sessions := make([]NativeSession, 0, len(index.Entries))
+	indexedIDs := make(map[string]struct{}, len(index.Entries))
+	for _, item := range index.Entries {
+		sessionID := strings.TrimSpace(item.SessionID)
+		if !isValidUUID(sessionID) {
+			continue
+		}
+
+		projectPath := strings.TrimSpace(item.ProjectPath)
+		if projectPath == "" {
+			projectPath = fallbackProjectPath
+		}
+
+		title := strings.TrimSpace(item.Summary)
+		if title == "" {
+			title = strings.TrimSpace(item.FirstPrompt)
+		}
+
+		startedAt := claudeIndexTimestamp(item)
+		sessions = append(sessions, NativeSession{
+			ID:        sessionID,
+			AgentType: "claude",
+			Project:   projectPath,
+			Title:     ensureNativeTitle(title, projectPath, sessionID),
+			StartedAt: startedAt,
+			InBridge:  bridgeNativeIDs[sessionID],
+		})
+		indexedIDs[sessionID] = struct{}{}
+	}
+
+	return sessions, indexedIDs
+}
+
+func claudeIndexTimestamp(entry claudeSessionIndexEntry) time.Time {
+	if ts, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(entry.Modified)); err == nil {
+		return ts
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(entry.Created)); err == nil {
+		return ts
+	}
+	if entry.FileMtime > 0 {
+		return time.UnixMilli(entry.FileMtime)
+	}
+	return time.Time{}
 }
 
 // parseClaudeSessionFile 解析单个 .jsonl 文件的首行，提取会话元数据
@@ -127,12 +252,41 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		firstNonEmpty  bool
 		foundFirstOp   bool
 		firstSessionID string
+		resolvedCwd    string
 	)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
+		}
+
+		if resolvedCwd == "" {
+			var cwdPayload struct {
+				SessionID string `json:"sessionId"`
+				Cwd       string `json:"cwd"`
+			}
+			if err := json.Unmarshal([]byte(line), &cwdPayload); err == nil {
+				if strings.TrimSpace(cwdPayload.Cwd) != "" {
+					if strings.TrimSpace(cwdPayload.SessionID) == "" || strings.TrimSpace(cwdPayload.SessionID) == sessionID {
+						resolvedCwd = normalizeNativeProjectPath(cwdPayload.Cwd)
+					}
+				}
+			}
+		}
+
+		var lastPrompt struct {
+			Type       string `json:"type"`
+			LastPrompt string `json:"lastPrompt"`
+			SessionID  string `json:"sessionId"`
+		}
+		if err := json.Unmarshal([]byte(line), &lastPrompt); err == nil {
+			if lastPrompt.Type == "last-prompt" && strings.TrimSpace(lastPrompt.SessionID) == sessionID {
+				if normalized := normalizeNativeTitle(lastPrompt.LastPrompt); normalized != "" {
+					title = normalized
+				}
+				continue
+			}
 		}
 
 		var op claudeQueueOp
@@ -160,13 +314,16 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		if !foundFirstOp {
 			foundFirstOp = true
 			firstSessionID = op.SessionID
-			if ts, err := time.Parse(time.RFC3339Nano, op.Timestamp); err == nil {
+		}
+
+		if ts, err := time.Parse(time.RFC3339Nano, op.Timestamp); err == nil {
+			if startedAt.IsZero() || ts.After(startedAt) {
 				startedAt = ts
 			}
 		}
 
-		if title == "" {
-			title = normalizeNativeTitle(op.Content)
+		if normalized := normalizeNativeTitle(op.Content); normalized != "" {
+			title = normalized
 		}
 	}
 	if scanner.Err() != nil {
@@ -179,11 +336,20 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 	return NativeSession{
 		ID:        firstSessionID,
 		AgentType: "claude",
-		Project:   projectPath,
-		Title:     ensureNativeTitle(title, projectPath, firstSessionID),
+		Project:   firstNonEmptyString(resolvedCwd, projectPath),
+		Title:     ensureNativeTitle(title, firstNonEmptyString(resolvedCwd, projectPath), firstSessionID),
 		StartedAt: startedAt,
 		InBridge:  bridgeNativeIDs[firstSessionID],
 	}, true
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // decodeProjectPath 将 Claude 项目目录名解码为实际路径

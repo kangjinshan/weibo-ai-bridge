@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/session"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNewCommandHandler(t *testing.T) {
@@ -76,11 +76,9 @@ func TestCommandHandler_Handle_List(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
-	assert.Contains(t, resp.Content, "Sessions:")
+	assert.Contains(t, resp.Content, "| 编号 | 标题 | 时间 |")
 	// 活跃 session 是 codex (session-2)，所以只显示 codex 的 session
-	assert.Contains(t, resp.Content, "id=session-2")
-	assert.Contains(t, resp.Content, "agent=codex")
-	assert.Contains(t, resp.Content, "active")
+	assert.Contains(t, resp.Content, "| 1 | 未命名会话（当前） |")
 }
 
 func TestCommandHandler_Handle_New(t *testing.T) {

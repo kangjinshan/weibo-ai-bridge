@@ -1,10 +1,12 @@
 package router
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,6 +21,19 @@ type NativeSession struct {
 	Title     string    // 首条用户消息（截断）
 	StartedAt time.Time // 创建时间
 	InBridge  bool      // 是否已被 bridge 管理
+}
+
+type codexSessionIndexEntry struct {
+	ID        string `json:"id"`
+	Thread    string `json:"thread_name"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type codexThreadRecord struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Cwd       string `json:"cwd"`
+	UpdatedAt int64  `json:"updated_at"`
 }
 
 // claudeQueueOp 是 Claude Code .jsonl 文件首行的 JSON 结构
@@ -103,51 +118,71 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 	}
 	defer f.Close()
 
-	// 只读取前 4KB
-	buf := make([]byte, 4096)
-	n, err := f.Read(buf)
-	if err != nil || n == 0 {
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	var (
+		startedAt      time.Time
+		title          string
+		firstNonEmpty  bool
+		foundFirstOp   bool
+		firstSessionID string
+	)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var op claudeQueueOp
+		if err := json.Unmarshal([]byte(line), &op); err != nil {
+			if !firstNonEmpty {
+				return NativeSession{}, false
+			}
+			continue
+		}
+
+		if !firstNonEmpty {
+			firstNonEmpty = true
+			if op.Type != "queue-operation" || strings.TrimSpace(op.SessionID) == "" {
+				return NativeSession{}, false
+			}
+		}
+
+		if op.Type != "queue-operation" || strings.TrimSpace(op.SessionID) == "" {
+			continue
+		}
+		if op.SessionID != sessionID {
+			continue
+		}
+
+		if !foundFirstOp {
+			foundFirstOp = true
+			firstSessionID = op.SessionID
+			if ts, err := time.Parse(time.RFC3339Nano, op.Timestamp); err == nil {
+				startedAt = ts
+			}
+		}
+
+		if title == "" {
+			title = normalizeNativeTitle(op.Content)
+		}
+	}
+	if scanner.Err() != nil {
 		return NativeSession{}, false
 	}
-
-	// 取第一行
-	content := string(buf[:n])
-	lineEnd := strings.Index(content, "\n")
-	var firstLine string
-	if lineEnd > 0 {
-		firstLine = content[:lineEnd]
-	} else {
-		firstLine = content
-	}
-
-	var op claudeQueueOp
-	if err := json.Unmarshal([]byte(firstLine), &op); err != nil {
+	if !foundFirstOp {
 		return NativeSession{}, false
-	}
-
-	if op.Type != "queue-operation" || op.SessionID == "" {
-		return NativeSession{}, false
-	}
-
-	// 解析时间戳
-	startedAt, err := time.Parse(time.RFC3339Nano, op.Timestamp)
-	if err != nil {
-		startedAt = time.Time{}
-	}
-
-	// 截断标题
-	title := strings.Join(strings.Fields(op.Content), " ")
-	if runes := []rune(title); len(runes) > 40 {
-		title = string(runes[:40]) + "..."
 	}
 
 	return NativeSession{
-		ID:        op.SessionID,
+		ID:        firstSessionID,
 		AgentType: "claude",
 		Project:   projectPath,
-		Title:     title,
+		Title:     ensureNativeTitle(title, projectPath, firstSessionID),
 		StartedAt: startedAt,
-		InBridge:  bridgeNativeIDs[op.SessionID],
+		InBridge:  bridgeNativeIDs[firstSessionID],
 	}, true
 }
 
@@ -229,7 +264,14 @@ func ListNativeCodexSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, 
 	if strings.TrimSpace(codexHome) == "" {
 		codexHome = filepath.Join(homeDir, ".codex")
 	}
+
+	// 优先读取 Codex 客户端自身的 thread 标题数据源，保证与客户端一致
+	if nativeFromDB, err := listCodexSessionsFromStateDB(codexHome, bridgeNativeIDs); err == nil && len(nativeFromDB) > 0 {
+		return nativeFromDB, nil
+	}
+
 	sessionsDir := filepath.Join(codexHome, "sessions")
+	threadNames, threadUpdatedAt := loadCodexSessionIndex(codexHome)
 
 	// Codex sessions 存储在 ~/.codex/sessions/YYYY/MM/DD/ 嵌套目录中，需要递归遍历
 	var sessions []NativeSession
@@ -246,6 +288,14 @@ func ListNativeCodexSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, 
 		if !ok {
 			return nil
 		}
+		if title, exists := threadNames[ns.ID]; exists {
+			if normalized := normalizeNativeTitle(title); normalized != "" {
+				ns.Title = normalized
+			}
+		}
+		if updatedAt, exists := threadUpdatedAt[ns.ID]; exists && !updatedAt.IsZero() {
+			ns.StartedAt = updatedAt
+		}
 		sessions = append(sessions, ns)
 		return nil
 	})
@@ -253,6 +303,7 @@ func ListNativeCodexSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, 
 		return nil, fmt.Errorf("cannot walk codex sessions directory: %w", err)
 	}
 
+	sessions = dedupeNativeSessionsByID(sessions)
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
 	})
@@ -264,6 +315,150 @@ func ListNativeCodexSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, 
 	return sessions, nil
 }
 
+func listCodexSessionsFromStateDB(codexHome string, bridgeNativeIDs map[string]bool) ([]NativeSession, error) {
+	dbPath := filepath.Join(codexHome, "state_5.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, nil
+	}
+
+	sqlitePath, err := exec.LookPath("sqlite3")
+	if err != nil {
+		return nil, nil
+	}
+
+	// 注意：这里读取 threads.title，和 Codex 客户端标题同源。
+	query := `SELECT json_object('id', id, 'title', title, 'cwd', cwd, 'updated_at', updated_at)
+FROM threads
+WHERE archived = 0
+ORDER BY updated_at DESC
+LIMIT 500;`
+
+	out, err := exec.Command(sqlitePath, dbPath, query).Output()
+	if err != nil {
+		return nil, err
+	}
+
+	records := parseCodexThreadRecordsJSONL(out)
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	natives := make([]NativeSession, 0, len(records))
+	for _, rec := range records {
+		id := strings.TrimSpace(rec.ID)
+		if id == "" {
+			continue
+		}
+
+		title := strings.TrimSpace(rec.Title)
+		if title == "" {
+			title = ensureNativeTitle("", rec.Cwd, id)
+		}
+
+		ts := time.Unix(rec.UpdatedAt, 0)
+		natives = append(natives, NativeSession{
+			ID:        id,
+			AgentType: "codex",
+			Project:   strings.TrimSpace(rec.Cwd),
+			Title:     title,
+			StartedAt: ts,
+			InBridge:  bridgeNativeIDs[id],
+		})
+	}
+
+	natives = dedupeNativeSessionsByID(natives)
+	sort.Slice(natives, func(i, j int) bool {
+		return natives[i].StartedAt.After(natives[j].StartedAt)
+	})
+	if len(natives) > maxNativeSessions {
+		natives = natives[:maxNativeSessions]
+	}
+
+	return natives, nil
+}
+
+func parseCodexThreadRecordsJSONL(data []byte) []codexThreadRecord {
+	lines := strings.Split(string(data), "\n")
+	records := make([]codexThreadRecord, 0, len(lines))
+
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+
+		var rec codexThreadRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		if strings.TrimSpace(rec.ID) == "" {
+			continue
+		}
+		records = append(records, rec)
+	}
+
+	return records
+}
+
+func dedupeNativeSessionsByID(sessions []NativeSession) []NativeSession {
+	if len(sessions) <= 1 {
+		return sessions
+	}
+
+	sort.SliceStable(sessions, func(i, j int) bool {
+		return sessions[i].StartedAt.After(sessions[j].StartedAt)
+	})
+
+	seen := make(map[string]struct{}, len(sessions))
+	deduped := make([]NativeSession, 0, len(sessions))
+	for _, s := range sessions {
+		if _, exists := seen[s.ID]; exists {
+			continue
+		}
+		seen[s.ID] = struct{}{}
+		deduped = append(deduped, s)
+	}
+
+	return deduped
+}
+
+func loadCodexSessionIndex(codexHome string) (map[string]string, map[string]time.Time) {
+	path := filepath.Join(codexHome, "session_index.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return map[string]string{}, map[string]time.Time{}
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	titles := make(map[string]string)
+	updatedAt := make(map[string]time.Time)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var entry codexSessionIndexEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		if normalized := normalizeNativeTitle(entry.Thread); normalized != "" {
+			titles[entry.ID] = normalized
+		}
+		if ts, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(entry.UpdatedAt)); err == nil {
+			updatedAt[entry.ID] = ts
+		}
+	}
+
+	return titles, updatedAt
+}
+
 // parseCodexSessionFile 解析单个 Codex .jsonl 文件，提取会话元数据
 func parseCodexSessionFile(filePath string, bridgeNativeIDs map[string]bool) (NativeSession, bool) {
 	f, err := os.Open(filePath)
@@ -272,22 +467,15 @@ func parseCodexSessionFile(filePath string, bridgeNativeIDs map[string]bool) (Na
 	}
 	defer f.Close()
 
-	// 读取前 16KB，需要多读一些来找到首条用户消息
-	buf := make([]byte, 16*1024)
-	n, err := f.Read(buf)
-	if err != nil || n == 0 {
-		return NativeSession{}, false
-	}
-
-	content := string(buf[:n])
-	lines := strings.Split(content, "\n")
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 128*1024), 8*1024*1024)
 
 	var meta codexSessionMeta
 	title := ""
 	var startedAt time.Time
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -315,10 +503,7 @@ func parseCodexSessionFile(filePath string, bridgeNativeIDs map[string]bool) (Na
 			if item.Type == "response_item" && item.Payload.Role == "user" {
 				for _, c := range item.Payload.Content {
 					if c.Type == "input_text" && strings.TrimSpace(c.Text) != "" {
-						title = strings.Join(strings.Fields(c.Text), " ")
-						if runes := []rune(title); len(runes) > 40 {
-							title = string(runes[:40]) + "..."
-						}
+						title = normalizeNativeTitle(c.Text)
 						break
 					}
 				}
@@ -327,6 +512,9 @@ func parseCodexSessionFile(filePath string, bridgeNativeIDs map[string]bool) (Na
 				}
 			}
 		}
+	}
+	if scanner.Err() != nil {
+		return NativeSession{}, false
 	}
 
 	if meta.Payload.ID == "" {
@@ -337,8 +525,43 @@ func parseCodexSessionFile(filePath string, bridgeNativeIDs map[string]bool) (Na
 		ID:        meta.Payload.ID,
 		AgentType: "codex",
 		Project:   meta.Payload.Cwd,
-		Title:     title,
+		Title:     ensureNativeTitle(title, meta.Payload.Cwd, meta.Payload.ID),
 		StartedAt: startedAt,
 		InBridge:  bridgeNativeIDs[meta.Payload.ID],
 	}, true
+}
+
+func normalizeNativeTitle(raw string) string {
+	title := strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+	if title == "" {
+		return ""
+	}
+
+	runes := []rune(title)
+	if len(runes) > 40 {
+		return string(runes[:40]) + "..."
+	}
+
+	return title
+}
+
+func fallbackNativeTitle(projectPath, sessionID string) string {
+	if base := strings.TrimSpace(filepath.Base(strings.TrimSpace(projectPath))); base != "" && base != "." && base != "/" {
+		return "会话@" + base
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		if len(sessionID) > 8 {
+			return "会话-" + sessionID[:8]
+		}
+		return "会话-" + sessionID
+	}
+	return "未命名会话"
+}
+
+func ensureNativeTitle(title, projectPath, sessionID string) string {
+	normalized := normalizeNativeTitle(title)
+	if normalized != "" {
+		return normalized
+	}
+	return fallbackNativeTitle(projectPath, sessionID)
 }

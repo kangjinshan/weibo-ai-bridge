@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/session"
@@ -208,81 +209,69 @@ func (h *CommandHandler) handleList(userID string) (*Response, error) {
 	}
 
 	activeSessionID := h.sessionManager.GetActiveSessionID(userID)
-	lines := []string{"Sessions:"}
+	type listRow struct {
+		Number string
+		Title  string
+		When   time.Time
+	}
+	rows := make([]listRow, 0, len(filtered))
+
 	for i, sess := range filtered {
-		marker := ""
-		if sess.ID == activeSessionID {
-			marker = ", active"
-		}
 		title := displaySessionTitle(sess)
-		nativeID := nativeSessionIDFromContext(sess.AgentType, sess.Context)
-		nativeTag := ""
-		if nativeID != "" {
-			short := nativeID
-			if len(short) > 12 {
-				short = short[:12] + "..."
-			}
-			nativeTag = fmt.Sprintf(", native=%s", short)
+		if sess.ID == activeSessionID {
+			title += "（当前）"
 		}
-		lines = append(lines, fmt.Sprintf(
-			"【%d】%s (id=%s, agent=%s, state=%s%s%s)",
-			i+1,
-			title,
-			sess.ID,
-			sess.AgentType,
-			sess.State,
-			nativeTag,
-			marker,
-		))
+
+		rows = append(rows, listRow{
+			Number: strconv.Itoa(i + 1),
+			Title:  title,
+			When:   sess.UpdatedAt,
+		})
 	}
 
 	// 追加原生会话（只显示当前活跃 agent 类型）
-		var allNative []NativeSession
-		if activeAgentType == "claude" || activeAgentType == "" {
-			if claudeNatives, err := ListNativeClaudeSessions(bridgeNativeIDs); err == nil {
-				allNative = append(allNative, claudeNatives...)
-			}
+	var allNative []NativeSession
+	if activeAgentType == "claude" || activeAgentType == "" {
+		if claudeNatives, err := ListNativeClaudeSessions(bridgeNativeIDs); err == nil {
+			allNative = append(allNative, claudeNatives...)
 		}
-		if activeAgentType == "codex" || activeAgentType == "" {
-			if codexNatives, err := ListNativeCodexSessions(bridgeNativeIDs); err == nil {
-				allNative = append(allNative, codexNatives...)
-			}
+	}
+	if activeAgentType == "codex" || activeAgentType == "" {
+		if codexNatives, err := ListNativeCodexSessions(bridgeNativeIDs); err == nil {
+			allNative = append(allNative, codexNatives...)
 		}
-		sort.Slice(allNative, func(i, j int) bool {
-			return allNative[i].StartedAt.After(allNative[j].StartedAt)
+	}
+
+	sort.Slice(allNative, func(i, j int) bool {
+		return allNative[i].StartedAt.After(allNative[j].StartedAt)
+	})
+	for i, ns := range allNative {
+		rows = append(rows, listRow{
+			Number: fmt.Sprintf("N%d", i+1),
+			Title:  nativeListTitle(ns),
+			When:   ns.StartedAt,
 		})
-		if len(allNative) > 0 {
-			lines = append(lines, "", "Native Sessions:")
-			for i, ns := range allNative {
-				short := ns.ID
-				if len(short) > 12 {
-					short = short[:12] + "..."
-				}
-				bridgeTag := ""
-				if ns.InBridge {
-					bridgeTag = " [in bridge]"
-				}
-				timeStr := ""
-				if !ns.StartedAt.IsZero() {
-					timeStr = ns.StartedAt.Format("01-02 15:04")
-				}
-				cwd := ns.Project
-				if cwd != "" {
-					if len(cwd) > 30 {
-						cwd = "..." + cwd[len(cwd)-27:]
-					}
-				}
-				lines = append(lines, fmt.Sprintf(
-					"【N%d】%s (native=%s, cwd=%s, %s)%s",
-					i+1,
-					ns.Title,
-					short,
-					cwd,
-					timeStr,
-					bridgeTag,
-				))
-			}
-		}
+	}
+
+	if len(rows) == 0 {
+		return &Response{
+			Success: false,
+			Content: "No sessions found. Use /new to create a new session.",
+		}, nil
+	}
+
+	lines := []string{
+		"| 编号 | 标题 | 时间 |",
+		"| --- | --- | --- |",
+	}
+	for _, row := range rows {
+		lines = append(lines, fmt.Sprintf(
+			"| %s | %s | %s |",
+			escapeMarkdownTableCell(row.Number),
+			escapeMarkdownTableCell(row.Title),
+			escapeMarkdownTableCell(formatListTime(row.When)),
+		))
+	}
 
 	return &Response{
 		Success: true,
@@ -492,6 +481,32 @@ func displaySessionTitle(sess *session.Session) string {
 	return "未命名会话"
 }
 
+func nativeListTitle(ns NativeSession) string {
+	title := strings.TrimSpace(ns.Title)
+	if title == "" {
+		title = "未命名原生会话"
+	}
+	if ns.InBridge {
+		title += "（已关联）"
+	}
+	return title
+}
+
+func formatListTime(ts time.Time) string {
+	if ts.IsZero() {
+		return "-"
+	}
+	return ts.Local().Format("01-02 15:04")
+}
+
+func escapeMarkdownTableCell(v string) string {
+	v = strings.Join(strings.Fields(strings.TrimSpace(v)), " ")
+	if v == "" {
+		return "-"
+	}
+	return strings.ReplaceAll(v, "|", "\\|")
+}
+
 func nativeSessionIDFromContext(agentType string, ctx map[string]interface{}) string {
 	if ctx == nil {
 		return ""
@@ -679,5 +694,3 @@ Total Sessions: %d`,
 		Content: statusText,
 	}, nil
 }
-
-

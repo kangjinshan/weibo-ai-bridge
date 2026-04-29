@@ -286,13 +286,17 @@ scripts/service.sh logs
 - 服务进程通过 `CONFIG_PATH` 读取 TOML，并按现有逻辑自动尝试加载 `.env`
 - 模板文件位于 `deploy/weibo-ai-bridge.service.tmpl` 与 `deploy/com.weibo-ai-bridge.plist.tmpl`
 
-### 安装内置微博 Skills
+### 重装/修复内置微博 Skills（`install.sh` 已自动安装）
 
 ```bash
 bash scripts/install-skills.sh
 ```
 
-安装到 `~/.codex/skills/weibo-skill-api` 和 `~/.claude/skills/weibo-skill-api`，自动复用 bridge 的微博配置与 token 缓存。
+`scripts/install.sh` 在安装 `weibo-ai-bridge` 时会自动安装内置 skills 到：
+- `~/.codex/skills/weibo-skill-api`
+- `~/.claude/skills/weibo-skill-api`
+
+上面的命令用于手动重装/修复，仍会自动复用 bridge 的微博配置与 token 缓存。
 
 ## 微博凭证获取
 

@@ -25,6 +25,7 @@ CONFIG_FILE="${CONFIG_DIR}/config.toml"
 SKILL_NAME="weibo-skill-api"
 TARGET_USER="${SUDO_USER:-${USER}}"
 TARGET_HOME=""
+SKILLS_INSTALL_NOTE="未执行"
 OS_NAME="$(uname -s)"
 
 # 日志函数
@@ -266,23 +267,60 @@ create_service() {
 }
 
 install_user_skills() {
+    local skill_installer="${INSTALL_DIR}/scripts/install-skills.sh"
+
     if [[ -z "${TARGET_USER}" || -z "${TARGET_HOME}" ]]; then
         log_warning "无法解析目标用户，跳过 Codex/Claude skill 安装"
+        SKILLS_INSTALL_NOTE="未安装（无法解析目标用户）"
         return
     fi
 
-    if [[ ! -x "${INSTALL_DIR}/scripts/install-skills.sh" ]]; then
+    if [[ ! -x "${skill_installer}" ]]; then
         log_warning "未找到 skill 安装脚本，跳过 Codex/Claude skill 安装"
+        SKILLS_INSTALL_NOTE="未安装（缺少安装脚本）"
         return
     fi
 
     log_info "为用户 ${TARGET_USER} 安装 Codex/Claude 微博 skills..."
-    su - "${TARGET_USER}" -c "${INSTALL_DIR}/scripts/install-skills.sh --repo-root ${INSTALL_DIR} --user-home ${TARGET_HOME}" || {
-        log_warning "Codex/Claude skill 安装失败，请手动运行: ${INSTALL_DIR}/scripts/install-skills.sh --repo-root ${INSTALL_DIR} --user-home ${TARGET_HOME}"
-        return
-    }
 
-    log_success "Codex/Claude 微博 skills 安装完成"
+    if command -v runuser &> /dev/null; then
+        if runuser -u "${TARGET_USER}" -- "${skill_installer}" --repo-root "${INSTALL_DIR}" --user-home "${TARGET_HOME}"; then
+            log_success "Codex/Claude 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+            return
+        fi
+    fi
+
+    if command -v sudo &> /dev/null; then
+        if sudo -u "${TARGET_USER}" "${skill_installer}" --repo-root "${INSTALL_DIR}" --user-home "${TARGET_HOME}"; then
+            log_success "Codex/Claude 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+            return
+        fi
+    fi
+
+    if command -v su &> /dev/null; then
+        if su - "${TARGET_USER}" -c "'${skill_installer}' --repo-root '${INSTALL_DIR}' --user-home '${TARGET_HOME}'"; then
+            log_success "Codex/Claude 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+            return
+        fi
+    fi
+
+    log_warning "使用目标用户安装 skills 失败，尝试回退为 root 安装后修正权限..."
+    if "${skill_installer}" --repo-root "${INSTALL_DIR}" --user-home "${TARGET_HOME}"; then
+        local target_group
+        target_group="$(id -gn "${TARGET_USER}" 2>/dev/null || echo "${TARGET_USER}")"
+        chown -R "${TARGET_USER}:${target_group}" \
+            "${TARGET_HOME}/.codex/skills/${SKILL_NAME}" \
+            "${TARGET_HOME}/.claude/skills/${SKILL_NAME}" 2>/dev/null || true
+        log_success "Codex/Claude 微博 skills 安装完成（root 回退）"
+        SKILLS_INSTALL_NOTE="已安装（root 回退）：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+        return
+    fi
+
+    SKILLS_INSTALL_NOTE="未安装（自动安装失败）"
+    log_warning "Codex/Claude skill 自动安装失败，请手动运行: ${skill_installer} --repo-root ${INSTALL_DIR} --user-home ${TARGET_HOME}"
 }
 
 # 清理临时文件
@@ -304,7 +342,7 @@ show_completion() {
     log_info "安装位置: ${INSTALL_DIR}"
     log_info "配置文件: ${CONFIG_FILE}"
     log_info "日志目录: /var/log/${PROJECT_NAME}"
-    log_info "已安装微博 skills: ${TARGET_HOME}/.codex/skills/${SKILL_NAME} 和 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+    log_info "微博 skills 状态: ${SKILLS_INSTALL_NOTE}"
     echo ""
     log_warning "下一步操作："
     echo "  1. 运行配置向导: ${INSTALL_DIR}/scripts/setup.sh"

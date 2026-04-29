@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/joho/godotenv"
 )
 
 // Config 应用配置
@@ -81,8 +82,10 @@ func defaultSessionStoragePath() string {
 func Load() *Config {
 	cfg := defaultConfig()
 
+	configPath := preloadEnvFiles()
+
 	// 从配置文件加载
-	if _, err := toml.DecodeFile(resolveConfigPath(), cfg); err == nil {
+	if _, err := toml.DecodeFile(configPath, cfg); err == nil {
 		// 配置文件加载成功，继续使用
 	}
 
@@ -135,6 +138,29 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+func preloadEnvFiles() string {
+	loadEnvFile(".env")
+
+	configPath := resolveConfigPath()
+	configDirEnvFile := filepath.Join(filepath.Dir(configPath), ".env")
+	loadEnvFile(configDirEnvFile)
+
+	return configPath
+}
+
+func loadEnvFile(path string) {
+	if path == "" {
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return
+	}
+
+	_ = godotenv.Load(path)
 }
 
 func resolveConfigPath() string {

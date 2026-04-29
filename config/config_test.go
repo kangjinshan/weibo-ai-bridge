@@ -111,3 +111,83 @@ func TestLoad_SessionStoragePathEnvOverride(t *testing.T) {
 
 	assert.Equal(t, "/tmp/custom-weibo-ai-bridge-sessions", cfg.Session.StoragePath)
 }
+
+func TestLoad_ReadsDotEnvWhenConfigMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, ".env")
+	envContent := "WEIBO_APP_ID=dot-env-app-id\nWEIBO_APP_SECRET=dot-env-app-secret\nCLAUDE_ENABLED=true\nCODEX_ENABLED=false\n"
+	err := os.WriteFile(envFile, []byte(envContent), 0644)
+	assert.NoError(t, err)
+
+	withWorkingDir(t, tmpDir)
+	withUnsetEnv(t, "WEIBO_APP_ID", "WEIBO_APP_SECRET", "WEIBO_APP_Secret", "CLAUDE_ENABLED", "CODEX_ENABLED")
+	t.Setenv("CONFIG_PATH", filepath.Join(tmpDir, "missing-config.toml"))
+
+	cfg := Load()
+
+	assert.Equal(t, "dot-env-app-id", cfg.Platform.Weibo.AppID)
+	assert.Equal(t, "dot-env-app-secret", cfg.Platform.Weibo.Appsecret)
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestLoad_DotEnvDoesNotOverrideSystemEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, ".env")
+	envContent := "WEIBO_APP_ID=dot-env-app-id\nWEIBO_APP_SECRET=dot-env-app-secret\n"
+	err := os.WriteFile(envFile, []byte(envContent), 0644)
+	assert.NoError(t, err)
+
+	withWorkingDir(t, tmpDir)
+	t.Setenv("CONFIG_PATH", filepath.Join(tmpDir, "missing-config.toml"))
+	t.Setenv("WEIBO_APP_ID", "system-env-app-id")
+	withUnsetEnv(t, "WEIBO_APP_SECRET", "WEIBO_APP_Secret")
+
+	cfg := Load()
+
+	assert.Equal(t, "system-env-app-id", cfg.Platform.Weibo.AppID)
+	assert.Equal(t, "dot-env-app-secret", cfg.Platform.Weibo.Appsecret)
+}
+
+func withWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(cwd)
+	})
+}
+
+func withUnsetEnv(t *testing.T, keys ...string) {
+	t.Helper()
+
+	type envValue struct {
+		value string
+		ok    bool
+	}
+	oldValues := make(map[string]envValue, len(keys))
+
+	for _, key := range keys {
+		value, ok := os.LookupEnv(key)
+		oldValues[key] = envValue{value: value, ok: ok}
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unsetenv %s failed: %v", key, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		for _, key := range keys {
+			old := oldValues[key]
+			if old.ok {
+				_ = os.Setenv(key, old.value)
+				continue
+			}
+			_ = os.Unsetenv(key)
+		}
+	})
+}

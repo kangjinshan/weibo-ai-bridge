@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -230,26 +231,26 @@ func ListNativeCodexSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, 
 	}
 	sessionsDir := filepath.Join(codexHome, "sessions")
 
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("cannot read codex sessions directory: %w", err)
-	}
-
+	// Codex sessions 存储在 ~/.codex/sessions/YYYY/MM/DD/ 嵌套目录中，需要递归遍历
 	var sessions []NativeSession
 
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
-			continue
+	err = filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() || filepath.Ext(d.Name()) != ".jsonl" {
+			return nil
 		}
 
-		ns, ok := parseCodexSessionFile(filepath.Join(sessionsDir, entry.Name()), bridgeNativeIDs)
+		ns, ok := parseCodexSessionFile(path, bridgeNativeIDs)
 		if !ok {
-			continue
+			return nil
 		}
 		sessions = append(sessions, ns)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cannot walk codex sessions directory: %w", err)
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {

@@ -170,27 +170,11 @@ func (c *codexAppServerClient) initialize(pending *[]map[string]any) error {
 func (c *codexAppServerClient) startOrResumeThread(session *codexSession, pending *[]map[string]any, model string) (string, error) {
 	reqID := "thread"
 	method := "thread/start"
-	params := map[string]any{
-		"approvalPolicy":         "never",
-		"sandbox":                "danger-full-access",
-		"persistExtendedHistory": false,
-		"experimentalRawEvents":  false,
-	}
-
-	if model = strings.TrimSpace(model); model != "" {
-		params["model"] = model
-	}
+	params := buildCodexThreadStartParams("never", "danger-full-access", model, false)
 
 	if threadID := session.CurrentSessionID(); threadID != "" {
 		method = "thread/resume"
-		params = map[string]any{
-			"threadId":       threadID,
-			"approvalPolicy": "never",
-			"sandbox":        "danger-full-access",
-		}
-		if model != "" {
-			params["model"] = model
-		}
+		params = buildCodexThreadResumeParams(threadID)
 	}
 
 	if err := c.sendJSON(map[string]any{
@@ -331,9 +315,21 @@ func (c *codexAppServerClient) streamEvents(ctx context.Context, session *codexS
 	}
 }
 
-func parseCodexAppServerMessage(session *codexSession, msg map[string]any, deltaSeen map[string]bool) []Event {
+type codexThreadSession interface {
+	CurrentSessionID() string
+	SetCurrentSessionID(threadID string) bool
+}
+
+func parseCodexAppServerMessage(session codexThreadSession, msg map[string]any, deltaSeen map[string]bool) []Event {
 	method, _ := msg["method"].(string)
 	params, _ := msg["params"].(map[string]any)
+	events := make([]Event, 0, 2)
+
+	if session != nil {
+		if threadID, _ := params["threadId"].(string); strings.TrimSpace(threadID) != "" && session.SetCurrentSessionID(threadID) {
+			events = append(events, Event{Type: EventTypeSession, SessionID: strings.TrimSpace(threadID)})
+		}
+	}
 
 	switch method {
 	case "item/agentMessage/delta":
@@ -343,31 +339,34 @@ func parseCodexAppServerMessage(session *codexSession, msg map[string]any, delta
 			deltaSeen[itemID] = true
 		}
 		if delta == "" {
-			return nil
+			return events
 		}
-		return []Event{{Type: EventTypeDelta, Content: delta}}
+		events = append(events, Event{Type: EventTypeDelta, Content: delta})
+		return events
 
 	case "item/completed":
 		item, _ := params["item"].(map[string]any)
 		itemType, _ := item["type"].(string)
 		if itemType != "agentMessage" {
-			return nil
+			return events
 		}
 		itemID, _ := item["id"].(string)
 		text, _ := item["text"].(string)
 		if itemID != "" && deltaSeen[itemID] {
-			return nil
+			return events
 		}
 		if text == "" {
-			return nil
+			return events
 		}
-		return []Event{{Type: EventTypeMessage, Content: text}}
+		events = append(events, Event{Type: EventTypeMessage, Content: text})
+		return events
 
 	case "turn/completed":
-		return []Event{{Type: EventTypeDone}}
+		events = append(events, Event{Type: EventTypeDone})
+		return events
 	}
 
-	return nil
+	return events
 }
 
 func extractRPCError(errObj map[string]any) string {

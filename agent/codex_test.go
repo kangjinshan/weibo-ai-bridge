@@ -11,6 +11,19 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestBuildCodexThreadResumeParams_UsesMinimalResumePayload(t *testing.T) {
+	params := buildCodexThreadResumeParams("thread-123")
+
+	expected := map[string]any{
+		"threadId":               "thread-123",
+		"persistExtendedHistory": true,
+	}
+
+	if !reflect.DeepEqual(params, expected) {
+		t.Fatalf("unexpected params: got %#v want %#v", params, expected)
+	}
+}
+
 func TestCodeXAgent_Name(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 	if agent.Name() != "codex" {
@@ -208,6 +221,7 @@ func TestJoinNonEmpty(t *testing.T) {
 
 func TestParseCodexAppServerMessage_Delta(t *testing.T) {
 	session := &codexSession{}
+	session.threadID.Store("thread-1")
 	deltaSeen := make(map[string]bool)
 
 	events := parseCodexAppServerMessage(session, map[string]any{
@@ -228,8 +242,54 @@ func TestParseCodexAppServerMessage_Delta(t *testing.T) {
 	}
 }
 
+func TestParseCodexAppServerMessage_UpdatesThreadIDFromNotifications(t *testing.T) {
+	session := &codexSession{}
+	session.threadID.Store("thread-old")
+	deltaSeen := make(map[string]bool)
+
+	events := parseCodexAppServerMessage(session, map[string]any{
+		"method": "turn/started",
+		"params": map[string]any{
+			"threadId": "thread-new",
+			"turnId":   "turn-1",
+		},
+	}, deltaSeen)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d (%+v)", len(events), events)
+	}
+	if events[0].Type != EventTypeSession || events[0].SessionID != "thread-new" {
+		t.Fatalf("unexpected session event: %+v", events[0])
+	}
+	if got := session.CurrentSessionID(); got != "thread-new" {
+		t.Fatalf("unexpected session id: got %q want %q", got, "thread-new")
+	}
+}
+
+func TestParseCodexAppServerMessage_DoesNotEmitSessionEventWhenThreadUnchanged(t *testing.T) {
+	session := &codexSession{}
+	session.threadID.Store("thread-same")
+	deltaSeen := make(map[string]bool)
+
+	events := parseCodexAppServerMessage(session, map[string]any{
+		"method": "turn/started",
+		"params": map[string]any{
+			"threadId": "thread-same",
+			"turnId":   "turn-1",
+		},
+	}, deltaSeen)
+
+	if len(events) != 0 {
+		t.Fatalf("expected no events, got %+v", events)
+	}
+	if got := session.CurrentSessionID(); got != "thread-same" {
+		t.Fatalf("unexpected session id: got %q want %q", got, "thread-same")
+	}
+}
+
 func TestParseCodexAppServerMessage_FinalMessageSkippedAfterDelta(t *testing.T) {
 	session := &codexSession{}
+	session.threadID.Store("thread-1")
 	deltaSeen := map[string]bool{"msg-1": true}
 
 	events := parseCodexAppServerMessage(session, map[string]any{
@@ -252,6 +312,7 @@ func TestParseCodexAppServerMessage_FinalMessageSkippedAfterDelta(t *testing.T) 
 
 func TestParseCodexAppServerMessage_FinalMessageWithoutDelta(t *testing.T) {
 	session := &codexSession{}
+	session.threadID.Store("thread-1")
 	deltaSeen := make(map[string]bool)
 
 	events := parseCodexAppServerMessage(session, map[string]any{

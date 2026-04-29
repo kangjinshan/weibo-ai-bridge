@@ -115,6 +115,7 @@
 - WebSocket 连接需要设置合理的读超时：微博平台 60 秒，Codex app-server 5 分钟
 - 如果流式正文连续 5 秒没有实际输出，下一次恢复输出前应补一个换行，避免微博侧长段回复缺少视觉分隔
 - 对 Codex interactive session，`turn/completed` 之后紧跟着出现的 EOF 或 `websocket close 1006` 应按正常收尾处理，不应回给用户 `AI execution failed`
+- Codex `thread/resume` 续接已存在本地线程时，应避免覆盖原线程策略参数（如 approval/sandbox/model）；优先使用最小续接参数并同步事件里的 `threadId` 变化，避免“看似续接但实际分叉新线程”
 - `skills/weibo-skill-api` 默认应复用 `weibo-ai-bridge` 的微博配置与 token 缓存，不要重新引入单独的 `~/.weibo-skill/config.json`
 - Router 的 `Handle` 主入口已统一走流式路径（`streamRouterMessage`），`handleAIMessage` 作为私有方法仍存在但不再作为入口被调用；Agent 接口仍保留 `Execute`（非流式）方法，但主流程只走 `ExecuteStream` 和 `InteractiveSession`
 

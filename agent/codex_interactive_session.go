@@ -209,6 +209,20 @@ func (s *codexInteractiveSession) CurrentSessionID() string {
 	return v
 }
 
+func (s *codexInteractiveSession) SetCurrentSessionID(threadID string) bool {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return false
+	}
+
+	if s.CurrentSessionID() == threadID {
+		return false
+	}
+
+	s.threadID.Store(threadID)
+	return true
+}
+
 func (s *codexInteractiveSession) Close() error {
 	if !s.alive.Swap(false) {
 		return nil
@@ -248,27 +262,12 @@ func (s *codexInteractiveSession) initialize() error {
 
 func (s *codexInteractiveSession) ensureThread(model string) error {
 	method := "thread/start"
-	params := map[string]any{
-		"approvalPolicy":         "on-request",
-		"sandbox":                "danger-full-access",
-		"persistExtendedHistory": false,
-		"experimentalRawEvents":  false,
-	}
-
-	if strings.TrimSpace(model) != "" {
-		params["model"] = strings.TrimSpace(model)
-	}
+	params := buildCodexThreadStartParams("on-request", "danger-full-access", model, false)
 
 	if threadID := s.CurrentSessionID(); threadID != "" {
 		method = "thread/resume"
-		params = map[string]any{
-			"threadId":       threadID,
-			"approvalPolicy": "on-request",
-			"sandbox":        "danger-full-access",
-		}
-		if strings.TrimSpace(model) != "" {
-			params["model"] = strings.TrimSpace(model)
-		}
+		// 续接原生会话时不覆盖策略参数，避免将本地线程无意分叉为新线程。
+		params = buildCodexThreadResumeParams(threadID)
 	}
 
 	resp, err := s.requestWithID("thread", method, params)
@@ -385,7 +384,7 @@ func (s *codexInteractiveSession) readLoop() {
 		}
 
 		s.deltaSeenMu.Lock()
-		events := parseCodexAppServerMessage(nil, msg, s.deltaSeen)
+		events := parseCodexAppServerMessage(s, msg, s.deltaSeen)
 		s.deltaSeenMu.Unlock()
 
 		for _, event := range events {

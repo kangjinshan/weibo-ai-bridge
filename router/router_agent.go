@@ -34,7 +34,8 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 		}, nil
 	}
 
-	response, err := currentAgent.Execute(ctx, agentSessionID, msg.Content)
+	execCtx := agent.WithWorkDir(ctx, sessionWorkDir(sess))
+	response, err := currentAgent.Execute(execCtx, agentSessionID, msg.Content)
 	if err != nil {
 		return &Response{
 			Success: false,
@@ -67,12 +68,13 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 	if err != nil {
 		return err
 	}
+	execCtx := agent.WithWorkDir(ctx, sessionWorkDir(sess))
 
 	if interactiveAgent, ok := currentAgent.(agent.InteractiveAgent); ok {
-		return r.streamInteractiveAIMessage(ctx, msg, sess, sessionKey, agentSessionID, interactiveAgent, events)
+		return r.streamInteractiveAIMessage(execCtx, msg, sess, sessionKey, agentSessionID, interactiveAgent, events)
 	}
 
-	stream, err := currentAgent.ExecuteStream(ctx, agentSessionID, msg.Content)
+	stream, err := currentAgent.ExecuteStream(execCtx, agentSessionID, msg.Content)
 	if err != nil {
 		return err
 	}
@@ -148,6 +150,16 @@ func mapAgentName(agentName string) string {
 	default:
 		return agentName
 	}
+}
+
+func sessionWorkDir(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	if workDir, ok := sess.Context["work_dir"].(string); ok {
+		return strings.TrimSpace(workDir)
+	}
+	return ""
 }
 
 func agentSessionContextKey(agentType string) string {

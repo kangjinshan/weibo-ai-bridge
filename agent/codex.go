@@ -190,6 +190,9 @@ func (a *CodeXAgent) buildCommand(ctx context.Context, session *codexSession, in
 	}
 
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	if workDir := WorkDirFromContext(ctx); workDir != "" {
+		cmd.Dir = workDir
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 
 	return cmd

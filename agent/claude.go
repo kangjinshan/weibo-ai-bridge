@@ -83,6 +83,9 @@ func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, i
 	}
 
 	cmd := exec.CommandContext(ctx, command, a.buildStreamArgs(sessionID, input)...)
+	if workDir := WorkDirFromContext(ctx); workDir != "" {
+		cmd.Dir = workDir
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

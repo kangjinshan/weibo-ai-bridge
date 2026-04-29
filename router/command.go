@@ -82,7 +82,7 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 	case "/model":
 		return h.handleModel(msg.UserID, msg.SessionID, args)
 	case "/dir":
-		return h.handleDir(msg.UserID, msg.SessionID)
+		return h.handleDir(msg.UserID, msg.SessionID, args)
 	case "/status":
 		return h.handleStatus(msg.UserID, msg.SessionID)
 	default:
@@ -105,7 +105,7 @@ func (h *CommandHandler) handleHelp() (*Response, error) {
 /codex - 等价于 /switch codex（大小写不敏感）
 /btw [content] - 向当前正在进行的交互会话插入一条补充消息
 /model - 显示当前使用的模型
-/dir - 显示当前工作目录
+/dir [path] - 显示或设置当前工作目录
 /status - 显示当前会话状态`
 	return &Response{
 		Success: true,
@@ -756,7 +756,7 @@ func (h *CommandHandler) handleModel(userID, sessionID string, args []string) (*
 }
 
 // handleDir 处理显示目录命令
-func (h *CommandHandler) handleDir(userID, sessionID string) (*Response, error) {
+func (h *CommandHandler) handleDir(userID, sessionID string, args []string) (*Response, error) {
 	// 获取会话
 	sess, exists := h.sessionManager.Get(sessionID)
 	if !exists {
@@ -766,19 +766,129 @@ func (h *CommandHandler) handleDir(userID, sessionID string) (*Response, error) 
 		}, nil
 	}
 
-	// 从会话上下文中获取工作目录
-	workDir, ok := sess.Context["work_dir"].(string)
-	if !ok {
+	if len(args) > 0 {
+		targetDir := strings.TrimSpace(strings.Join(args, " "))
+		normalizedDir, err := normalizeWorkDirPath(targetDir)
+		if err != nil {
+			return &Response{
+				Success: false,
+				Content: fmt.Sprintf("Invalid working directory: %v", err),
+			}, nil
+		}
+		h.sessionManager.UpdateSession(sess.ID, "work_dir", normalizedDir)
+		return &Response{
+			Success: true,
+			Content: fmt.Sprintf("Working directory updated: %s", normalizedDir),
+		}, nil
+	}
+
+	workDir := strings.TrimSpace(resolveSessionWorkDir(sess))
+	if workDir == "" {
 		return &Response{
 			Success: false,
 			Content: "No working directory set for this session.",
 		}, nil
 	}
 
+	h.sessionManager.UpdateSession(sess.ID, "work_dir", workDir)
+
 	return &Response{
 		Success: true,
 		Content: fmt.Sprintf("Current working directory: %s", workDir),
 	}, nil
+}
+
+func resolveSessionWorkDir(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+
+	if workDir, ok := sess.Context["work_dir"].(string); ok {
+		if normalized := strings.TrimSpace(workDir); normalized != "" {
+			return normalized
+		}
+	}
+
+	nativeID := strings.TrimSpace(nativeSessionIDFromContext(sess.AgentType, sess.Context))
+	if nativeID == "" && !strings.HasPrefix(strings.TrimSpace(sess.ID), pendingNativeSessionPrefix) {
+		nativeID = strings.TrimSpace(sess.ID)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(sess.AgentType)) {
+	case "claude":
+		if resolved := resolveClaudeProjectPathBySessionID(nativeID); resolved != "" {
+			return resolved
+		}
+	case "codex":
+		if resolved := resolveCodexProjectPathByThreadID(nativeID); resolved != "" {
+			return resolved
+		}
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		if absCwd, err := filepath.Abs(cwd); err == nil {
+			return strings.TrimSpace(absCwd)
+		}
+		return strings.TrimSpace(cwd)
+	}
+
+	return ""
+}
+
+func resolveCodexProjectPathByThreadID(threadID string) string {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ""
+	}
+
+	natives, err := ListNativeCodexSessions(map[string]bool{})
+	if err != nil {
+		return ""
+	}
+	for _, ns := range natives {
+		if strings.TrimSpace(ns.ID) != threadID {
+			continue
+		}
+		if normalized := normalizeNativeProjectPath(ns.Project); normalized != "" {
+			return normalized
+		}
+		break
+	}
+	return ""
+}
+
+func normalizeWorkDirPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+
+	if strings.HasPrefix(path, "~") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if path == "~" {
+			path = homeDir
+		} else if strings.HasPrefix(path, "~/") {
+			path = filepath.Join(homeDir, path[2:])
+		}
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	stat, err := os.Stat(absPath)
+	if err != nil {
+		return "", err
+	}
+	if !stat.IsDir() {
+		return "", fmt.Errorf("not a directory")
+	}
+
+	return absPath, nil
 }
 
 // handleStatus 处理显示状态命令

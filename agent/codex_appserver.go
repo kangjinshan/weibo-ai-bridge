@@ -47,6 +47,9 @@ func (a *CodeXAgent) executeViaAppServer(ctx context.Context, session *codexSess
 
 	args := []string{"app-server", "--listen", wsURL}
 	client.cmd = exec.CommandContext(childCtx, "codex", args...)
+	if workDir := WorkDirFromContext(ctx); workDir != "" {
+		client.cmd.Dir = workDir
+	}
 	client.cmd.Stdout = &client.stdout
 	client.cmd.Stderr = &client.stderr
 

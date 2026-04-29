@@ -197,8 +197,22 @@ func (r *Router) emitCommandEvents(events chan<- agent.Event, msg *Message) {
 	if resp.Content != "" {
 		events <- agent.Event{Type: agent.EventTypeMessage, Content: resp.Content}
 	}
+	if resp.Success && isDirSetCommand(msg.Content) {
+		sessionID := strings.TrimSpace(msg.SessionID)
+		if sessionID == "" && r.sessionMgr != nil {
+			sessionID = strings.TrimSpace(r.sessionMgr.GetActiveSessionID(msg.UserID))
+		}
+		if sessionID != "" {
+			r.removeInteractiveSession(sessionID)
+		}
+	}
 	if !resp.Success && resp.Error != nil {
 		events <- agent.Event{Type: agent.EventTypeError, Error: resp.Error.Error()}
 	}
 	events <- agent.Event{Type: agent.EventTypeDone}
+}
+
+func isDirSetCommand(content string) bool {
+	fields := strings.Fields(strings.TrimSpace(content))
+	return len(fields) > 1 && strings.EqualFold(fields[0], "/dir")
 }

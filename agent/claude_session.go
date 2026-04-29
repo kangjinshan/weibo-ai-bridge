@@ -46,6 +46,9 @@ func (a *ClaudeCodeAgent) StartSession(ctx context.Context, sessionID string) (I
 
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, command, a.buildInteractiveArgs(sessionID)...)
+	if workDir := WorkDirFromContext(ctx); workDir != "" {
+		cmd.Dir = workDir
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

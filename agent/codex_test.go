@@ -96,6 +96,18 @@ func TestCodeXAgent_buildCommand_ResumeSession(t *testing.T) {
 	}
 }
 
+func TestCodeXAgent_buildCommand_UsesWorkDirFromContext(t *testing.T) {
+	agent := NewCodeXAgent("")
+	workDir := t.TempDir()
+	ctx := WithWorkDir(context.Background(), workDir)
+
+	cmd := agent.buildCommand(ctx, &codexSession{}, "hello")
+
+	if cmd.Dir != workDir {
+		t.Fatalf("unexpected cmd dir: got %q want %q", cmd.Dir, workDir)
+	}
+}
+
 func TestCodeXAgent_streamCodexOutput_CurrentJSONL(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 	session := &codexSession{}

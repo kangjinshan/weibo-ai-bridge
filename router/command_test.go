@@ -924,6 +924,96 @@ func TestCommandHandler_Handle_Dir(t *testing.T) {
 	assert.Contains(t, resp.Content, "/home/user/project")
 }
 
+func TestCommandHandler_Handle_Dir_SetPath(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	workDir := t.TempDir()
+	msg := &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "/dir " + workDir,
+		UserID:    "user-1",
+		SessionID: "session-1",
+	}
+
+	resp, err := handler.Handle(msg)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, workDir)
+	assert.Equal(t, workDir, sess.Context["work_dir"])
+}
+
+func TestCommandHandler_Handle_Dir_SetPath_Invalid(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	msg := &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "/dir /path/not/exist",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	}
+
+	resp, err := handler.Handle(msg)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Content, "Invalid working directory")
+}
+
+func TestCommandHandler_Handle_Dir_FallsBackToProcessCwdWhenUnset(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "codex")
+	assert.NotNil(t, sess)
+
+	msg := &Message{
+		ID:        "msg-1",
+		Type:      TypeText,
+		Content:   "/dir",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	}
+
+	resp, err := handler.Handle(msg)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+
+	cwd, cwdErr := os.Getwd()
+	assert.NoError(t, cwdErr)
+	assert.Contains(t, resp.Content, cwd)
+
+	workDir, ok := sess.Context["work_dir"].(string)
+	assert.True(t, ok)
+	assert.Equal(t, cwd, workDir)
+}
+
 func TestCommandHandler_Handle_Status(t *testing.T) {
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,

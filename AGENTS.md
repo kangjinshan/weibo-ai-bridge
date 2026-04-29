@@ -131,7 +131,7 @@
 - `/list`（仅展示 native 会话列表）
 - `/switch [index|claude|codex]`
 - `/model`
-- `/dir`
+- `/dir [path]`（不传参数显示当前目录；传 `path` 时设置当前会话目录）
 - `/status`
 - `/btw <content>`（实际在 `router_core.go` 和 `router_bytheway.go` 中处理，不走 command.go）
 

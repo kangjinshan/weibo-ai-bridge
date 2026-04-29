@@ -411,6 +411,49 @@ func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
 	assert.Equal(t, true, platform.replies[3]["done"])
 }
 
+func TestHandleMessage_PassesSessionWorkDirToAgentContext(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+
+	var gotWorkDir string
+	mockAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			gotWorkDir = agent.WorkDirFromContext(ctx)
+			events := make(chan agent.Event, 2)
+			events <- agent.Event{Type: agent.EventTypeMessage, Content: "ok"}
+			events <- agent.Event{Type: agent.EventTypeDone}
+			close(events)
+			return events, nil
+		},
+	}
+	agentMgr := agent.NewManager()
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("codex")
+
+	sess := sessionMgr.Create("session-1", "user-1", "codex")
+	assert.NotNil(t, sess)
+	sess.Update("work_dir", "/tmp/project-a")
+	assert.True(t, sessionMgr.SetActiveSession("user-1", "session-1"))
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-workdir",
+		Type:      weibo.MessageTypeText,
+		Content:   "hello",
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "/tmp/project-a", gotWorkDir)
+}
+
 func TestHandleMessage_RestartsClosedInteractiveSession(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{
@@ -484,6 +527,91 @@ func TestHandleMessage_RestartsClosedInteractiveSession(t *testing.T) {
 	assert.Equal(t, []string{"follow up"}, secondSession.sentInputs)
 	assert.Len(t, platform.streams, 2)
 	assert.Equal(t, "second reply", platform.streams[1].chunks[0]["content"])
+}
+
+func TestHandleMessage_DirSetRestartsInteractiveSessionWithNewWorkDir(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+
+	oldDir := t.TempDir()
+	newDir := t.TempDir()
+
+	sess := sessionMgr.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+	sess.Update("work_dir", oldDir)
+	assert.True(t, sessionMgr.SetActiveSession("user-1", "session-1"))
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sessionID = "claude-session-1"
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "first reply"}
+		firstSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sessionID = "claude-session-1"
+	secondSession.sendFn = func(input string) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "second reply"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	var startWorkDirs []string
+	agentMgr := agent.NewManager()
+	mockAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+	}
+	mockAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		startWorkDirs = append(startWorkDirs, agent.WorkDirFromContext(ctx))
+		switch mockAgent.startCalls {
+		case 1:
+			return firstSession, nil
+		case 2:
+			return secondSession, nil
+		default:
+			t.Fatalf("unexpected StartSession call %d", mockAgent.startCalls)
+			return nil, nil
+		}
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-1",
+		Type:      weibo.MessageTypeText,
+		Content:   "hello",
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{oldDir}, startWorkDirs)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-dir",
+		Type:      weibo.MessageTypeText,
+		Content:   "/dir " + newDir,
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567891,
+	})
+	assert.NoError(t, err)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-2",
+		Type:      weibo.MessageTypeText,
+		Content:   "again",
+		UserID:    "user-1",
+		UserName:  "test-user",
+		Timestamp: 1234567892,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{oldDir, newDir}, startWorkDirs)
 }
 
 func TestHandleMessage_CommandReplyEndsWithDoneChunk(t *testing.T) {

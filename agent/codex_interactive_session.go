@@ -58,6 +58,9 @@ func (a *CodeXAgent) StartSession(ctx context.Context, sessionID string) (Intera
 
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, "codex", "app-server", "--listen", wsURL)
+	if workDir := WorkDirFromContext(ctx); workDir != "" {
+		cmd.Dir = workDir
+	}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to start codex app-server: %w", err)

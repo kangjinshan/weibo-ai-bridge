@@ -220,14 +220,18 @@ func listClaudeSessionsFromHistory(homeDir string, bridgeNativeIDs map[string]bo
 			}
 		}
 
-		// 记录最后一条非斜杠命令消息，用作标题（与 resume 行为一致）
-		if display != "" && !strings.HasPrefix(display, "/") {
+		// 记录最后一条非命令消息，用作标题（与 resume 行为一致）
+		if display != "" && !strings.HasPrefix(display, "/") && !isCommandWord(display) {
 			info.lastTitle = display
 		}
 	}
 
 	result := make([]NativeSession, 0, len(sessions))
 	for sid, info := range sessions {
+		// 跳过只有斜杠命令、没有真实用户输入的会话
+		if info.lastTitle == "" {
+			continue
+		}
 		result = append(result, NativeSession{
 			ID:        sid,
 			AgentType: "claude",
@@ -240,6 +244,15 @@ func listClaudeSessionsFromHistory(homeDir string, bridgeNativeIDs map[string]bo
 	return result
 }
 
+
+// isCommandWord 判断是否为短命令式词汇（非真实对话内容）
+func isCommandWord(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "exit", "quit", "new", "help", "status", "list", "clear", "cancel", "done", "yes", "no", "ok", "y", "n":
+		return true
+	}
+	return false
+}
 
 func normalizeNativeProjectPath(path string) string {
 	path = strings.TrimSpace(path)
@@ -324,7 +337,9 @@ func claudeIndexTimestamp(entry claudeSessionIndexEntry) time.Time {
 }
 
 // parseClaudeSessionFile 解析单个 .jsonl 文件，提取会话元数据
+// parseClaudeSessionFile 解析单个 .jsonl 文件，提取会话元数据
 // 标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
+// 过滤规则与 Claude Code resume 一致：isSidechain、sessionKind(daemon/bg)、entrypoint(sdk-cli)
 func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativeIDs map[string]bool) (NativeSession, bool) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -346,6 +361,9 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		foundFirstOp   bool
 		firstSessionID string
 		resolvedCwd    string
+		entrypoint     string
+		isSidechain    bool
+		sessionKind    string
 	)
 
 	for scanner.Scan() {
@@ -376,11 +394,25 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 			Summary     string `json:"summary"`
 			LastPrompt  string `json:"lastPrompt"`
 			SessionID   string `json:"sessionId"`
+			Entrypoint  string `json:"entrypoint"`
+			IsSidechain bool   `json:"isSidechain"`
+			SessionKind string `json:"sessionKind"`
 		}
 		if err := json.Unmarshal([]byte(line), &meta); err == nil {
 			sid := strings.TrimSpace(meta.SessionID)
 			if sid != "" && sid != sessionID {
 				goto parseQueueOp
+			}
+
+			// 收集过滤属性
+			if ep := strings.TrimSpace(meta.Entrypoint); ep != "" && entrypoint == "" {
+				entrypoint = ep
+			}
+			if meta.IsSidechain {
+				isSidechain = true
+			}
+			if sk := strings.TrimSpace(meta.SessionKind); sk != "" && sessionKind == "" {
+				sessionKind = sk
 			}
 
 			switch meta.Type {
@@ -452,6 +484,17 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		return NativeSession{}, false
 	}
 
+	// 过滤规则与 Claude Code resume 一致
+	if isSidechain {
+		return NativeSession{}, false
+	}
+	if sessionKind == "bg" || sessionKind == "daemon" || sessionKind == "daemon-worker" {
+		return NativeSession{}, false
+	}
+	if entrypoint == "sdk-cli" {
+		return NativeSession{}, false
+	}
+
 	// 标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
 	title := firstNonEmptyString(customTitle, aiTitle, summary, lastPrompt, contentTitle)
 	proj := firstNonEmptyString(resolvedCwd, projectPath)
@@ -465,6 +508,7 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		InBridge:  bridgeNativeIDs[firstSessionID],
 	}, true
 }
+
 
 
 func firstNonEmptyString(values ...string) string {

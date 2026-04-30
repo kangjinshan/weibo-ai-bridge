@@ -343,22 +343,7 @@ func TestParseClaudeSessionFile_UsesCwdFromTranscript(t *testing.T) {
 	}
 }
 
-func TestParseClaudeSessionFile_FiltersSdkCliEntrypoint(t *testing.T) {
-	tmpDir := t.TempDir()
-	sessionID := "80b2c6c6-273a-49a7-bcab-8333d6582276"
-	file := filepath.Join(tmpDir, sessionID+".jsonl")
-	content := fmt.Sprintf(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-20T07:29:43.967Z","sessionId":"%s","content":"SDK会话"}
-{"type":"attachment","sessionId":"%s","entrypoint":"sdk-cli"}
-`, sessionID, sessionID)
-	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	_, ok := parseClaudeSessionFile(file, sessionID, "/home/ubuntu/testproject", nil)
-	if ok {
-		t.Error("expected sdk-cli session to be filtered out")
-	}
-}
 
 func TestParseClaudeSessionFile_FiltersSidechain(t *testing.T) {
 	tmpDir := t.TempDir()

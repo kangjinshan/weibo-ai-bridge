@@ -339,7 +339,7 @@ func claudeIndexTimestamp(entry claudeSessionIndexEntry) time.Time {
 // parseClaudeSessionFile 解析单个 .jsonl 文件，提取会话元数据
 // parseClaudeSessionFile 解析单个 .jsonl 文件，提取会话元数据
 // 标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
-// 过滤规则与 Claude Code resume 一致：isSidechain、sessionKind(daemon/bg)、entrypoint(sdk-cli)
+// 过滤规则与 Claude Code resume 一致：isSidechain、sessionKind(daemon/bg)
 func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativeIDs map[string]bool) (NativeSession, bool) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -489,9 +489,6 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		return NativeSession{}, false
 	}
 	if sessionKind == "bg" || sessionKind == "daemon" || sessionKind == "daemon-worker" {
-		return NativeSession{}, false
-	}
-	if entrypoint == "sdk-cli" {
 		return NativeSession{}, false
 	}
 

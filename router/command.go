@@ -197,6 +197,9 @@ func (h *CommandHandler) handleList(userID string) (*Response, error) {
 	if len(allNative) > 0 {
 		for i, ns := range allNative {
 			title := nativeListTitle(ns)
+			if projectBase := shortProjectName(ns.Project); projectBase != "" {
+				title = projectBase + "/" + title
+			}
 			if strings.TrimSpace(ns.ID) != "" && strings.TrimSpace(ns.ID) == strings.TrimSpace(activeNativeID) {
 				title += "（当前）"
 			}
@@ -460,8 +463,7 @@ func (h *CommandHandler) collectSwitchCandidates(userID string) ([]*session.Sess
 
 	allNative := make([]NativeSession, 0, 20)
 	if activeAgentType == "claude" || activeAgentType == "" {
-		claudeProjectPath := currentClaudeNativeProjectPath(activeSess)
-		if claudeNatives, err := ListNativeClaudeSessionsForProject(bridgeNativeIDs, claudeProjectPath); err == nil {
+		if claudeNatives, err := ListNativeClaudeSessions(bridgeNativeIDs); err == nil {
 			allNative = append(allNative, claudeNatives...)
 		}
 	}
@@ -507,6 +509,18 @@ func truncateListTitle(title string) string {
 	}
 
 	return title
+}
+
+func shortProjectName(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	base := filepath.Base(projectPath)
+	if base == "" || base == "." || base == "/" {
+		return ""
+	}
+	return base
 }
 
 func formatListTime(ts time.Time) string {

@@ -141,6 +141,10 @@ func listNativeClaudeSessions(bridgeNativeIDs map[string]bool, projectPath strin
 		}
 	}
 
+	// 补充 history.jsonl 中记录的会话（覆盖无 .jsonl 文件的新版会话）
+	historySessions := listClaudeSessionsFromHistory(homeDir, bridgeNativeIDs)
+	sessions = append(sessions, historySessions...)
+
 	sessions = dedupeNativeSessionsByID(sessions)
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
@@ -152,6 +156,90 @@ func listNativeClaudeSessions(bridgeNativeIDs map[string]bool, projectPath strin
 
 	return sessions, nil
 }
+
+// claudeHistoryEntry 是 ~/.claude/history.jsonl 中每行的 JSON 结构
+type claudeHistoryEntry struct {
+	Display   string `json:"display"`
+	Timestamp int64  `json:"timestamp"`
+	Project   string `json:"project"`
+	SessionID string `json:"sessionId"`
+}
+
+// listClaudeSessionsFromHistory 从 ~/.claude/history.jsonl 提取会话元数据
+// 用于补充无 .jsonl 文件的新版 Claude Code 会话
+func listClaudeSessionsFromHistory(homeDir string, bridgeNativeIDs map[string]bool) []NativeSession {
+	historyPath := filepath.Join(homeDir, ".claude", "history.jsonl")
+	f, err := os.Open(historyPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	type sessionInfo struct {
+		project   string
+		lastTitle string
+		startedAt time.Time
+		lastAt    time.Time
+	}
+	sessions := make(map[string]*sessionInfo)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var entry claudeHistoryEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+
+		sessionID := strings.TrimSpace(entry.SessionID)
+		if !isValidUUID(sessionID) {
+			continue
+		}
+
+		display := strings.TrimSpace(entry.Display)
+		project := strings.TrimSpace(entry.Project)
+		ts := time.UnixMilli(entry.Timestamp)
+
+		info, exists := sessions[sessionID]
+		if !exists {
+			info = &sessionInfo{
+				project:   project,
+				startedAt: ts,
+				lastAt:    ts,
+			}
+			sessions[sessionID] = info
+		} else {
+			if ts.After(info.lastAt) {
+				info.lastAt = ts
+			}
+		}
+
+		// 记录最后一条非斜杠命令消息，用作标题（与 resume 行为一致）
+		if display != "" && !strings.HasPrefix(display, "/") {
+			info.lastTitle = display
+		}
+	}
+
+	result := make([]NativeSession, 0, len(sessions))
+	for sid, info := range sessions {
+		result = append(result, NativeSession{
+			ID:        sid,
+			AgentType: "claude",
+			Project:   info.project,
+			Title:     ensureNativeTitle(info.lastTitle, info.project, sid),
+			StartedAt: info.lastAt,
+			InBridge:  bridgeNativeIDs[sid],
+		})
+	}
+	return result
+}
+
 
 func normalizeNativeProjectPath(path string) string {
 	path = strings.TrimSpace(path)
@@ -235,7 +323,8 @@ func claudeIndexTimestamp(entry claudeSessionIndexEntry) time.Time {
 	return time.Time{}
 }
 
-// parseClaudeSessionFile 解析单个 .jsonl 文件的首行，提取会话元数据
+// parseClaudeSessionFile 解析单个 .jsonl 文件，提取会话元数据
+// 标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
 func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativeIDs map[string]bool) (NativeSession, bool) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -248,7 +337,11 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 
 	var (
 		startedAt      time.Time
-		title          string
+		lastPrompt     string
+		customTitle    string
+		aiTitle        string
+		summary        string
+		contentTitle   string
 		firstNonEmpty  bool
 		foundFirstOp   bool
 		firstSessionID string
@@ -275,20 +368,46 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 			}
 		}
 
-		var lastPrompt struct {
-			Type       string `json:"type"`
-			LastPrompt string `json:"lastPrompt"`
-			SessionID  string `json:"sessionId"`
+		// 读取 Claude Code 写入的结构化元数据事件
+		var meta struct {
+			Type        string `json:"type"`
+			CustomTitle string `json:"customTitle"`
+			AiTitle     string `json:"aiTitle"`
+			Summary     string `json:"summary"`
+			LastPrompt  string `json:"lastPrompt"`
+			SessionID   string `json:"sessionId"`
 		}
-		if err := json.Unmarshal([]byte(line), &lastPrompt); err == nil {
-			if lastPrompt.Type == "last-prompt" && strings.TrimSpace(lastPrompt.SessionID) == sessionID {
-				if normalized := normalizeNativeTitle(lastPrompt.LastPrompt); normalized != "" {
-					title = normalized
+		if err := json.Unmarshal([]byte(line), &meta); err == nil {
+			sid := strings.TrimSpace(meta.SessionID)
+			if sid != "" && sid != sessionID {
+				goto parseQueueOp
+			}
+
+			switch meta.Type {
+			case "custom-title":
+				if t := strings.TrimSpace(meta.CustomTitle); t != "" {
+					customTitle = t
+				}
+				continue
+			case "ai-title":
+				if t := strings.TrimSpace(meta.AiTitle); t != "" {
+					aiTitle = t
+				}
+				continue
+			case "summary":
+				if t := strings.TrimSpace(meta.Summary); t != "" {
+					summary = t
+				}
+				continue
+			case "last-prompt":
+				if t := normalizeNativeTitle(meta.LastPrompt); t != "" {
+					lastPrompt = t
 				}
 				continue
 			}
 		}
 
+	parseQueueOp:
 		var op claudeQueueOp
 		if err := json.Unmarshal([]byte(line), &op); err != nil {
 			if !firstNonEmpty {
@@ -323,7 +442,7 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		}
 
 		if normalized := normalizeNativeTitle(op.Content); normalized != "" {
-			title = normalized
+			contentTitle = normalized
 		}
 	}
 	if scanner.Err() != nil {
@@ -333,15 +452,20 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		return NativeSession{}, false
 	}
 
+	// 标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
+	title := firstNonEmptyString(customTitle, aiTitle, summary, lastPrompt, contentTitle)
+	proj := firstNonEmptyString(resolvedCwd, projectPath)
+
 	return NativeSession{
 		ID:        firstSessionID,
 		AgentType: "claude",
-		Project:   firstNonEmptyString(resolvedCwd, projectPath),
-		Title:     ensureNativeTitle(title, firstNonEmptyString(resolvedCwd, projectPath), firstSessionID),
+		Project:   proj,
+		Title:     ensureNativeTitle(title, proj, firstSessionID),
 		StartedAt: startedAt,
 		InBridge:  bridgeNativeIDs[firstSessionID],
 	}, true
 }
+
 
 func firstNonEmptyString(values ...string) string {
 	for _, v := range values {

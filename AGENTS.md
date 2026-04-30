@@ -40,7 +40,8 @@
 - `router_bytheway.go` — `/btw` 命令注入逻辑，区分流式/交互式两种注入路径。
 - `stream_sender.go` — 流式分片发送器 `streamReplySender`，delta 缓冲与边界感知 flush，`idleLineBreakAfter`（5s 静默补换行）、`maxBufferDelay`。
 - `agent_repair.go` — Agent 可用性自动修复：`configBackedAgentAvailabilityRepairer` 会写入 TOML 配置文件并重新注册 Agent。
-- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/model`、`/dir`、`/status`）。
+- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/model`、`/dir`、`/status`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。
+- `native_sessions.go` — 原生会话扫描与元数据提取。三个数据源：① `sessions-index.json` ② `.jsonl` 文件解析 ③ `~/.claude/history.jsonl` 补充（覆盖无本地文件的新版 Claude Code 会话）。标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content。
 - `router_utils.go` — rune 安全切分等辅助函数。
 
 ### `agent/`
@@ -128,7 +129,7 @@
 
 - `/help`
 - `/new [claude|codex]`
-- `/list`（仅展示 native 会话列表）
+- `/list`（展示所有项目的 native 会话列表，带项目名前缀）
 - `/switch [index|claude|codex]`
 - `/model`
 - `/dir [path]`（不传参数显示当前目录；传 `path` 时设置当前会话目录）
@@ -137,6 +138,9 @@
 
 命令语义备注：
 - `/new` 不直接创建 bridge 自增会话，而是准备下一条消息要使用的新 native 会话
+- `/list` 展示所有项目的 native 会话（不再按当前项目过滤），标题前带项目名前缀（如 `weibo-ai-bridge/会话标题`）
+- native 会话标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
+- native 会话扫描有三个数据源：sessions-index.json、.jsonl 文件解析、history.jsonl 补充
 
 交互式授权回复：
 

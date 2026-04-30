@@ -225,7 +225,7 @@ func TestCommandHandler_Handle_List_ClaudeFiltersByWorkDirProject(t *testing.T) 
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
 	assert.Contains(t, resp.Content, "项目A会话")
-	assert.NotContains(t, resp.Content, "项目B会话")
+	assert.Contains(t, resp.Content, "项目B会话")
 }
 
 func TestCommandHandler_Handle_List_ClaudeWithoutWorkDirDoesNotForceCwdFilter(t *testing.T) {
@@ -343,7 +343,7 @@ func TestCommandHandler_Handle_List_ClaudeUsesNativeSessionProjectWhenWorkDirMis
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
 	assert.Contains(t, resp.Content, "项目A会话")
-	assert.NotContains(t, resp.Content, "项目B会话")
+	assert.Contains(t, resp.Content, "项目B会话")
 }
 
 func TestCommandHandler_Handle_New(t *testing.T) {

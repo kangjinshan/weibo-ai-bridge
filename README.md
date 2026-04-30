@@ -63,7 +63,7 @@ make dev
 |------|------|
 | `/help` | 显示帮助信息 |
 | `/new [claude\|codex]` | 准备新的原生会话（不传参数时沿用当前 Agent） |
-| `/list` | 查看原生会话列表（带编号） |
+| `/list` | 查看所有项目的原生会话列表（带项目名前缀和编号） |
 | `/switch <编号>` | 按 `/list` 中的编号切换活跃会话 |
 | `/switch <agent类型>` | 切换当前会话的 Agent 类型 |
 | `/claude` | 等价于 `/switch claude`（大小写不敏感） |
@@ -148,7 +148,7 @@ output = "stdout"
 - **持久化存储** — 会话数据默认存储在 `~/.config/weibo-ai-bridge/sessions/`，服务重启后自动恢复
 - **多会话支持** — 每个用户可切换多个原生会话（Claude/Codex），按编号切换
 - **自动建会话** — 无活跃会话时先建立 pending 锚点，首轮自动绑定为 native 会话 ID
-- **会话标题** — 自动记录首条真实问题作为标题（存储最长 50 字符；`/list` 展示截断为 30 字符）
+- **会话标题** — 与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
 - **旧路径迁移** — 新版本首次启动时会自动导入旧版 `data/sessions/` 的数据
 
 ### Agent Session ID
@@ -336,6 +336,7 @@ weibo-ai-bridge/
 │   ├── router_bytheway.go    # /btw 插话
 │   ├── stream_sender.go      # 流式分片发送器、边界感知 flush
 │   ├── agent_repair.go       # Agent 可用性自动修复
+│   ├── native_sessions.go    # 原生会话扫描（.jsonl、sessions-index、history.jsonl）
 │   ├── command.go            # 斜杠命令处理
 │   └── router_utils.go       # rune 安全切分等辅助函数
 ├── agent/                    # Agent 抽象层

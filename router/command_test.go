@@ -91,7 +91,7 @@ func TestCommandHandler_Handle_List(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
-	assert.Contains(t, resp.Content, "| 编号 | 标题 | 时间 |")
+	assert.Contains(t, resp.Content, "| 编号 | 标题 | 目录 | 时间 |")
 	// 活跃 session 是 codex (session-2)，所以只显示 codex 的 session
 	assert.Contains(t, resp.Content, "| 1 | 未命名会话（当前） |")
 }

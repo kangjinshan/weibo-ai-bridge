@@ -188,25 +188,24 @@ func (h *CommandHandler) handleList(userID string) (*Response, error) {
 	managedNativeSessions, allNative, _, activeNativeID := h.collectSwitchCandidates(userID)
 
 	type listRow struct {
-		Number string
-		Title  string
-		When   time.Time
+		Number  string
+		Title   string
+		Project string
+		When    time.Time
 	}
 	rows := make([]listRow, 0, len(allNative))
 
 	if len(allNative) > 0 {
 		for i, ns := range allNative {
 			title := nativeListTitle(ns)
-			if projectBase := shortProjectName(ns.Project); projectBase != "" {
-				title = projectBase + "/" + title
-			}
 			if strings.TrimSpace(ns.ID) != "" && strings.TrimSpace(ns.ID) == strings.TrimSpace(activeNativeID) {
 				title += "（当前）"
 			}
 			rows = append(rows, listRow{
-				Number: strconv.Itoa(i + 1),
-				Title:  title,
-				When:   ns.StartedAt,
+				Number:  strconv.Itoa(i + 1),
+				Title:   title,
+				Project: shortProjectName(ns.Project),
+				When:    ns.StartedAt,
 			})
 		}
 	} else {
@@ -217,10 +216,15 @@ func (h *CommandHandler) handleList(userID string) (*Response, error) {
 			if sess.ID == activeSessionID {
 				title += "（当前）"
 			}
+			project := ""
+			if workDir, ok := sess.Context["work_dir"].(string); ok {
+				project = shortProjectName(workDir)
+			}
 			rows = append(rows, listRow{
-				Number: strconv.Itoa(i + 1),
-				Title:  title,
-				When:   sess.UpdatedAt,
+				Number:  strconv.Itoa(i + 1),
+				Title:   title,
+				Project: project,
+				When:    sess.UpdatedAt,
 			})
 		}
 	}
@@ -233,14 +237,15 @@ func (h *CommandHandler) handleList(userID string) (*Response, error) {
 	}
 
 	lines := []string{
-		"| 编号 | 标题 | 时间 |",
-		"| --- | --- | --- |",
+		"| 编号 | 标题 | 目录 | 时间 |",
+		"| --- | --- | --- | --- |",
 	}
 	for _, row := range rows {
 		lines = append(lines, fmt.Sprintf(
-			"| %s | %s | %s |",
+			"| %s | %s | %s | %s |",
 			escapeMarkdownTableCell(row.Number),
 			escapeMarkdownTableCell(row.Title),
+			escapeMarkdownTableCell(row.Project),
 			escapeMarkdownTableCell(formatListTime(row.When)),
 		))
 	}

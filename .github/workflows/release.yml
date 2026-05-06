@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: _linux_amd64
+            runner: ubuntu-latest
+          - goos: darwin
+            goarch: amd64
+            suffix: _darwin_amd64
+            runner: macos-latest
+          - goos: darwin
+            goarch: arm64
+            suffix: _darwin_arm64
+            runner: macos-latest
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          BINARY=weibo-ai-bridge${{ matrix.suffix }}
+          mkdir -p dist
+          CGO_ENABLED=0 go build \
+            -ldflags "-X 'main.version=${VERSION}' -X 'main.gitCommit=${GIT_COMMIT}' -X 'main.buildTime=${BUILD_TIME}'" \
+            -o dist/${BINARY} ./cmd/server
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: weibo-ai-bridge${{ matrix.suffix }}
+          path: dist/weibo-ai-bridge${{ matrix.suffix }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREVIOUS_TAG" ]; then
+            NOTES=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" 2>/dev/null)
+          else
+            NOTES=$(git log --pretty=format:"- %s" | head -30)
+          fi
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/weibo-ai-bridge_*
+          body: |
+            ## What's Changed
+
+            ${{ steps.notes.outputs.notes }}
+
+            ## Downloads
+
+            | File | Platform |
+            |------|----------|
+            | `weibo-ai-bridge_linux_amd64` | Linux AMD64 |
+            | `weibo-ai-bridge_darwin_amd64` | macOS Intel |
+            | `weibo-ai-bridge_darwin_arm64` | macOS Apple Silicon |
+
+            ```bash
+            chmod +x weibo-ai-bridge_*  # 添加执行权限
+            ./weibo-ai-bridge_*         # 运行
+            ```
+          draft: false
+          prerelease: false

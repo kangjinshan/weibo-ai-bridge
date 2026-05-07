@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +89,85 @@ type timedReplyStream struct {
 
 func (s *timedReplyStream) SendChunk(ctx context.Context, content string, done bool) error {
 	s.chunks <- timedStreamChunk{content: content, done: done}
+	return nil
+}
+
+type singleStreamGatePlatform struct {
+	slot       chan struct{}
+	opened     chan struct{}
+	mu         sync.Mutex
+	openCount  int
+	replyTexts []string
+}
+
+func newSingleStreamGatePlatform() *singleStreamGatePlatform {
+	p := &singleStreamGatePlatform{
+		slot:   make(chan struct{}, 1),
+		opened: make(chan struct{}, 8),
+	}
+	p.slot <- struct{}{}
+	return p
+}
+
+func (p *singleStreamGatePlatform) Reply(ctx context.Context, messageID string, content string) error {
+	p.mu.Lock()
+	p.replyTexts = append(p.replyTexts, content)
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *singleStreamGatePlatform) OpenReplyStream(ctx context.Context, userID string) (weibo.ChunkSender, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.slot:
+	}
+
+	p.mu.Lock()
+	p.openCount++
+	p.mu.Unlock()
+
+	select {
+	case p.opened <- struct{}{}:
+	default:
+	}
+
+	return &singleStreamGateSender{platform: p}, nil
+}
+
+func (p *singleStreamGatePlatform) Replies() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.replyTexts...)
+}
+
+func (p *singleStreamGatePlatform) OpenCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.openCount
+}
+
+type singleStreamGateSender struct {
+	platform *singleStreamGatePlatform
+	released bool
+	mu       sync.Mutex
+}
+
+func (s *singleStreamGateSender) SendChunk(ctx context.Context, content string, done bool) error {
+	if strings.TrimSpace(content) != "" {
+		s.platform.mu.Lock()
+		s.platform.replyTexts = append(s.platform.replyTexts, content)
+		s.platform.mu.Unlock()
+	}
+
+	if done {
+		s.mu.Lock()
+		if !s.released {
+			s.released = true
+			s.platform.slot <- struct{}{}
+		}
+		s.mu.Unlock()
+	}
 	return nil
 }
 
@@ -405,10 +485,11 @@ func TestHandleMessage_UsesActiveSessionCreatedByNewCommand(t *testing.T) {
 		Timestamp: 1234567891,
 	})
 	assert.NoError(t, err)
-	assert.Len(t, platform.replies, 4)
-	assert.Equal(t, "Codex response", platform.replies[2]["content"])
-	assert.Equal(t, "", platform.replies[3]["content"])
-	assert.Equal(t, true, platform.replies[3]["done"])
+	assert.Len(t, platform.replies, 3)
+	assert.Equal(t, "Prepared a new native session (Agent: codex). Send your next message to create it.", platform.replies[0]["content"])
+	assert.Equal(t, "Codex response", platform.replies[1]["content"])
+	assert.Equal(t, "", platform.replies[2]["content"])
+	assert.Equal(t, true, platform.replies[2]["done"])
 }
 
 func TestHandleMessage_PassesSessionWorkDirToAgentContext(t *testing.T) {
@@ -614,7 +695,7 @@ func TestHandleMessage_DirSetRestartsInteractiveSessionWithNewWorkDir(t *testing
 	assert.Equal(t, []string{oldDir, newDir}, startWorkDirs)
 }
 
-func TestHandleMessage_CommandReplyEndsWithDoneChunk(t *testing.T) {
+func TestHandleMessage_CommandReplyUsesDirectReplyPath(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{
 		Timeout: 300,
@@ -639,12 +720,10 @@ func TestHandleMessage_CommandReplyEndsWithDoneChunk(t *testing.T) {
 		Timestamp: 1234567890,
 	})
 	assert.NoError(t, err)
-	assert.Len(t, platform.streams, 1)
-	assert.Len(t, platform.streams[0].chunks, 2)
-	assert.NotEmpty(t, platform.streams[0].chunks[0]["content"])
-	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
-	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
-	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
+	assert.Len(t, platform.streams, 0)
+	assert.Len(t, platform.replies, 1)
+	assert.Equal(t, "user-command", platform.replies[0]["message_id"])
+	assert.Contains(t, platform.replies[0]["content"], "Prepared a new native session")
 }
 
 func TestHandleMessage_AutoCreatesSessionOnFirstUserMessage(t *testing.T) {
@@ -2098,6 +2177,117 @@ func TestHandleMessage_IgnoresLateDoneFromPreviousTurnBeforeSendingNewTurn(t *te
 	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
+func TestHandleMessage_IgnoresLeadingDoneAndWaitsForSlowNewTurnOutput(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		if input == "继续处理这个请求" {
+			liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			go func() {
+				time.Sleep(2 * time.Second)
+				liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "慢回复也要收到"}
+				liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			}()
+		}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	active := sessionMgr.Create("user-late-done-slow-1", "user-late-done-slow", "codex")
+	assert.NotNil(t, active)
+	sessionMgr.SetActiveSession("user-late-done-slow", active.ID)
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	router.liveSessions[active.ID] = &interactiveSessionState{
+		agentType: "codex",
+		session:   liveSession,
+	}
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-late-done-slow",
+		Type:      weibo.MessageTypeText,
+		Content:   "继续处理这个请求",
+		UserID:    "user-late-done-slow",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"继续处理这个请求"}, liveSession.sentInputs)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "慢回复也要收到", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
+}
+
+func TestHandleMessage_RestartsInteractiveSessionWhenLeadingDoneHasNoFollowingSignal(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sendFn = func(input string) {
+		if input == "继续处理这个请求" {
+			firstSession.events <- agent.Event{Type: agent.EventTypeDone}
+		}
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sendFn = func(input string) {
+		if input == "继续处理这个请求" {
+			secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "重连后恢复输出"}
+			secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+		}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+	}
+	interactiveAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		return secondSession, nil
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	active := sessionMgr.Create("user-leading-done-restart-1", "user-leading-done-restart", "codex")
+	assert.NotNil(t, active)
+	sessionMgr.SetActiveSession("user-leading-done-restart", active.ID)
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	router.liveSessions[active.ID] = &interactiveSessionState{
+		agentType: "codex",
+		session:   firstSession,
+	}
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-leading-done-restart",
+		Type:      weibo.MessageTypeText,
+		Content:   "继续处理这个请求",
+		UserID:    "user-leading-done-restart",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"继续处理这个请求"}, firstSession.sentInputs)
+	assert.Equal(t, []string{"继续处理这个请求"}, secondSession.sentInputs)
+	assert.Equal(t, 1, interactiveAgent.startCalls)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "重连后恢复输出", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
+}
+
 func TestHandleMessage_InteractiveSessionCloseAfterDoneDoesNotFail(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
@@ -2173,4 +2363,567 @@ func TestParseApprovalAction_SupportsMentionSuffix(t *testing.T) {
 	action, ok = parseApprovalAction("取消 @bridge")
 	assert.True(t, ok)
 	assert.Equal(t, agent.ApprovalActionCancel, action)
+}
+
+func TestHandleMessage_SuperModeActsAsAllowAll(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-allow", "user-super-allow", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-allow", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	sessionMgr.UpdateSession(sess.ID, superAutoApproveContextKey, true)
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		liveSession.events <- agent.Event{
+			Type:     agent.EventTypeApproval,
+			ToolName: "shell",
+		}
+	}
+	liveSession.approveFn = func(action agent.ApprovalAction) {
+		assert.Equal(t, agent.ApprovalActionAllow, action)
+		liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "已自动继续执行"}
+		liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-allow",
+		Type:      weibo.MessageTypeText,
+		Content:   "继续",
+		UserID:    "user-super-allow",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []agent.ApprovalAction{agent.ApprovalActionAllow}, liveSession.actions)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "已自动继续执行", platform.replies[0]["content"])
+}
+
+func TestHandleMessage_SuperOnDuringPendingApproval_DoesNotSwallowNextInput(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-pending", "user-super-pending", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-pending", sess.ID))
+
+	liveSession := NewMockInteractiveSession()
+	liveSession.sendFn = func(input string) {
+		switch strings.TrimSpace(input) {
+		case "需要审批":
+			liveSession.events <- agent.Event{
+				Type:     agent.EventTypeApproval,
+				ToolName: "shell",
+			}
+		case "新的问题":
+			// 模拟旧 turn 的延迟 done 在新 turn 开始后先到达。
+			liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			go func() {
+				time.Sleep(120 * time.Millisecond)
+				liveSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "新回合已执行"}
+				liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+			}()
+		}
+	}
+	liveSession.approveFn = func(action agent.ApprovalAction) {
+		assert.Equal(t, agent.ApprovalActionAllow, action)
+		liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+		// 模拟交互会话尾部延迟 done（旧 turn 尾事件晚到）。
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			liveSession.events <- agent.Event{Type: agent.EventTypeDone}
+		}()
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "claude-code",
+		available: true,
+		session:   liveSession,
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-pending-1",
+		Type:      weibo.MessageTypeText,
+		Content:   "需要审批",
+		UserID:    "user-super-pending",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-pending-super-on",
+		Type:      weibo.MessageTypeText,
+		Content:   "/super on",
+		UserID:    "user-super-pending",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+	assert.NoError(t, err)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-pending-2",
+		Type:      weibo.MessageTypeText,
+		Content:   "新的问题",
+		UserID:    "user-super-pending",
+		UserName:  "tester",
+		Timestamp: 3,
+	})
+	assert.NoError(t, err)
+
+	assert.Equal(t, []agent.ApprovalAction{agent.ApprovalActionAllow}, liveSession.actions)
+	assert.Equal(t, []string{"需要审批", "新的问题"}, liveSession.sentInputs)
+
+	found := false
+	for _, reply := range platform.replies {
+		if strings.Contains(reply["content"].(string), "新回合已执行") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected new turn output after auto-approving pending request")
+}
+
+func TestHandleMessage_BusySuperSlashCommandDoesNotBlock(t *testing.T) {
+	platform := newSingleStreamGatePlatform()
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-busy", "user-super-busy", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-busy", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	sessionMgr.UpdateSession(sess.ID, superAutoApproveContextKey, true)
+
+	releaseMain := make(chan struct{})
+	mainAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			stream := make(chan agent.Event, 2)
+			go func() {
+				defer close(stream)
+				stream <- agent.Event{Type: agent.EventTypeDelta, Content: "主流程处理中。"}
+				<-releaseMain
+				stream <- agent.Event{Type: agent.EventTypeDone}
+			}()
+			return stream, nil
+		},
+	}
+
+	agentMgr.Register(mainAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	mainDone := make(chan error, 1)
+	go func() {
+		mainDone <- router.HandleMessage(context.Background(), &weibo.Message{
+			ID:        "msg-super-busy-main",
+			Type:      weibo.MessageTypeText,
+			Content:   "先执行主流程",
+			UserID:    "user-super-busy",
+			UserName:  "tester",
+			Timestamp: 1,
+		})
+	}()
+
+	select {
+	case <-platform.opened:
+	case <-time.After(time.Second):
+		t.Fatal("main flow did not open reply stream")
+	}
+
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- router.HandleMessage(context.Background(), &weibo.Message{
+			ID:        "msg-super-busy-off",
+			Type:      weibo.MessageTypeText,
+			Content:   "/super off",
+			UserID:    "user-super-busy",
+			UserName:  "tester",
+			Timestamp: 2,
+		})
+	}()
+
+	select {
+	case err := <-cmdDone:
+		assert.NoError(t, err)
+	case <-time.After(400 * time.Millisecond):
+		t.Fatal("/super off should return immediately even when another stream is in-flight")
+	}
+
+	assert.Equal(t, 1, platform.OpenCount(), "slash command should not open a second reply stream")
+	assert.Eventually(t, func() bool {
+		for _, text := range platform.Replies() {
+			if strings.Contains(text, "Super mode disabled") {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 20*time.Millisecond)
+
+	close(releaseMain)
+	select {
+	case err := <-mainDone:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("main flow did not finish")
+	}
+}
+
+func TestHandleMessage_SuperModePeerApprovalShowsNotice(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-peer", "user-super-peer", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-peer", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	sessionMgr.UpdateSession(sess.ID, superAutoApproveContextKey, true)
+
+	mainAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			stream := make(chan agent.Event, 2)
+			stream <- agent.Event{Type: agent.EventTypeMessage, Content: "主代理输出"}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+
+	peerSession := NewMockInteractiveSession()
+	peerSession.sendFn = func(input string) {
+		peerSession.events <- agent.Event{
+			Type:     agent.EventTypeApproval,
+			ToolName: "shell",
+		}
+	}
+	peerSession.approveFn = func(action agent.ApprovalAction) {
+		assert.Equal(t, agent.ApprovalActionAllow, action)
+		peerSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "对侧复盘结论"}
+		peerSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+	peerAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		session:   peerSession,
+	}
+
+	agentMgr.Register(mainAgent)
+	agentMgr.Register(peerAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-peer",
+		Type:      weibo.MessageTypeText,
+		Content:   "请优化",
+		UserID:    "user-super-peer",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	assert.Eventually(t, func() bool {
+		for _, reply := range platform.replies {
+			if strings.Contains(reply["content"].(string), superAutoApprovalNotice) {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 20*time.Millisecond)
+
+	assert.Eventually(t, func() bool {
+		updated, ok := sessionMgr.Get(sess.ID)
+		if !ok || updated == nil {
+			return false
+		}
+		return contextString(updated.Context, superFeedbackForClaudeKey) == "对侧复盘结论" &&
+			contextBool(updated.Context, superFeedbackReadyForClaudeKey)
+	}, time.Second, 20*time.Millisecond)
+}
+
+func TestHandleMessage_SuperModeInjectsPeerFeedbackNextTurn(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-inject", "user-super-inject", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-inject", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	sessionMgr.UpdateSession(sess.ID, superAutoApproveContextKey, true)
+
+	var mainInputs []string
+	mainAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			mainInputs = append(mainInputs, input)
+			stream := make(chan agent.Event, 2)
+			stream <- agent.Event{Type: agent.EventTypeMessage, Content: "主输出"}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+
+	peerCall := 0
+	peerAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			peerCall++
+			stream := make(chan agent.Event, 2)
+			if peerCall == 1 {
+				stream <- agent.Event{Type: agent.EventTypeMessage, Content: "peer-feedback-1"}
+			} else {
+				stream <- agent.Event{Type: agent.EventTypeMessage, Content: "peer-feedback-2"}
+			}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+
+	agentMgr.Register(mainAgent)
+	agentMgr.Register(peerAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-inject-1",
+		Type:      weibo.MessageTypeText,
+		Content:   "第一问",
+		UserID:    "user-super-inject",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+	assert.Len(t, mainInputs, 1)
+	assert.Equal(t, "第一问", mainInputs[0])
+	assert.Eventually(t, func() bool {
+		updated, ok := sessionMgr.Get(sess.ID)
+		if !ok || updated == nil {
+			return false
+		}
+		return contextString(updated.Context, superFeedbackForClaudeKey) == "peer-feedback-1" &&
+			contextBool(updated.Context, superFeedbackReadyForClaudeKey)
+	}, time.Second, 20*time.Millisecond)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-inject-2",
+		Type:      weibo.MessageTypeText,
+		Content:   "第二问",
+		UserID:    "user-super-inject",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+	assert.NoError(t, err)
+	assert.Len(t, mainInputs, 2)
+	assert.Contains(t, mainInputs[1], "peer-feedback-1")
+	assert.Contains(t, mainInputs[1], "Super 对侧已审批结论")
+}
+
+func TestRouter_CustomizeProcessingAck_AppendsSuperNotice(t *testing.T) {
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{name: "claude-code", available: true})
+	agentMgr.SetDefault("claude-code")
+
+	sess := sessionMgr.Create("session-ack-super", "user-ack-super", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-ack-super", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	setSuperFeedbackForAgent(sessionMgr, sess.ID, "claude", "approved-feedback")
+
+	router := NewRouter(&MockPlatform{}, sessionMgr, agentMgr)
+	got := router.CustomizeProcessingAck(&weibo.Message{
+		ID:      "msg-ack",
+		Type:    weibo.MessageTypeText,
+		Content: "hello",
+		UserID:  "user-ack-super",
+	}, "已收到消息，正在处理中，请稍候。")
+
+	assert.Contains(t, got, "Super：本轮将注入对侧已审批结论")
+}
+
+func TestHandleMessage_SuperPeerInteractiveUsesDeadlineContext(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-deadline", "user-super-deadline", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-deadline", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	sessionMgr.UpdateSession(sess.ID, superAutoApproveContextKey, true)
+
+	mainAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			stream := make(chan agent.Event, 2)
+			stream <- agent.Event{Type: agent.EventTypeMessage, Content: "主代理输出"}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+
+	peerStarted := make(chan bool, 1)
+	peerAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		startFn: func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+			_, hasDeadline := ctx.Deadline()
+			peerStarted <- hasDeadline
+			return NewMockInteractiveSession(), nil
+		},
+	}
+
+	agentMgr.Register(mainAgent)
+	agentMgr.Register(peerAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-deadline",
+		Type:      weibo.MessageTypeText,
+		Content:   "请优化",
+		UserID:    "user-super-deadline",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	select {
+	case hasDeadline := <-peerStarted:
+		assert.True(t, hasDeadline)
+	case <-time.After(time.Second):
+		t.Fatal("peer review did not start")
+	}
+}
+
+func TestHandleMessage_SuperFeedbackNotConsumedOnMainFailure(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-main-fail", "user-super-main-fail", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-main-fail", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	setSuperFeedbackForAgent(sessionMgr, sess.ID, "claude", "must-keep-feedback")
+
+	mainAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			stream := make(chan agent.Event, 2)
+			stream <- agent.Event{Type: agent.EventTypeError, Error: "main failed"}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+	agentMgr.Register(mainAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-main-fail",
+		Type:      weibo.MessageTypeText,
+		Content:   "触发失败",
+		UserID:    "user-super-main-fail",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.Error(t, err)
+
+	updated, ok := sessionMgr.Get(sess.ID)
+	assert.True(t, ok)
+	assert.Equal(t, "must-keep-feedback", contextString(updated.Context, superFeedbackForClaudeKey))
+	assert.True(t, contextBool(updated.Context, superFeedbackReadyForClaudeKey))
+}
+
+func TestHandleMessage_SuperPeerReviewRunsAsync(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-async", "user-super-async", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-async", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	sessionMgr.UpdateSession(sess.ID, superAutoApproveContextKey, true)
+
+	mainAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			stream := make(chan agent.Event, 2)
+			stream <- agent.Event{Type: agent.EventTypeMessage, Content: "主代理输出"}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+	peerAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+		startFn: func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+			time.Sleep(250 * time.Millisecond)
+			peerSession := NewMockInteractiveSession()
+			peerSession.sendFn = func(input string) {
+				peerSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "peer"}
+				peerSession.events <- agent.Event{Type: agent.EventTypeDone}
+			}
+			return peerSession, nil
+		},
+	}
+	agentMgr.Register(mainAgent)
+	agentMgr.Register(peerAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	start := time.Now()
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-async",
+		Type:      weibo.MessageTypeText,
+		Content:   "请优化",
+		UserID:    "user-super-async",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	elapsed := time.Since(start)
+	assert.NoError(t, err)
+	assert.Less(t, elapsed, 200*time.Millisecond)
 }

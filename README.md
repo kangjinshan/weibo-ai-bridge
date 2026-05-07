@@ -15,6 +15,7 @@
 - **Super 协作模式** — `/super on` 后自动 `Allow All`，主 Agent 完成后自动调用对侧 Agent 复盘，并把结论注入下一轮
 - **内置微博 Skills** — 仓库自带 `weibo-skill-api`，安装时同步到 Agent skills 目录
 - **SSE 调试出口** — `/chat/stream` 接口可观察内部事件流
+- **启动自检通知** — 服务启动成功后自动给 bot 自己发一条微博私信，包含编译时间和版本信息
 
 ## 快速开始
 
@@ -69,7 +70,7 @@ make dev
 | `/switch <agent类型>` | 切换当前会话的 Agent 类型 |
 | `/claude` | 等价于 `/switch claude`（大小写不敏感） |
 | `/codex` | 等价于 `/switch codex`（大小写不敏感） |
-| `/btw <内容>` | 向当前交互式会话注入补充信息 |
+| `/btw <内容>` | 向当前交互式会话注入补充信息（若当前在审批等待态，需先回复 `允许` / `取消` / `允许所有`） |
 | `/model` | 显示当前使用的模型 |
 | `/dir [path]` | 显示当前工作目录；传 `path` 时设置当前会话工作目录 |
 | `/status` | 显示当前会话状态（`session_id` 缺失时自动回退到当前活跃会话） |
@@ -86,6 +87,7 @@ make dev
 | 允许所有 | 允许所有 / 允许全部 / 全部允许 / 所有允许 / 都允许 / 全部同意 / allow all / allowall / approve all / yes all |
 
 `允许所有` 仅对当前会话生效，后续授权自动通过。
+审批等待态下，`/btw` 会被拒绝并提示先完成审批回复，避免把补充消息注入到未授权的工具执行上下文。
 
 ### Super 模式说明
 
@@ -237,6 +239,7 @@ POST 请求：
 
 补充说明：
 - `session_id` 为可选；当请求内容是 slash 命令（例如 `/status`、`/super status`）且未传 `session_id` 时，路由层会回退到该 `user_id` 的当前活跃会话。
+- 传入 `session_id` 时会校验会话归属：该会话必须属于同一个 `user_id`，否则返回错误事件，不会复用到其他用户会话。
 
 返回 `text/event-stream`，事件类型：
 

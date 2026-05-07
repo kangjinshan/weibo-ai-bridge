@@ -38,6 +38,9 @@ type Platform struct {
 	tokenExpire time.Time
 	tokenMutex  sync.Mutex
 
+	uid     int64
+	uidOnce sync.Once
+
 	running bool
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -89,6 +92,11 @@ func NewPlatform(appID, appsecret string) (*Platform, error) {
 		logger:      log.Default(),
 		dedup:       make(map[string]time.Time),
 	}, nil
+}
+
+// UID 返回 bot 自身的微博用户 ID（首次 token 刷新后可用）
+func (p *Platform) UID() int64 {
+	return p.uid
 }
 
 // Configure 使用外部配置覆盖默认平台参数
@@ -152,6 +160,10 @@ func (p *Platform) refreshToken(ctx context.Context) error {
 	p.token = tokenResp.Data.Token
 	p.tokenExpire = time.Now().Add(time.Duration(tokenResp.Data.ExpireIn-60) * time.Second)
 	p.tokenMutex.Unlock()
+
+	p.uidOnce.Do(func() {
+		p.uid = tokenResp.Data.UID
+	})
 
 	p.logger.Printf("✅ Token refreshed successfully")
 	if len(p.token) > 20 {

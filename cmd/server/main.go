@@ -193,6 +193,26 @@ func main() {
 	}
 	logger.Printf("Platform started successfully")
 
+	// 发送启动通知给 bot 自己
+	go func() {
+		time.Sleep(2 * time.Second)
+		botUID := platform.UID()
+		if botUID == 0 {
+			logger.Printf("Startup notification skipped: bot UID not available")
+			return
+		}
+		buildTimeDisplay := buildTime
+		if t, err := time.Parse(time.RFC3339, buildTime); err == nil {
+			buildTimeDisplay = t.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05 CST")
+		}
+		msg := fmt.Sprintf("✅ 服务启动成功\n编译时间: %s\n版本: %s (%s)", buildTimeDisplay, version, gitCommit)
+		if err := platform.Reply(context.Background(), fmt.Sprintf("%d", botUID), msg); err != nil {
+			logger.Printf("Failed to send startup notification: %v", err)
+		} else {
+			logger.Printf("Startup notification sent to bot self (uid=%d)", botUID)
+		}
+	}()
+
 	// 启动消息处理循环
 	go processMessages(ctx, platform, msgRouter)
 

@@ -907,7 +907,9 @@ func TestHandleAIMessage_PersistsClaudeSessionID(t *testing.T) {
 
 	sess, ok := sessionMgr.Get("session-1")
 	assert.True(t, ok)
-	assert.Equal(t, "claude-session-1", sess.Context["claude_session_id"])
+	claudeSID, hasClaudeSID := sess.ContextString("claude_session_id")
+	assert.True(t, hasClaudeSID)
+	assert.Equal(t, "claude-session-1", claudeSID)
 }
 
 func TestHandleAIMessage_ResumesClaudeSessionID(t *testing.T) {
@@ -926,7 +928,7 @@ func TestHandleAIMessage_ResumesClaudeSessionID(t *testing.T) {
 	agentMgr.SetDefault("claude-code")
 
 	sess := sessionMgr.Create("session-1", "user-1", "claude")
-	sess.Context["claude_session_id"] = "claude-session-1"
+	sess.SetContext("claude_session_id", "claude-session-1")
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
 	resp, err := router.handleAIMessage(context.Background(), &Message{
@@ -977,7 +979,9 @@ func TestHandleAIMessage_PersistsCodexSessionID(t *testing.T) {
 
 	sess, ok := sessionMgr.Get("session-1")
 	assert.True(t, ok)
-	assert.Equal(t, "codex-thread-1", sess.Context["codex_session_id"])
+	codexSID, hasCodexSID := sess.ContextString("codex_session_id")
+	assert.True(t, hasCodexSID)
+	assert.Equal(t, "codex-thread-1", codexSID)
 }
 
 func TestHandleAIMessage_AdoptsPendingOrBridgeSessionIDToNativeSessionID(t *testing.T) {
@@ -1017,7 +1021,9 @@ func TestHandleAIMessage_AdoptsPendingOrBridgeSessionIDToNativeSessionID(t *test
 
 	adopted, adoptedExists := sessionMgr.Get("codex-thread-9")
 	assert.True(t, adoptedExists)
-	assert.Equal(t, "codex-thread-9", adopted.Context["codex_session_id"])
+	adoptedSID, hasAdoptedSID := adopted.ContextString("codex_session_id")
+	assert.True(t, hasAdoptedSID)
+	assert.Equal(t, "codex-thread-9", adoptedSID)
 }
 
 func TestHandleAIMessage_SetsSessionTitleFromFirstQuestionOnly(t *testing.T) {
@@ -2593,7 +2599,9 @@ func TestHandleMessage_BusySuperSlashCommandDoesNotBlock(t *testing.T) {
 }
 
 func TestHandleMessage_SuperModePeerApprovalShowsNotice(t *testing.T) {
-	platform := &MockPlatform{}
+	t.Parallel()
+
+	platform := newSingleStreamGatePlatform()
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
 	agentMgr := agent.NewManager()
 
@@ -2650,8 +2658,8 @@ func TestHandleMessage_SuperModePeerApprovalShowsNotice(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Eventually(t, func() bool {
-		for _, reply := range platform.replies {
-			if strings.Contains(reply["content"].(string), superAutoApprovalNotice) {
+		for _, reply := range platform.Replies() {
+			if strings.Contains(reply, superAutoApprovalNotice) {
 				return true
 			}
 		}
@@ -2663,12 +2671,15 @@ func TestHandleMessage_SuperModePeerApprovalShowsNotice(t *testing.T) {
 		if !ok || updated == nil {
 			return false
 		}
-		return contextString(updated.Context, superFeedbackForClaudeKey) == "对侧复盘结论" &&
-			contextBool(updated.Context, superFeedbackReadyForClaudeKey)
+		feedback, _ := updated.ContextString(superFeedbackForClaudeKey)
+		ready, _ := updated.ContextBool(superFeedbackReadyForClaudeKey)
+		return feedback == "对侧复盘结论" && ready
 	}, time.Second, 20*time.Millisecond)
 }
 
 func TestHandleMessage_SuperModeInjectsPeerFeedbackNextTurn(t *testing.T) {
+	t.Parallel()
+
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
 	agentMgr := agent.NewManager()
@@ -2733,8 +2744,9 @@ func TestHandleMessage_SuperModeInjectsPeerFeedbackNextTurn(t *testing.T) {
 		if !ok || updated == nil {
 			return false
 		}
-		return contextString(updated.Context, superFeedbackForClaudeKey) == "peer-feedback-1" &&
-			contextBool(updated.Context, superFeedbackReadyForClaudeKey)
+		feedback, _ := updated.ContextString(superFeedbackForClaudeKey)
+		ready, _ := updated.ContextBool(superFeedbackReadyForClaudeKey)
+		return feedback == "peer-feedback-1" && ready
 	}, time.Second, 20*time.Millisecond)
 
 	err = router.HandleMessage(context.Background(), &weibo.Message{
@@ -2870,8 +2882,10 @@ func TestHandleMessage_SuperFeedbackNotConsumedOnMainFailure(t *testing.T) {
 
 	updated, ok := sessionMgr.Get(sess.ID)
 	assert.True(t, ok)
-	assert.Equal(t, "must-keep-feedback", contextString(updated.Context, superFeedbackForClaudeKey))
-	assert.True(t, contextBool(updated.Context, superFeedbackReadyForClaudeKey))
+	feedback, _ := updated.ContextString(superFeedbackForClaudeKey)
+	ready, _ := updated.ContextBool(superFeedbackReadyForClaudeKey)
+	assert.Equal(t, "must-keep-feedback", feedback)
+	assert.True(t, ready)
 }
 
 func TestHandleMessage_SuperPeerReviewRunsAsync(t *testing.T) {

@@ -60,6 +60,7 @@ type processorTestRouter struct {
 	injected  chan string
 	injectErr error
 	release   <-chan struct{}
+	ackText   string
 }
 
 type sseTestAgent struct {
@@ -154,6 +155,13 @@ func (r *processorTestRouter) InjectByTheWay(ctx context.Context, msg *weibo.Mes
 		r.injected <- msg.UserID + ":" + msg.ID
 	}
 	return true, r.injectErr
+}
+
+func (r *processorTestRouter) CustomizeProcessingAck(msg *weibo.Message, defaultMessage string) string {
+	if strings.TrimSpace(r.ackText) == "" {
+		return defaultMessage
+	}
+	return r.ackText
 }
 
 func TestMainInitialization(t *testing.T) {
@@ -494,6 +502,23 @@ func TestMessageProcessor_SendsImmediateAckForFastRequests(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		replies := platform.Replies()
 		return len(replies) == 1 && strings.Contains(replies[0], processingAckMessage)
+	}, 200*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestMessageProcessor_UsesCustomizedProcessingAck(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	router := &processorTestRouter{
+		delay:   20 * time.Millisecond,
+		ackText: "已收到消息，正在处理中，请稍候。（Super：本轮将注入对侧已审批结论）",
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+
+	processor.dispatch(context.Background(), &weibo.Message{ID: "msg-custom-ack", UserID: "user-custom"})
+
+	assert.Eventually(t, func() bool {
+		replies := platform.Replies()
+		return len(replies) == 1 && strings.Contains(replies[0], "Super：本轮将注入对侧已审批结论")
 	}, 200*time.Millisecond, 10*time.Millisecond)
 }
 

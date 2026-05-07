@@ -35,6 +35,18 @@ type Session struct {
 	mu        sync.RWMutex
 }
 
+// SessionSnapshot 是会话的只读快照，避免并发读取可变字段导致数据竞争。
+type SessionSnapshot struct {
+	ID        string
+	UserID    string
+	Title     string
+	AgentType string
+	State     State
+	Context   map[string]interface{}
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 // Manager 会话管理器
 type Manager struct {
 	sessions     map[string]*Session
@@ -231,6 +243,31 @@ func (m *Manager) UpdateSession(id string, key string, value interface{}) {
 	}
 }
 
+// UpdateSessionContextAtomically 对指定会话的 context 执行原子更新。
+// mutator 返回 true 表示 context 有实际变更。
+func (m *Manager) UpdateSessionContextAtomically(id string, mutator func(ctx map[string]interface{}) bool) bool {
+	if mutator == nil {
+		return false
+	}
+
+	session, exists := m.Get(id)
+	if !exists || session == nil {
+		return false
+	}
+
+	changed := session.UpdateContextAtomically(mutator)
+	if !changed {
+		return false
+	}
+
+	if m.storagePath != "" {
+		m.mu.Lock()
+		m.saveSessionLocked(session)
+		m.mu.Unlock()
+	}
+	return true
+}
+
 // Get 获取会话
 func (m *Manager) Get(id string) (*Session, bool) {
 	m.mu.RLock()
@@ -247,6 +284,142 @@ func (s *Session) Update(key string, value interface{}) {
 
 	s.Context[key] = value
 	s.UpdatedAt = time.Now()
+}
+
+// UpdateContextAtomically 在持有会话锁时对 context 做原子更新。
+// mutator 返回 true 表示有实际变更。
+func (s *Session) UpdateContextAtomically(mutator func(ctx map[string]interface{}) bool) bool {
+	if s == nil || mutator == nil {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.Context == nil {
+		s.Context = make(map[string]interface{})
+	}
+	if !mutator(s.Context) {
+		return false
+	}
+	s.UpdatedAt = time.Now()
+	return true
+}
+
+func (s *Session) ContextValue(key string) (interface{}, bool) {
+	if s == nil {
+		return nil, false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	val, ok := s.Context[key]
+	return val, ok
+}
+
+// GetContext 在持有会话读锁时读取 context 键值。
+func (s *Session) GetContext(key string) (interface{}, bool) {
+	return s.ContextValue(key)
+}
+
+// SetContext 在持有会话写锁时写入 context 键值。
+func (s *Session) SetContext(key string, value interface{}) {
+	s.Update(key, value)
+}
+
+func (s *Session) ContextString(key string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	val, ok := s.Context[key].(string)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(val), true
+}
+
+func (s *Session) ContextBool(key string) (bool, bool) {
+	if s == nil {
+		return false, false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	raw, ok := s.Context[key]
+	if !ok || raw == nil {
+		return false, false
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return false, false
+		}
+		return parsed, true
+	default:
+		return false, false
+	}
+}
+
+func (s *Session) Snapshot() SessionSnapshot {
+	if s == nil {
+		return SessionSnapshot{}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ctx := make(map[string]interface{}, len(s.Context))
+	for k, v := range s.Context {
+		ctx[k] = v
+	}
+
+	return SessionSnapshot{
+		ID:        s.ID,
+		UserID:    s.UserID,
+		Title:     s.Title,
+		AgentType: s.AgentType,
+		State:     s.State,
+		Context:   ctx,
+		CreatedAt: s.CreatedAt,
+		UpdatedAt: s.UpdatedAt,
+	}
+}
+
+func (s *Session) IDValue() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ID
+}
+
+func (s *Session) UserIDValue() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.UserID
+}
+
+func (s *Session) AgentTypeValue() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AgentType
 }
 
 // SetAgentType 更新会话 Agent 类型

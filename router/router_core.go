@@ -54,6 +54,14 @@ type Router struct {
 	commandHandler *CommandHandler
 	liveMu         sync.Mutex
 	liveSessions   map[string]*interactiveSessionState
+	superReviewMu  sync.Mutex
+	superReviews   map[string]superReviewRun
+	nextReviewID   int64
+}
+
+type superReviewRun struct {
+	id     int64
+	cancel context.CancelFunc
 }
 
 // PlatformInterface 平台接口
@@ -77,6 +85,7 @@ func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr
 		sessionMgr:   sessionMgr,
 		agentMgr:     agentMgr,
 		liveSessions: make(map[string]*interactiveSessionState),
+		superReviews: make(map[string]superReviewRun),
 	}
 
 	if sessionMgr != nil && agentMgr != nil {
@@ -195,4 +204,38 @@ func (r *Router) toRouterMessage(msg *weibo.Message) *Message {
 			"msg_type":  string(msg.Type),
 		},
 	}
+}
+
+// CustomizeProcessingAck 根据会话状态定制“处理中”提示文案。
+func (r *Router) CustomizeProcessingAck(msg *weibo.Message, defaultMessage string) string {
+	if msg == nil || r.sessionMgr == nil {
+		return defaultMessage
+	}
+
+	content := strings.TrimSpace(msg.Content)
+	if strings.HasPrefix(content, "/") {
+		return defaultMessage
+	}
+
+	sess, ok := r.sessionMgr.GetActiveSession(msg.UserID)
+	if !ok || sess == nil {
+		return defaultMessage
+	}
+	if !isSuperModeEnabled(sess) {
+		return defaultMessage
+	}
+
+	agentType := strings.TrimSpace(sess.AgentType)
+	if agentType == "" && r.agentMgr != nil {
+		if defaultAgent := r.agentMgr.GetDefaultAgent(); defaultAgent != nil {
+			agentType = mapAgentName(defaultAgent.Name())
+		}
+	}
+
+	feedback, ready := superFeedbackReadyForAgent(sess, agentType)
+	if !ready || strings.TrimSpace(feedback) == "" {
+		return defaultMessage
+	}
+
+	return defaultMessage + "（Super：本轮将注入对侧已审批结论）"
 }

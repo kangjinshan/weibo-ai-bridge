@@ -49,10 +49,7 @@ func (r *Router) bindAgentNativeSessionID(sess *session.Session, sessionKey, nat
 		return sess
 	}
 
-	if sess.Context == nil {
-		sess.Context = make(map[string]interface{})
-	}
-	sess.Context[sessionKey] = nativeID
+	sess.SetContext(sessionKey, nativeID)
 
 	if r.sessionMgr == nil {
 		return sess

@@ -36,12 +36,50 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 		return errors.New("message cannot be nil")
 	}
 
-	stream, err := r.StreamMessage(ctx, msg)
+	routerMsg := r.toRouterMessage(msg)
+	content := strings.TrimSpace(routerMsg.Content)
+	if strings.HasPrefix(content, "/") && !isByTheWayCommand(content) && r.commandHandler != nil {
+		return r.handleSlashCommandDirect(ctx, routerMsg)
+	}
+
+	stream, err := r.streamRouterMessage(ctx, routerMsg)
 	if err != nil {
 		return err
 	}
 
 	return r.forwardStreamToPlatform(ctx, msg.UserID, stream)
+}
+
+func (r *Router) handleSlashCommandDirect(ctx context.Context, msg *Message) error {
+	resp, err := r.commandHandler.Handle(msg)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return errors.New("response is nil")
+	}
+
+	if strings.TrimSpace(resp.Content) != "" {
+		if sendErr := r.sendReply(ctx, msg.UserID, resp.Content); sendErr != nil {
+			return sendErr
+		}
+	}
+
+	if resp.Success && isDirSetCommand(msg.Content) {
+		sessionID := strings.TrimSpace(msg.SessionID)
+		if sessionID == "" && r.sessionMgr != nil {
+			sessionID = strings.TrimSpace(r.sessionMgr.GetActiveSessionID(msg.UserID))
+		}
+		if sessionID != "" {
+			r.removeInteractiveSession(sessionID)
+		}
+	}
+
+	if !resp.Success && resp.Error != nil {
+		return resp.Error
+	}
+
+	return nil
 }
 
 func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan agent.Event, error) {

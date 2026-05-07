@@ -232,6 +232,7 @@ go test ./...
 - 不要静默重命名 `claude-code` 或 `codex` 这些标识；改之前先检查解析逻辑和测试
 - 保持流式事件顺序稳定；router 和 HTTP 流式出口都依赖这个顺序
 - 谨慎修改会话上下文键，例如 `claude_session_id`、`codex_session_id`，它们直接影响续接逻辑
+- `session.Session.Context` 视为私有并发敏感字段：禁止在 `session` 包外直接 `sess.Context[...]` 读写；统一使用 `sess.GetContext/SetContext`、`sess.ContextString/ContextBool` 或 `Snapshot`
 - 不要引入按字节切分中文消息的逻辑，必须保持 rune 安全
 - delta resolution（`resolveTextDelta` 和 `resolveDeltaFromSnapshot`）同样必须按 UTF-8 rune 比较，不能按字节比较
 - 普通命令处理和普通聊天处理要分开，`/btw` 是唯一会进入实时交互注入路径的特殊命令

@@ -70,7 +70,9 @@ func (r *Router) handleByTheWayCommand(ctx context.Context, msg *Message, events
 		return err
 	}
 
-	return r.drainInteractiveSession(ctx, sess, agentSessionContextKey(sess.AgentType), liveState, events)
+	return r.drainInteractiveSession(ctx, sess, agentSessionContextKey(sess.AgentType), liveState, func(event agent.Event) {
+		events <- event
+	})
 }
 
 func (r *Router) injectByTheWay(msg *Message) (string, error) {

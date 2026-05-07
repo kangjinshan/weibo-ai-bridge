@@ -85,6 +85,8 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 		return h.handleDir(msg.UserID, msg.SessionID, args)
 	case "/status":
 		return h.handleStatus(msg.UserID, msg.SessionID)
+	case "/super":
+		return h.handleSuper(msg.UserID, msg.SessionID, args)
 	default:
 		return &Response{
 			Success: false,
@@ -106,7 +108,8 @@ func (h *CommandHandler) handleHelp() (*Response, error) {
 /btw [content] - 向当前正在进行的交互会话插入一条补充消息
 /model - 显示当前使用的模型
 /dir [path] - 显示或设置当前工作目录
-/status - 显示当前会话状态`
+/status - 显示当前会话状态
+/super [on|off|status] - 管理 Super 模式（on 等价于 Allow All）`
 	return &Response{
 		Success: true,
 		Content: helpText,
@@ -217,7 +220,7 @@ func (h *CommandHandler) handleList(userID string) (*Response, error) {
 				title += "（当前）"
 			}
 			project := ""
-			if workDir, ok := sess.Context["work_dir"].(string); ok {
+			if workDir, ok := sess.ContextString("work_dir"); ok {
 				project = shortProjectName(workDir)
 			}
 			rows = append(rows, listRow{
@@ -439,7 +442,7 @@ func (h *CommandHandler) collectSwitchCandidates(userID string) ([]*session.Sess
 	activeNativeID := ""
 	if hasActive {
 		activeAgentType = activeSess.AgentType
-		activeNativeID = nativeSessionIDFromContext(activeSess.AgentType, activeSess.Context)
+		activeNativeID = nativeSessionIDFromSession(activeSess.AgentType, activeSess)
 		if strings.TrimSpace(activeNativeID) == "" && !strings.HasPrefix(activeSess.ID, pendingNativeSessionPrefix) {
 			activeNativeID = strings.TrimSpace(activeSess.ID)
 		}
@@ -449,7 +452,7 @@ func (h *CommandHandler) collectSwitchCandidates(userID string) ([]*session.Sess
 	bridgeNativeIDs := make(map[string]bool)
 	bridgeNativeToSessionID := make(map[string]string)
 	for _, sess := range sessions {
-		if nativeID := nativeSessionIDFromContext(sess.AgentType, sess.Context); nativeID != "" {
+		if nativeID := nativeSessionIDFromSession(sess.AgentType, sess); nativeID != "" {
 			if activeAgentType != "" && sess.AgentType != activeAgentType {
 				continue
 			}
@@ -543,15 +546,15 @@ func escapeMarkdownTableCell(v string) string {
 	return strings.ReplaceAll(v, "|", "\\|")
 }
 
-func nativeSessionIDFromContext(agentType string, ctx map[string]interface{}) string {
-	if ctx == nil {
+func nativeSessionIDFromSession(agentType string, sess *session.Session) string {
+	if sess == nil {
 		return ""
 	}
 	key := agentSessionContextKey(agentType)
 	if key == "" {
 		return ""
 	}
-	val, ok := ctx[key].(string)
+	val, ok := sess.ContextString(key)
 	if !ok {
 		return ""
 	}
@@ -560,12 +563,12 @@ func nativeSessionIDFromContext(agentType string, ctx map[string]interface{}) st
 
 func currentClaudeNativeProjectPath(activeSess *session.Session) string {
 	if activeSess != nil {
-		if workDir, ok := activeSess.Context["work_dir"].(string); ok {
+		if workDir, ok := activeSess.ContextString("work_dir"); ok {
 			if normalized := normalizeNativeProjectPath(workDir); normalized != "" {
 				return normalized
 			}
 		}
-		if nativeID := nativeSessionIDFromContext("claude", activeSess.Context); nativeID != "" {
+		if nativeID := nativeSessionIDFromSession("claude", activeSess); nativeID != "" {
 			if resolved := resolveClaudeProjectPathBySessionID(nativeID); resolved != "" {
 				return resolved
 			}
@@ -748,6 +751,84 @@ func resolveConfigPathForRepair(path string) string {
 	return filepath.Join("config", "config.toml")
 }
 
+func (h *CommandHandler) handleSuper(userID, sessionID string, args []string) (*Response, error) {
+	sessID := strings.TrimSpace(sessionID)
+	if sessID == "" {
+		if activeID := strings.TrimSpace(h.sessionManager.GetActiveSessionID(userID)); activeID != "" {
+			sessID = activeID
+		}
+	}
+
+	sess, exists := h.sessionManager.Get(sessID)
+	if !exists {
+		return &Response{
+			Success: false,
+			Content: "Session not found. Use /new to create a new session.",
+		}, nil
+	}
+
+	showStatus := func() *Response {
+		claudeFeedback, claudeReady := superFeedbackReadyForAgent(sess, "claude")
+		codexFeedback, codexReady := superFeedbackReadyForAgent(sess, "codex")
+		if !isSuperModeEnabled(sess) {
+			return &Response{
+				Success: true,
+				Content: "Super mode: OFF",
+			}
+		}
+
+		return &Response{
+			Success: true,
+			Content: fmt.Sprintf(
+				"Super mode: ON (Allow All)\nAuto approval: %s\nPending feedback (claude): %s\nPending feedback (codex): %s",
+				boolToOnOff(isSuperAutoApproveEnabled(sess)),
+				boolToYesNo(claudeReady && strings.TrimSpace(claudeFeedback) != ""),
+				boolToYesNo(codexReady && strings.TrimSpace(codexFeedback) != ""),
+			),
+		}
+	}
+
+	if len(args) == 0 {
+		return showStatus(), nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "status":
+		return showStatus(), nil
+	case "on":
+		setSuperMode(h.sessionManager, sess.ID, true)
+		return &Response{
+			Success: true,
+			Content: "Super mode enabled. Allow All is ON for this session.",
+		}, nil
+	case "off":
+		setSuperMode(h.sessionManager, sess.ID, false)
+		return &Response{
+			Success: true,
+			Content: "Super mode disabled. Pending Super feedback cleared.",
+		}, nil
+	default:
+		return &Response{
+			Success: false,
+			Content: "Invalid super command. Use /super on, /super off, or /super status.",
+		}, nil
+	}
+}
+
+func boolToOnOff(enabled bool) string {
+	if enabled {
+		return "ON"
+	}
+	return "OFF"
+}
+
+func boolToYesNo(enabled bool) string {
+	if enabled {
+		return "yes"
+	}
+	return "no"
+}
+
 // handleModel 处理显示模型命令
 func (h *CommandHandler) handleModel(userID, sessionID string, args []string) (*Response, error) {
 	// 获取会话
@@ -822,13 +903,13 @@ func resolveSessionWorkDir(sess *session.Session) string {
 		return ""
 	}
 
-	if workDir, ok := sess.Context["work_dir"].(string); ok {
+	if workDir, ok := sess.ContextString("work_dir"); ok {
 		if normalized := strings.TrimSpace(workDir); normalized != "" {
 			return normalized
 		}
 	}
 
-	nativeID := strings.TrimSpace(nativeSessionIDFromContext(sess.AgentType, sess.Context))
+	nativeID := strings.TrimSpace(nativeSessionIDFromSession(sess.AgentType, sess))
 	if nativeID == "" && !strings.HasPrefix(strings.TrimSpace(sess.ID), pendingNativeSessionPrefix) {
 		nativeID = strings.TrimSpace(sess.ID)
 	}
@@ -912,8 +993,15 @@ func normalizeWorkDirPath(path string) (string, error) {
 
 // handleStatus 处理显示状态命令
 func (h *CommandHandler) handleStatus(userID, sessionID string) (*Response, error) {
+	sessID := strings.TrimSpace(sessionID)
+	if sessID == "" {
+		if activeID := strings.TrimSpace(h.sessionManager.GetActiveSessionID(userID)); activeID != "" {
+			sessID = activeID
+		}
+	}
+
 	// 获取会话
-	sess, exists := h.sessionManager.Get(sessionID)
+	sess, exists := h.sessionManager.Get(sessID)
 	if !exists {
 		return &Response{
 			Success: false,
@@ -947,6 +1035,11 @@ Total Sessions: %d`,
 		statusText += fmt.Sprintf("\nCurrent Agent: %s", currentAgent.Name())
 	} else {
 		statusText += fmt.Sprintf("\nCurrent Agent: Unavailable (%s)", sess.AgentType)
+	}
+	if isSuperModeEnabled(sess) {
+		statusText += "\nSuper mode: ON (Allow All)"
+	} else {
+		statusText += "\nSuper mode: OFF"
 	}
 
 	return &Response{

@@ -60,6 +60,7 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.Contains(t, resp.Content, "/model")
 	assert.Contains(t, resp.Content, "/dir")
 	assert.Contains(t, resp.Content, "/status")
+	assert.Contains(t, resp.Content, "/super")
 }
 
 func TestCommandHandler_Handle_List(t *testing.T) {
@@ -950,7 +951,9 @@ func TestCommandHandler_Handle_Dir_SetPath(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.True(t, resp.Success)
 	assert.Contains(t, resp.Content, workDir)
-	assert.Equal(t, workDir, sess.Context["work_dir"])
+	currentWorkDir, ok := sess.ContextString("work_dir")
+	assert.True(t, ok)
+	assert.Equal(t, workDir, currentWorkDir)
 }
 
 func TestCommandHandler_Handle_Dir_SetPath_Invalid(t *testing.T) {
@@ -1009,7 +1012,7 @@ func TestCommandHandler_Handle_Dir_FallsBackToProcessCwdWhenUnset(t *testing.T) 
 	assert.NoError(t, cwdErr)
 	assert.Contains(t, resp.Content, cwd)
 
-	workDir, ok := sess.Context["work_dir"].(string)
+	workDir, ok := sess.ContextString("work_dir")
 	assert.True(t, ok)
 	assert.Equal(t, cwd, workDir)
 }
@@ -1046,6 +1049,104 @@ func TestCommandHandler_Handle_Status(t *testing.T) {
 	assert.Contains(t, resp.Content, "user-1")
 	assert.Contains(t, resp.Content, "claude")
 	assert.Contains(t, resp.Content, "active")
+	assert.Contains(t, resp.Content, "Super mode: OFF")
+}
+
+func TestCommandHandler_Handle_Status_UsesActiveSessionWhenSessionIDMissing(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionManager.SetActiveSession("user-1", "session-1"))
+
+	msg := &Message{
+		ID:        "msg-status-active",
+		Type:      TypeText,
+		Content:   "/status",
+		UserID:    "user-1",
+		SessionID: "",
+	}
+
+	resp, err := handler.Handle(msg)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Session Status")
+	assert.Contains(t, resp.Content, "ID: session-1")
+}
+
+func TestCommandHandler_Handle_Super(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	resp, err := handler.Handle(&Message{
+		ID:        "msg-super-status",
+		Type:      TypeText,
+		Content:   "/super",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Super mode: OFF")
+
+	resp, err = handler.Handle(&Message{
+		ID:        "msg-super-on",
+		Type:      TypeText,
+		Content:   "/super on",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Allow All is ON")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.True(t, sessionContextBool(sess, superModeContextKey))
+	assert.True(t, sessionContextBool(sess, superAutoApproveContextKey))
+
+	setSuperFeedbackForAgent(sessionManager, "session-1", "claude", "feedback")
+	resp, err = handler.Handle(&Message{
+		ID:        "msg-super-status-2",
+		Type:      TypeText,
+		Content:   "/super status",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Super mode: ON (Allow All)")
+	assert.Contains(t, resp.Content, "Pending feedback (claude): yes")
+
+	resp, err = handler.Handle(&Message{
+		ID:        "msg-super-off",
+		Type:      TypeText,
+		Content:   "/super off",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Super mode disabled")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.False(t, sessionContextBool(sess, superModeContextKey))
+	assert.False(t, sessionContextBool(sess, superAutoApproveContextKey))
+	assert.Equal(t, "", sessionContextString(sess, superFeedbackForClaudeKey))
+	assert.False(t, sessionContextBool(sess, superFeedbackReadyForClaudeKey))
 }
 
 func TestCommandHandler_Handle_UnknownCommand(t *testing.T) {

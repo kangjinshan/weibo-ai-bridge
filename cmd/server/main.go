@@ -53,6 +53,10 @@ type messageHandler interface {
 	HandleMessage(ctx context.Context, msg *weibo.Message) error
 }
 
+type processingAckCustomizer interface {
+	CustomizeProcessingAck(msg *weibo.Message, defaultMessage string) string
+}
+
 type byTheWayInjector interface {
 	InjectByTheWay(ctx context.Context, msg *weibo.Message) (bool, error)
 }
@@ -374,7 +378,12 @@ func (p *messageProcessor) handle(ctx context.Context, msg *weibo.Message) {
 		p.logger.Printf("Processing message: id=%s, type=%s, user=%s", current.ID, current.Type, current.UserID)
 
 		if p.platform != nil && shouldSendProcessingAck(current) {
-			if err := p.platform.Reply(runCtx, current.UserID, processingAckMessage); err != nil {
+			ackMessage := processingAckMessage
+			if customizer, ok := p.router.(processingAckCustomizer); ok {
+				ackMessage = customizer.CustomizeProcessingAck(current, ackMessage)
+			}
+
+			if err := p.platform.Reply(runCtx, current.UserID, ackMessage); err != nil {
 				p.logger.Printf("Failed to send processing ack: id=%s, user=%s, error=%v", current.ID, current.UserID, err)
 			}
 		}

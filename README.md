@@ -12,6 +12,7 @@
 - **审批回复** — Agent 请求授权时回复 `允许` / `允许所有` / `取消`
 - **交互式插话** — `/btw` 向正在执行的 Agent turn 注入补充信息
 - **命令旁路** — `/help`、`/status` 等命令立即执行，不排队
+- **Super 协作模式** — `/super on` 后自动 `Allow All`，主 Agent 完成后自动调用对侧 Agent 复盘，并把结论注入下一轮
 - **内置微博 Skills** — 仓库自带 `weibo-skill-api`，安装时同步到 Agent skills 目录
 - **SSE 调试出口** — `/chat/stream` 接口可观察内部事件流
 
@@ -71,7 +72,8 @@ make dev
 | `/btw <内容>` | 向当前交互式会话注入补充信息 |
 | `/model` | 显示当前使用的模型 |
 | `/dir [path]` | 显示当前工作目录；传 `path` 时设置当前会话工作目录 |
-| `/status` | 显示当前会话状态 |
+| `/status` | 显示当前会话状态（`session_id` 缺失时自动回退到当前活跃会话） |
+| `/super [on\|off\|status]` | 管理 Super 模式；`on` 等价于对当前会话开启 `Allow All` |
 
 ### 授权回复
 
@@ -84,6 +86,16 @@ make dev
 | 允许所有 | 允许所有 / 允许全部 / 全部允许 / 所有允许 / 都允许 / 全部同意 / allow all / allowall / approve all / yes all |
 
 `允许所有` 仅对当前会话生效，后续授权自动通过。
+
+### Super 模式说明
+
+- `/super on`：
+  - 当前会话开启 `Allow All`（审批自动通过）
+  - 主 Agent 每轮输出完成后，会自动调用对侧 Agent 做复盘（超时 180 秒）
+  - 对侧复盘结论写入会话，并在下一轮自动注入给主 Agent 作为优化基础
+- `/super off`：
+  - 关闭 Super 模式
+  - 清空待注入的对侧复盘结论
 
 ## 配置
 
@@ -222,6 +234,9 @@ POST 请求：
   "session_id": "optional-session-id"
 }
 ```
+
+补充说明：
+- `session_id` 为可选；当请求内容是 slash 命令（例如 `/status`、`/super status`）且未传 `session_id` 时，路由层会回退到该 `user_id` 的当前活跃会话。
 
 返回 `text/event-stream`，事件类型：
 

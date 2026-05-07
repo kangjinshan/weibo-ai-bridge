@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -166,7 +167,7 @@ func (m *Manager) nextSessionIDLocked(userID string) string {
 // GetOrCreateSession 获取或创建会话
 func (m *Manager) GetOrCreateSession(id, userID, agentType string) *Session {
 	// 先尝试获取
-	if session, exists := m.Get(id); exists {
+	if session, exists := m.getInternal(id); exists {
 		m.SetActiveSession(userID, id)
 		return session
 	}
@@ -208,7 +209,7 @@ func (m *Manager) SetActiveSession(userID, sessionID string) bool {
 	defer m.mu.Unlock()
 
 	session, exists := m.sessions[sessionID]
-	if !exists || session.UserID != userID {
+	if !exists || session.UserIDValue() != userID {
 		return false
 	}
 
@@ -219,7 +220,7 @@ func (m *Manager) SetActiveSession(userID, sessionID string) bool {
 
 // GetOrCreateActiveSession 获取或创建用户当前活跃会话
 func (m *Manager) GetOrCreateActiveSession(userID, agentType string) *Session {
-	if session, exists := m.GetActiveSession(userID); exists {
+	if session, exists := m.getActiveSessionInternal(userID); exists {
 		return session
 	}
 
@@ -228,7 +229,7 @@ func (m *Manager) GetOrCreateActiveSession(userID, agentType string) *Session {
 
 // UpdateSession 更新会话
 func (m *Manager) UpdateSession(id string, key string, value interface{}) {
-	session, exists := m.Get(id)
+	session, exists := m.getInternal(id)
 	if !exists {
 		return
 	}
@@ -250,7 +251,7 @@ func (m *Manager) UpdateSessionContextAtomically(id string, mutator func(ctx map
 		return false
 	}
 
-	session, exists := m.Get(id)
+	session, exists := m.getInternal(id)
 	if !exists || session == nil {
 		return false
 	}
@@ -270,11 +271,35 @@ func (m *Manager) UpdateSessionContextAtomically(id string, mutator func(ctx map
 
 // Get 获取会话
 func (m *Manager) Get(id string) (*Session, bool) {
+	session, exists := m.getInternal(id)
+	if !exists || session == nil {
+		return nil, false
+	}
+
+	return detachedSessionFromSnapshot(session.Snapshot()), true
+}
+
+func (m *Manager) getInternal(id string) (*Session, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	session, exists := m.sessions[id]
 	return session, exists
+}
+
+func (m *Manager) getActiveSessionInternal(userID string) (*Session, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sessionID, exists := m.activeByUser[userID]
+	if !exists {
+		return nil, false
+	}
+	session, ok := m.sessions[sessionID]
+	if !ok || session == nil {
+		return nil, false
+	}
+	return session, true
 }
 
 // Update 更新会话
@@ -315,7 +340,7 @@ func (s *Session) ContextValue(key string) (interface{}, bool) {
 	defer s.mu.RUnlock()
 
 	val, ok := s.Context[key]
-	return val, ok
+	return cloneContextValue(val), ok
 }
 
 // GetContext 在持有会话读锁时读取 context 键值。
@@ -380,7 +405,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 
 	ctx := make(map[string]interface{}, len(s.Context))
 	for k, v := range s.Context {
-		ctx[k] = v
+		ctx[k] = cloneContextValue(v)
 	}
 
 	return SessionSnapshot{
@@ -392,6 +417,24 @@ func (s *Session) Snapshot() SessionSnapshot {
 		Context:   ctx,
 		CreatedAt: s.CreatedAt,
 		UpdatedAt: s.UpdatedAt,
+	}
+}
+
+func detachedSessionFromSnapshot(snap SessionSnapshot) *Session {
+	ctx := make(map[string]interface{}, len(snap.Context))
+	for k, v := range snap.Context {
+		ctx[k] = cloneContextValue(v)
+	}
+
+	return &Session{
+		ID:        snap.ID,
+		UserID:    snap.UserID,
+		Title:     snap.Title,
+		AgentType: snap.AgentType,
+		State:     snap.State,
+		Context:   ctx,
+		CreatedAt: snap.CreatedAt,
+		UpdatedAt: snap.UpdatedAt,
 	}
 }
 
@@ -420,6 +463,36 @@ func (s *Session) AgentTypeValue() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.AgentType
+}
+
+func (s *Session) CreatedAtValue() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.CreatedAt
+}
+
+func (s *Session) UpdatedAtValue() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.UpdatedAt
+}
+
+func (s *Session) CloseSession() {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.State = StateClosed
+	s.UpdatedAt = time.Now()
 }
 
 // SetAgentType 更新会话 Agent 类型
@@ -469,6 +542,11 @@ func (s *Session) ToJSON() ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	ctx := make(map[string]interface{}, len(s.Context))
+	for k, v := range s.Context {
+		ctx[k] = cloneContextValue(v)
+	}
+
 	// 创建一个可序列化的副本
 	data := map[string]interface{}{
 		"id":         s.ID,
@@ -476,7 +554,7 @@ func (s *Session) ToJSON() ([]byte, error) {
 		"title":      s.Title,
 		"agent_type": s.AgentType,
 		"state":      s.State,
-		"context":    s.Context,
+		"context":    ctx,
 		"created_at": s.CreatedAt,
 		"updated_at": s.UpdatedAt,
 	}
@@ -522,8 +600,7 @@ func (m *Manager) Close(id string) {
 	defer m.mu.Unlock()
 
 	if session, exists := m.sessions[id]; exists {
-		session.State = StateClosed
-		session.UpdatedAt = time.Now()
+		session.CloseSession()
 		m.saveSessionLocked(session)
 	}
 }
@@ -557,21 +634,35 @@ func (m *Manager) Count() int {
 // ListByUser 按创建时间列出指定用户的全部会话。
 func (m *Manager) ListByUser(userID string) []*Session {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	sessions := make([]*Session, 0)
+	all := make([]*Session, 0, len(m.sessions))
 	for _, sess := range m.sessions {
-		if sess.UserID == userID {
-			sessions = append(sessions, sess)
+		if sess != nil {
+			all = append(all, sess)
+		}
+	}
+	m.mu.RUnlock()
+
+	snapshots := make([]SessionSnapshot, 0, len(all))
+	for _, sess := range all {
+		snap := sess.Snapshot()
+		if snap.UserID == userID {
+			snapshots = append(snapshots, snap)
 		}
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		if sessions[i].CreatedAt.Equal(sessions[j].CreatedAt) {
-			return sessions[i].ID < sessions[j].ID
+	sort.Slice(snapshots, func(i, j int) bool {
+		left := snapshots[i]
+		right := snapshots[j]
+		if left.CreatedAt.Equal(right.CreatedAt) {
+			return left.ID < right.ID
 		}
-		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
+		return left.CreatedAt.Before(right.CreatedAt)
 	})
+
+	sessions := make([]*Session, 0, len(snapshots))
+	for _, snap := range snapshots {
+		sessions = append(sessions, detachedSessionFromSnapshot(snap))
+	}
 
 	return sessions
 }
@@ -590,9 +681,10 @@ func (m *Manager) cleanExpiredLocked() int {
 	expired := 0
 
 	for id, session := range m.sessions {
-		if now.Sub(session.UpdatedAt) > timeout {
-			if activeID, ok := m.activeByUser[session.UserID]; ok && activeID == id {
-				delete(m.activeByUser, session.UserID)
+		if now.Sub(session.UpdatedAtValue()) > timeout {
+			userID := session.UserIDValue()
+			if activeID, ok := m.activeByUser[userID]; ok && activeID == id {
+				delete(m.activeByUser, userID)
 			}
 			delete(m.sessions, id)
 			expired++
@@ -1009,4 +1101,113 @@ func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return nil
+}
+
+func cloneContextValue(v interface{}) interface{} {
+	cloned := cloneReflectValue(reflect.ValueOf(v))
+	if !cloned.IsValid() {
+		return nil
+	}
+	return cloned.Interface()
+}
+
+func cloneReflectValue(v reflect.Value) reflect.Value {
+	if !v.IsValid() {
+		return reflect.Value{}
+	}
+
+	switch v.Kind() {
+	case reflect.Interface:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		elem := cloneReflectValue(v.Elem())
+		out := reflect.New(v.Type()).Elem()
+		if elem.IsValid() {
+			out.Set(elem)
+		}
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		copied := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			srcVal := iter.Value()
+			clonedVal := cloneReflectValue(srcVal)
+			if !clonedVal.IsValid() {
+				clonedVal = reflect.Zero(srcVal.Type())
+			}
+			if !clonedVal.Type().AssignableTo(srcVal.Type()) {
+				if clonedVal.Type().ConvertibleTo(srcVal.Type()) {
+					clonedVal = clonedVal.Convert(srcVal.Type())
+				} else {
+					clonedVal = srcVal
+				}
+			}
+			copied.SetMapIndex(iter.Key(), clonedVal)
+		}
+		return copied
+	case reflect.Slice, reflect.Array:
+		length := v.Len()
+		copied := reflect.New(v.Type()).Elem()
+		if v.Kind() == reflect.Slice {
+			if v.IsNil() {
+				return reflect.Zero(v.Type())
+			}
+			copied = reflect.MakeSlice(v.Type(), length, length)
+		}
+		for i := 0; i < length; i++ {
+			srcVal := v.Index(i)
+			clonedVal := cloneReflectValue(srcVal)
+			if !clonedVal.IsValid() {
+				clonedVal = reflect.Zero(srcVal.Type())
+			}
+			if !clonedVal.Type().AssignableTo(srcVal.Type()) {
+				if clonedVal.Type().ConvertibleTo(srcVal.Type()) {
+					clonedVal = clonedVal.Convert(srcVal.Type())
+				} else {
+					clonedVal = srcVal
+				}
+			}
+			copied.Index(i).Set(clonedVal)
+		}
+		return copied
+	case reflect.Pointer:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		elem := cloneReflectValue(v.Elem())
+		out := reflect.New(v.Type().Elem())
+		if elem.IsValid() {
+			out.Elem().Set(elem)
+		}
+		return out
+	case reflect.Struct:
+		copied := reflect.New(v.Type()).Elem()
+		copied.Set(v)
+		for i := 0; i < v.NumField(); i++ {
+			dstField := copied.Field(i)
+			if !dstField.CanSet() {
+				continue
+			}
+			srcField := v.Field(i)
+			clonedField := cloneReflectValue(srcField)
+			if !clonedField.IsValid() {
+				clonedField = reflect.Zero(srcField.Type())
+			}
+			if !clonedField.Type().AssignableTo(srcField.Type()) {
+				if clonedField.Type().ConvertibleTo(srcField.Type()) {
+					clonedField = clonedField.Convert(srcField.Type())
+				} else {
+					clonedField = srcField
+				}
+			}
+			dstField.Set(clonedField)
+		}
+		return copied
+	default:
+		return v
+	}
 }

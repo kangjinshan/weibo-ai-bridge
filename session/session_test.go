@@ -66,6 +66,28 @@ func TestManager_Get(t *testing.T) {
 	assert.Nil(t, session)
 }
 
+func TestManager_Get_ReturnsDetachedCopy(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+	created := mgr.Create("test-id", "user-123", "claude")
+	assert.NotNil(t, created)
+	created.Update("work_dir", "/tmp/original")
+
+	session, exists := mgr.Get("test-id")
+	assert.True(t, exists)
+	assert.NotNil(t, session)
+
+	session.SetAgentType("codex")
+	session.Update("work_dir", "/tmp/changed")
+
+	restored, exists := mgr.Get("test-id")
+	assert.True(t, exists)
+	assert.Equal(t, "claude", restored.AgentTypeValue())
+
+	workDir, ok := restored.ContextString("work_dir")
+	assert.True(t, ok)
+	assert.Equal(t, "/tmp/original", workDir)
+}
+
 func TestSession_Update(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 3600})
 	session := mgr.Create("test-id", "user-123", "claude")
@@ -141,6 +163,27 @@ func TestManager_ListByUser(t *testing.T) {
 	assert.Len(t, sessions, 2)
 	assert.Equal(t, session2.ID, sessions[0].ID)
 	assert.Equal(t, session1.ID, sessions[1].ID)
+}
+
+func TestManager_ListByUser_ReturnsDetachedCopies(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	original := mgr.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, original)
+	original.Update("work_dir", "/tmp/original")
+
+	sessions := mgr.ListByUser("user-1")
+	assert.Len(t, sessions, 1)
+
+	sessions[0].SetAgentType("codex")
+	sessions[0].Update("work_dir", "/tmp/changed")
+
+	restored, exists := mgr.Get("session-1")
+	assert.True(t, exists)
+	assert.Equal(t, "claude", restored.AgentTypeValue())
+	workDir, ok := restored.ContextString("work_dir")
+	assert.True(t, ok)
+	assert.Equal(t, "/tmp/original", workDir)
 }
 
 func TestManager_CleanExpired(t *testing.T) {
@@ -262,6 +305,55 @@ func TestSession_ToJSON_FromJSON_RoundTrip(t *testing.T) {
 	assert.Equal(t, original.Title, restored.Title)
 	assert.Equal(t, original.AgentType, restored.AgentType)
 	assert.Equal(t, original.State, restored.State)
+}
+
+func TestSession_ContextValue_DeepClonesStructValues(t *testing.T) {
+	type payload struct {
+		Name string
+		Meta map[string]int
+		Tags []string
+	}
+
+	type payloadPtr struct {
+		Meta map[string]int
+	}
+
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+	sess := mgr.Create("test-id", "user-123", "claude")
+	assert.NotNil(t, sess)
+
+	sess.SetContext("value_struct", payload{
+		Name: "origin",
+		Meta: map[string]int{"a": 1},
+		Tags: []string{"x"},
+	})
+	sess.SetContext("value_ptr", &payloadPtr{
+		Meta: map[string]int{"b": 2},
+	})
+
+	rawStruct, ok := sess.ContextValue("value_struct")
+	assert.True(t, ok)
+	structVal, ok := rawStruct.(payload)
+	assert.True(t, ok)
+	structVal.Meta["a"] = 99
+	structVal.Tags[0] = "changed"
+
+	rawPtr, ok := sess.ContextValue("value_ptr")
+	assert.True(t, ok)
+	ptrVal, ok := rawPtr.(*payloadPtr)
+	assert.True(t, ok)
+	ptrVal.Meta["b"] = 77
+
+	restoredStructRaw, ok := sess.ContextValue("value_struct")
+	assert.True(t, ok)
+	restoredStruct := restoredStructRaw.(payload)
+	assert.Equal(t, 1, restoredStruct.Meta["a"])
+	assert.Equal(t, "x", restoredStruct.Tags[0])
+
+	restoredPtrRaw, ok := sess.ContextValue("value_ptr")
+	assert.True(t, ok)
+	restoredPtr := restoredPtrRaw.(*payloadPtr)
+	assert.Equal(t, 2, restoredPtr.Meta["b"])
 }
 
 func TestSession_SetTitleIfEmpty_TruncatesTo50RunesAndDoesNotOverwrite(t *testing.T) {

@@ -694,8 +694,7 @@ func TestCommandHandler_Handle_SwitchSessionByNumber_RejectsInvalidIndex(t *test
 	handler := NewCommandHandler(sessionManager, agentManager)
 
 	sessionManager.Create("session-1", "user-1", "claude")
-	sess, _ := sessionManager.Get("session-1")
-	sess.Update("claude_session_id", "native-claude-1")
+	sessionManager.UpdateSession("session-1", "claude_session_id", "native-claude-1")
 
 	resp, err := handler.Handle(&Message{
 		ID:      "msg-switch-session",

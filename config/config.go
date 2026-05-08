@@ -105,7 +105,7 @@ func Load() *Config {
 	// Claude 配置：API Key 和模型由 Claude Code CLI 管理
 	// 只需要控制是否启用 Claude Agent
 	if val := os.Getenv("CLAUDE_ENABLED"); val != "" {
-		cfg.Agent.Claude.Enabled = val == "true"
+		cfg.Agent.Claude.Enabled = parseBoolEnv(val)
 	}
 	if val := os.Getenv("CODEX_API_KEY"); val != "" {
 		cfg.Agent.Codex.APIKey = val
@@ -114,7 +114,7 @@ func Load() *Config {
 		cfg.Agent.Codex.Model = val
 	}
 	if val := os.Getenv("CODEX_ENABLED"); val != "" {
-		cfg.Agent.Codex.Enabled = val == "true"
+		cfg.Agent.Codex.Enabled = parseBoolEnv(val)
 	}
 	if val := os.Getenv("LOG_LEVEL"); val != "" {
 		cfg.Log.Level = val
@@ -179,6 +179,11 @@ func firstEnv(keys ...string) string {
 	}
 
 	return ""
+}
+
+func parseBoolEnv(value string) bool {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	return err == nil && parsed
 }
 
 // LoadFromFile 从文件加载配置

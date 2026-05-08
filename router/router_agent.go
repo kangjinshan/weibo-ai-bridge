@@ -200,7 +200,7 @@ func (r *Router) launchSuperPeerReview(sessionID, userID, currentAgentType, user
 		if workDir != "" {
 			reviewCtx = agent.WithWorkDir(reviewCtx, workDir)
 		}
-		r.runSuperPeerReview(reviewCtx, sessionID, userID, currentAgentType, userInput, mainOutput)
+		r.runSuperPeerReview(reviewCtx, reviewID, sessionID, userID, currentAgentType, userInput, mainOutput)
 	}()
 }
 
@@ -236,6 +236,7 @@ func (r *Router) endSuperPeerReview(sessionID string, reviewID int64) {
 
 func (r *Router) runSuperPeerReview(
 	ctx context.Context,
+	reviewID int64,
 	sessionID string,
 	userID string,
 	currentAgentType string,
@@ -273,6 +274,9 @@ func (r *Router) runSuperPeerReview(
 	}
 
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || !r.isCurrentSuperPeerReview(sessionID, reviewID) {
+			return
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			r.sendSuperNotice(userID, superPeerReviewTimeoutNotice)
 			return
@@ -289,7 +293,18 @@ func (r *Router) runSuperPeerReview(
 	if !ok || latest == nil || !isSuperModeEnabled(latest) {
 		return
 	}
+	if !r.isCurrentSuperPeerReview(sessionID, reviewID) {
+		return
+	}
 	setSuperFeedbackForAgent(r.sessionMgr, sessionID, currentAgentType, feedback)
+}
+
+func (r *Router) isCurrentSuperPeerReview(sessionID string, reviewID int64) bool {
+	r.superReviewMu.Lock()
+	defer r.superReviewMu.Unlock()
+
+	current, ok := r.superReviews[sessionID]
+	return ok && current.id == reviewID
 }
 
 func (r *Router) runSuperPeerReviewInteractive(

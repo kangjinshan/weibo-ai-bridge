@@ -229,13 +229,7 @@ func main() {
 	}
 
 	// 创建 HTTP 服务器
-	server := &http.Server{
-		Addr:         "127.0.0.1:" + port,
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	server := newHTTPServer(port, mux)
 
 	// 启动 HTTP 服务器（在 goroutine 中）
 	go func() {
@@ -296,6 +290,17 @@ func initLogger(logCfg config.LogConfig) {
 	}
 
 	logger = log.New(output, "[weibo-ai-bridge] ", log.LstdFlags|log.Lshortfile)
+}
+
+func newHTTPServer(port string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:        "127.0.0.1:" + port,
+		Handler:     handler,
+		ReadTimeout: 30 * time.Second,
+		// /chat/stream 是长连接 SSE，不能用短写超时截断慢回复。
+		WriteTimeout: 0,
+		IdleTimeout:  60 * time.Second,
+	}
 }
 
 // processMessages 处理消息循环

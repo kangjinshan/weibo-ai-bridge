@@ -204,31 +204,46 @@ func (p *Platform) connect() error {
 // Start 启动平台
 func (p *Platform) Start(ctx context.Context) error {
 	p.logger.Printf("🚀 Starting platform with app_id: %s", p.appID)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	childCtx, cancel := context.WithCancel(ctx)
+	p.cancel = cancel
 
 	// 获取 token
-	if err := p.refreshToken(ctx); err != nil {
+	if err := p.refreshToken(childCtx); err != nil {
+		cancel()
 		return fmt.Errorf("failed to get token: %w", err)
 	}
 
 	// 连接 WebSocket
 	if err := p.connect(); err != nil {
+		cancel()
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
+	p.connMutex.Lock()
 	p.running = true
+	p.ctx = childCtx
+	p.connMutex.Unlock()
 	p.logger.Printf("✅ Platform started successfully")
 
 	// 启动心跳
 	p.wg.Add(2)
 	go func() {
 		defer p.wg.Done()
-		p.heartbeatLoop(p.ctx)
+		p.heartbeatLoop(childCtx)
 	}()
 
 	// 启动消息循环
 	go func() {
 		defer p.wg.Done()
-		p.messageLoop(p.ctx)
+		p.messageLoop(childCtx)
+	}()
+
+	go func() {
+		<-childCtx.Done()
+		p.closeConnection()
 	}()
 
 	return nil
@@ -236,23 +251,34 @@ func (p *Platform) Start(ctx context.Context) error {
 
 // Stop 停止平台
 func (p *Platform) Stop() error {
-	p.connMutex.Lock()
-	var closeErr error
-	if p.conn != nil {
-		closeErr = p.conn.Close()
+	if p.cancel != nil {
+		p.cancel()
 	}
-	p.running = false
-	p.connMutex.Unlock()
-
-	p.cancel()
+	closeErr := p.closeConnection()
 	p.wg.Wait()
 
 	p.logger.Printf("Platform stopped")
 	return closeErr
 }
 
+func (p *Platform) closeConnection() error {
+	p.connMutex.Lock()
+	defer p.connMutex.Unlock()
+
+	var closeErr error
+	if p.conn != nil {
+		closeErr = p.conn.Close()
+		p.conn = nil
+	}
+	p.running = false
+	return closeErr
+}
+
 // IsRunning 检查运行状态
 func (p *Platform) IsRunning() bool {
+	p.connMutex.Lock()
+	defer p.connMutex.Unlock()
+
 	return p.running
 }
 
@@ -593,7 +619,10 @@ func (p *Platform) isDuplicate(msg *Message) bool {
 	p.dedupMu.Lock()
 	defer p.dedupMu.Unlock()
 
-	key := fmt.Sprintf("%s-%d", msg.UserID, msg.Timestamp)
+	key := strings.TrimSpace(msg.ID)
+	if key == "" {
+		key = fmt.Sprintf("%s-%d", msg.UserID, msg.Timestamp)
+	}
 	if last, exists := p.dedup[key]; exists && time.Since(last) < 5*time.Minute {
 		return true
 	}

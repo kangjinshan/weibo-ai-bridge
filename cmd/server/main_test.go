@@ -206,6 +206,15 @@ func TestComponentInitialization(t *testing.T) {
 	assert.Equal(t, 0, agentMgr.Count())
 }
 
+func TestNewHTTPServer_AllowsLongLivedSSEStreams(t *testing.T) {
+	server := newHTTPServer("5533", http.NewServeMux())
+
+	assert.Equal(t, "127.0.0.1:5533", server.Addr)
+	assert.Equal(t, 30*time.Second, server.ReadTimeout)
+	assert.Equal(t, time.Duration(0), server.WriteTimeout)
+	assert.Equal(t, 60*time.Second, server.IdleTimeout)
+}
+
 func TestNewSessionManager_UsesConfiguredStoragePath(t *testing.T) {
 	storagePath := filepath.Join(t.TempDir(), "sessions")
 	cfg := &config.Config{

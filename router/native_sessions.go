@@ -143,7 +143,12 @@ func listNativeClaudeSessions(bridgeNativeIDs map[string]bool, projectPath strin
 
 	// 补充 history.jsonl 中记录的会话（覆盖无 .jsonl 文件的新版会话）
 	historySessions := listClaudeSessionsFromHistory(homeDir, bridgeNativeIDs)
-	sessions = append(sessions, historySessions...)
+	for _, ns := range historySessions {
+		if !matchesNativeProjectFilter(ns.Project, projectFilter) {
+			continue
+		}
+		sessions = append(sessions, ns)
+	}
 
 	sessions = dedupeNativeSessionsByID(sessions)
 	sort.Slice(sessions, func(i, j int) bool {
@@ -243,7 +248,6 @@ func listClaudeSessionsFromHistory(homeDir string, bridgeNativeIDs map[string]bo
 	}
 	return result
 }
-
 
 // isCommandWord 判断是否为短命令式词汇（非真实对话内容）
 func isCommandWord(s string) bool {
@@ -505,8 +509,6 @@ func parseClaudeSessionFile(filePath, sessionID, projectPath string, bridgeNativ
 		InBridge:  bridgeNativeIDs[firstSessionID],
 	}, true
 }
-
-
 
 func firstNonEmptyString(values ...string) string {
 	for _, v := range values {

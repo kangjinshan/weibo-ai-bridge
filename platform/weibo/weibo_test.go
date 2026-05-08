@@ -248,6 +248,44 @@ func TestPlatform_ContextCancellation(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestPlatform_StartStopsWhenParentContextIsCanceled(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"uid":123,"token":"token-1","expire_in":3600}}`))
+	}))
+	defer tokenServer.Close()
+
+	wsServer := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		<-time.After(2 * time.Second)
+	}))
+	defer wsServer.Close()
+
+	platform, err := NewPlatform("test-app-id", "test-secret")
+	require.NoError(t, err)
+	platform.Configure(tokenServer.URL, "ws"+strings.TrimPrefix(wsServer.URL, "http"), time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, platform.Start(ctx))
+
+	cancel()
+	require.Eventually(t, func() bool {
+		return !platform.IsRunning()
+	}, time.Second, 20*time.Millisecond)
+}
+
+func TestPlatformDedupUsesMessageIDInsteadOfTimestampOnly(t *testing.T) {
+	platform, err := NewPlatform("test-app-id", "test-secret")
+	require.NoError(t, err)
+
+	first := &Message{ID: "msg-1", UserID: "user-1", Timestamp: 1713556800}
+	second := &Message{ID: "msg-2", UserID: "user-1", Timestamp: 1713556800}
+	duplicateFirst := &Message{ID: "msg-1", UserID: "user-1", Timestamp: 1713556801}
+
+	assert.False(t, platform.isDuplicate(first))
+	assert.False(t, platform.isDuplicate(second))
+	assert.True(t, platform.isDuplicate(duplicateFirst))
+}
+
 func TestBuildSendMessageFrame(t *testing.T) {
 	data, err := buildSendMessageFrame("user-1", "hello", "msg-1", 2, false)
 

@@ -131,3 +131,38 @@ output = "stdout"
 	assert.Equal(t, "http://file.example.com/token", cfg.Platform.Weibo.TokenURL)
 	assert.Equal(t, 3600, cfg.Session.Timeout)
 }
+
+func TestLoadParsesBooleanEnvValuesFlexibly(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.toml")
+	content := `
+[platform.weibo]
+app_id = "file-app-id"
+app_secret = "file-secret"
+
+[agent.claude]
+enabled = false
+
+[agent.codex]
+enabled = false
+
+[session]
+timeout = 3600
+max_size = 1000
+
+[log]
+level = "info"
+format = "json"
+output = "stdout"
+`
+	assert.NoError(t, os.WriteFile(configFile, []byte(content), 0o644))
+
+	t.Setenv("CONFIG_PATH", configFile)
+	t.Setenv("CLAUDE_ENABLED", "1")
+	t.Setenv("CODEX_ENABLED", "TRUE")
+
+	cfg := Load()
+
+	assert.True(t, cfg.Agent.Claude.Enabled)
+	assert.True(t, cfg.Agent.Codex.Enabled)
+}

@@ -343,8 +343,6 @@ func TestParseClaudeSessionFile_UsesCwdFromTranscript(t *testing.T) {
 	}
 }
 
-
-
 func TestParseClaudeSessionFile_FiltersSidechain(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionID := "80b2c6c6-273a-49a7-bcab-8333d6582276"
@@ -639,5 +637,37 @@ func TestListNativeClaudeSessions_MergesHistory(t *testing.T) {
 	}
 	if _, ok := byID["0a8ea231-4406-4dd3-8065-0510acbbc071"]; !ok {
 		t.Error("history-only session not found")
+	}
+}
+
+func TestListNativeClaudeSessionsForProject_FiltersHistoryOnlySessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	projectsDir := filepath.Join(claudeDir, "projects")
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	historyContent := `{"display":"项目A会话","timestamp":1774944752288,"project":"/home/ubuntu/project-a","sessionId":"80b2c6c6-273a-49a7-bcab-8333d6582276"}
+{"display":"项目B会话","timestamp":1774944900000,"project":"/home/ubuntu/project-b","sessionId":"0a8ea231-4406-4dd3-8065-0510acbbc071"}
+`
+	if err := os.WriteFile(filepath.Join(claudeDir, "history.jsonl"), []byte(historyContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	sessions, err := ListNativeClaudeSessionsForProject(map[string]bool{}, "/home/ubuntu/project-a")
+	if err != nil {
+		t.Fatalf("ListNativeClaudeSessionsForProject error: %v", err)
+	}
+
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d: %+v", len(sessions), sessions)
+	}
+	if sessions[0].ID != "80b2c6c6-273a-49a7-bcab-8333d6582276" {
+		t.Fatalf("session ID = %q, want project-a session", sessions[0].ID)
 	}
 }

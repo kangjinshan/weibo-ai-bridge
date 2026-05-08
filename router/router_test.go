@@ -2941,3 +2941,109 @@ func TestHandleMessage_SuperPeerReviewRunsAsync(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Less(t, elapsed, 200*time.Millisecond)
 }
+
+func TestHandleMessage_SuperPeerReviewIgnoresStaleCanceledReview(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	sess := sessionMgr.Create("session-super-stale", "user-super-stale", "claude")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-super-stale", sess.ID))
+	sessionMgr.UpdateSession(sess.ID, superModeContextKey, true)
+	sessionMgr.UpdateSession(sess.ID, superAutoApproveContextKey, true)
+
+	mainAgent := &MockAgent{
+		name:      "claude-code",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			stream := make(chan agent.Event, 2)
+			stream <- agent.Event{Type: agent.EventTypeMessage, Content: "主代理输出"}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+
+	firstReviewStarted := make(chan struct{}, 1)
+	releaseFirstReview := make(chan struct{})
+	firstReviewClosed := make(chan struct{})
+	var reviewMu sync.Mutex
+	reviewCalls := 0
+	peerAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			reviewMu.Lock()
+			reviewCalls++
+			call := reviewCalls
+			reviewMu.Unlock()
+
+			stream := make(chan agent.Event, 2)
+			if call == 1 {
+				firstReviewStarted <- struct{}{}
+				go func() {
+					defer close(firstReviewClosed)
+					<-releaseFirstReview
+					stream <- agent.Event{Type: agent.EventTypeMessage, Content: "old-feedback"}
+					stream <- agent.Event{Type: agent.EventTypeDone}
+					close(stream)
+				}()
+				return stream, nil
+			}
+
+			stream <- agent.Event{Type: agent.EventTypeMessage, Content: "new-feedback"}
+			stream <- agent.Event{Type: agent.EventTypeDone}
+			close(stream)
+			return stream, nil
+		},
+	}
+	agentMgr.Register(mainAgent)
+	agentMgr.Register(peerAgent)
+	agentMgr.SetDefault("claude-code")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-stale-1",
+		Type:      weibo.MessageTypeText,
+		Content:   "第一轮",
+		UserID:    "user-super-stale",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	select {
+	case <-firstReviewStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first peer review did not start")
+	}
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-super-stale-2",
+		Type:      weibo.MessageTypeText,
+		Content:   "第二轮",
+		UserID:    "user-super-stale",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+	assert.NoError(t, err)
+
+	assert.Eventually(t, func() bool {
+		updated, _ := sessionMgr.Get(sess.ID)
+		feedback, _ := updated.ContextString(superFeedbackForClaudeKey)
+		return feedback == "new-feedback"
+	}, time.Second, 20*time.Millisecond)
+
+	close(releaseFirstReview)
+	select {
+	case <-firstReviewClosed:
+	case <-time.After(time.Second):
+		t.Fatal("first peer review did not close")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	updated, _ := sessionMgr.Get(sess.ID)
+	feedback, _ := updated.ContextString(superFeedbackForClaudeKey)
+	assert.Equal(t, "new-feedback", feedback)
+}

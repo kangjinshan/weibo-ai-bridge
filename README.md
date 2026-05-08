@@ -12,6 +12,8 @@
 - **审批回复** — Agent 请求授权时回复 `允许` / `允许所有` / `取消`
 - **交互式插话** — `/btw` 向正在执行的 Agent turn 注入补充信息
 - **命令旁路** — `/help`、`/status` 等命令立即执行，不排队
+- **交互会话自愈** — 若新 turn 出现 stale “空 done”，会自动重建交互会话并重试一次
+- **Codex 收尾容错** — `turn/completed` 后紧跟 EOF 或 WebSocket `close 1006` 按正常结束处理
 - **Super 协作模式** — `/super on` 后自动 `Allow All`，主 Agent 完成后自动调用对侧 Agent 复盘，并把结论注入下一轮
 - **内置微博 Skills** — 仓库自带 `weibo-skill-api`，安装时同步到 Agent skills 目录
 - **SSE 调试出口** — `/chat/stream` 接口可观察内部事件流
@@ -168,8 +170,9 @@ output = "stdout"
 ### Agent Session ID
 
 - **Claude** — 使用 `--output-format stream-json` 流式路径，首轮提取 `session_id`，后续用 `--resume` 继续对话
-- **Codex** — 优先通过 `codex app-server` 获取 `item/agentMessage/delta` 流式增量；不可用时回退到 `codex exec --json`。Bridge 把 `thread_id` 持久化到 `codex_session_id`。续接已存在线程时使用最小 `thread/resume` 参数（不覆盖原线程策略），并在运行中同步 `threadId` 变化，确保持续续写同一线程
+- **Codex** — 优先通过 `codex app-server` 获取 `item/agentMessage/delta` 流式增量；不可用时回退到 `codex exec --json`。Bridge 把 `thread_id` 持久化到 `codex_session_id`。续接已存在线程时使用最小 `thread/resume` 参数（不覆盖原线程策略），并在运行中同步 `threadId` 变化，确保持续续写同一线程。`turn/completed` 后若紧跟 EOF/`close 1006`，按正常收尾处理
 - **ID 收敛策略** — bridge 只在首轮创建 pending 锚点；一旦收到 Agent `session/thread` 事件，会将会话 ID 收敛为 native ID，避免长期保留 bridge 自增 ID
+- **交互式 stale 保护** — 若新 turn 首个事件是 `done`，并在 `interactiveLeadingDoneWait` 窗口内没有 delta/message/approval/error，有且仅有一次自动重建会话后重试，避免“发了消息但无回复”
 
 ### 使用示例
 

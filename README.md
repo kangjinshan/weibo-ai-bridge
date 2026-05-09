@@ -1,11 +1,11 @@
 # Weibo AI Bridge
 
-微博私信与 AI Agent 的桥接服务。通过微博开放平台 WebSocket API 连接微博和多个 AI Agent（Claude Code、Codex CLI），实现智能对话功能。
+微博私信与 AI Agent 的桥接服务。通过微博开放平台 WebSocket API 连接微博和多个 AI Agent（Claude Code、Codex CLI、Hermes CLI），实现智能对话功能。
 
 ## 核心特性
 
 - **微博私信桥接** — 通过 WebSocket API 实时收发微博私信
-- **多 Agent 支持** — Claude Code 和 Codex CLI，可灵活切换
+- **多 Agent 支持** — Claude Code、Codex CLI 和 Hermes CLI，可灵活切换
 - **流式回复** — 先发"正在处理中"提示，再逐片流式发送真实回复
 - **会话管理** — native session 优先，bridge 仅维护索引与持久化
 - **自动建会话** — 无活跃会话时自动准备原生会话，首轮拿到 `session/thread` 后收敛为 native ID
@@ -24,7 +24,7 @@
 ### 前置要求
 
 - Go 1.22+
-- 至少安装一个 Agent CLI（`claude` 或 `codex`）
+- 至少安装一个 Agent CLI（`claude`、`codex` 或 `hermes`）
 
 ### 安装运行
 
@@ -66,12 +66,13 @@ make dev
 | 命令 | 说明 |
 |------|------|
 | `/help` | 显示帮助信息 |
-| `/new [claude\|codex]` | 准备新的原生会话（不传参数时沿用当前 Agent） |
+| `/new [claude\|codex\|hermes]` | 准备新的原生会话（不传参数时沿用当前 Agent） |
 | `/list` | 查看所有项目的原生会话列表（带项目名前缀和编号） |
 | `/switch <编号>` | 按 `/list` 中的编号切换活跃会话 |
 | `/switch <agent类型>` | 切换当前会话的 Agent 类型 |
 | `/claude` | 等价于 `/switch claude`（大小写不敏感） |
 | `/codex` | 等价于 `/switch codex`（大小写不敏感） |
+| `/hermes` | 等价于 `/switch hermes`（大小写不敏感） |
 | `/btw <内容>` | 向当前交互式会话注入补充信息（若当前在审批等待态，需先回复 `允许` / `取消` / `允许所有`） |
 | `/model` | 显示当前使用的模型 |
 | `/dir [path]` | 显示当前工作目录；传 `path` 时设置当前会话工作目录 |
@@ -118,6 +119,10 @@ make dev
 | `CLAUDE_ENABLED` | 启用 Claude | true |
 | `CODEX_ENABLED` | 启用 Codex | false |
 | `CODEX_MODEL` | Codex 模型覆盖（留空沿用本机 CLI 默认） | 空 |
+| `HERMES_ENABLED` | 启用 Hermes | false |
+| `HERMES_MODEL` | Hermes 模型覆盖（留空沿用本机 CLI 默认） | 空 |
+| `HERMES_PROFILE` | Hermes profile 覆盖（CLI fallback 兼容项；ACP 主链路沿用当前 Hermes profile） | 空 |
+| `HERMES_PROVIDER` | Hermes provider 覆盖（留空沿用本机默认） | 空 |
 | `SESSION_TIMEOUT` | 会话超时（秒） | 3600 |
 | `SESSION_MAX_SIZE` | 最大会话数 | 1000 |
 | `SESSION_STORAGE_PATH` | 会话存储路径 | `~/.config/weibo-ai-bridge/sessions` |
@@ -141,6 +146,12 @@ enabled = true
 enabled = false
 model = ""  # 留空沿用本机 codex CLI 默认配置
 
+[agent.hermes]
+enabled = false
+model = ""     # 留空沿用本机 hermes CLI 默认配置
+profile = ""   # CLI fallback 兼容项；ACP 主链路沿用当前 Hermes profile
+provider = ""  # 留空沿用本机 hermes CLI 默认 provider
+
 [session]
 timeout = 3600
 max_size = 1000
@@ -155,6 +166,7 @@ output = "stdout"
 **注意**：
 - Claude API Key 和模型配置由 Claude Code CLI 管理，不在此配置文件中
 - `agent.codex.model` 建议留空，让 Bridge 沿用本机 CLI 的默认配置；手动指定时需确认目标 provider 上存在对应 deployment
+- `agent.hermes.model/provider` 建议留空，让 Bridge 沿用本机 Hermes CLI 的默认配置；`profile` 目前仅作为 CLI fallback 兼容项，ACP 主链路沿用当前 Hermes profile
 - 如果报 `404 deployment does not exist`，通常不是启动方式问题，而是模型名和 provider 配置不匹配
 
 ## 会话管理
@@ -162,7 +174,7 @@ output = "stdout"
 ### 核心特性
 
 - **持久化存储** — 会话数据默认存储在 `~/.config/weibo-ai-bridge/sessions/`，服务重启后自动恢复
-- **多会话支持** — 每个用户可切换多个原生会话（Claude/Codex），按编号切换
+- **多会话支持** — 每个用户可切换多个原生会话（Claude/Codex/Hermes），按编号切换
 - **自动建会话** — 无活跃会话时先建立 pending 锚点，首轮自动绑定为 native 会话 ID
 - **会话标题** — 与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
 - **旧路径迁移** — 新版本首次启动时会自动导入旧版 `data/sessions/` 的数据
@@ -171,8 +183,18 @@ output = "stdout"
 
 - **Claude** — 使用 `--output-format stream-json` 流式路径，首轮提取 `session_id`，后续用 `--resume` 继续对话
 - **Codex** — 优先通过 `codex app-server` 获取 `item/agentMessage/delta` 流式增量；不可用时回退到 `codex exec --json`。Bridge 把 `thread_id` 持久化到 `codex_session_id`。续接已存在线程时使用最小 `thread/resume` 参数（不覆盖原线程策略），并在运行中同步 `threadId` 变化，确保持续续写同一线程。`turn/completed` 后若紧跟 EOF/`close 1006`，按正常收尾处理
+- **Hermes** — 主链路使用 `hermes acp` 交互式形态，通过 newline-delimited JSON-RPC 调用 `initialize`、`session/new|resume`、`session/prompt`，从 `session/update` 接收增量、工具和审批事件。Bridge 把 ACP `sessionId` 持久化到 `hermes_session_id`；当当前 turn 仍在运行时，`/btw` 会转成 Hermes ACP `/steer` 注入当前 turn。`hermes chat --quiet --source tool --query` 仅作为 CLI fallback 保留
 - **ID 收敛策略** — bridge 只在首轮创建 pending 锚点；一旦收到 Agent `session/thread` 事件，会将会话 ID 收敛为 native ID，避免长期保留 bridge 自增 ID
 - **交互式 stale 保护** — 若新 turn 首个事件是 `done`，并在 `interactiveLeadingDoneWait` 窗口内没有 delta/message/approval/error，有且仅有一次自动重建会话后重试，避免“发了消息但无回复”
+
+Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 配置一致，核心是通过 stdio 启动 `hermes acp`：
+
+```toml
+[projects.agent]
+type = "acp"
+command = "hermes"
+args = ["acp"]
+```
 
 ### 使用示例
 
@@ -318,6 +340,7 @@ bash scripts/install-skills.sh
 `scripts/install.sh` 在安装 `weibo-ai-bridge` 时会自动安装内置 skills 到：
 - `~/.codex/skills/weibo-skill-api`
 - `~/.claude/skills/weibo-skill-api`
+- `~/.hermes/skills/weibo-skill-api`
 
 上面的命令用于手动重装/修复，仍会自动复用 bridge 的微博配置与 token 缓存。
 
@@ -336,6 +359,7 @@ bash scripts/install-skills.sh
 | 配置验证失败 | 检查 `WEIBO_APP_ID` 和 `WEIBO_APP_SECRET`（兼容 `WEIBO_APP_Secret`） |
 | Claude 不可用 | 确认 `claude --version` 可用，API Key 已在 CLI 中配置 |
 | Codex 404 deployment | `CODEX_MODEL` 留空，让 Bridge 沿用本机 CLI 默认配置 |
+| Hermes 不可用 | 确认 `hermes --version` 和 `hermes acp` 可用；若 ACP 能连接但返回 404，优先检查 Hermes 当前 provider/model/deployment 配置 |
 | WebSocket 断连 | 检查网络、Token 是否过期、心跳配置 |
 | 会话丢失 | 检查 `SESSION_TIMEOUT` 和 `SESSION_STORAGE_PATH` |
 | 消息处理超时 | 增加超时时间，检查 Agent 服务可用性 |
@@ -368,6 +392,7 @@ weibo-ai-bridge/
 │   ├── codex.go              # Codex 流式执行（app-server 优先）
 │   ├── codex_interactive_session.go  # Codex 交互式会话 + 审批
 │   ├── codex_appserver.go    # Codex app-server 客户端
+│   ├── hermes.go             # Hermes ACP 交互式会话与 CLI fallback
 │   └── prompt.go             # 用户提示包装
 ├── session/                  # 会话管理与持久化
 │   └── session.go            # Session Manager、JSON 持久化

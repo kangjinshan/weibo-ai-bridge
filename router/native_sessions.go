@@ -36,6 +36,23 @@ type codexThreadRecord struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+type hermesSessionFile struct {
+	SessionID    string          `json:"session_id"`
+	Title        string          `json:"title"`
+	DisplayName  string          `json:"display_name"`
+	Project      string          `json:"project"`
+	Cwd          string          `json:"cwd"`
+	WorkDir      string          `json:"work_dir"`
+	SessionStart string          `json:"session_start"`
+	LastUpdated  string          `json:"last_updated"`
+	Messages     []hermesMessage `json:"messages"`
+}
+
+type hermesMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
 type claudeSessionIndex struct {
 	Entries []claudeSessionIndexEntry `json:"entries"`
 }
@@ -646,6 +663,165 @@ func ListNativeCodexSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, 
 	}
 
 	return sessions, nil
+}
+
+// ListNativeHermesSessions 扫描 ~/.hermes/sessions/ 目录，列出原生 Hermes 会话。
+func ListNativeHermesSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("cannot determine home directory: %w", err)
+	}
+
+	hermesHome := strings.TrimSpace(os.Getenv("HERMES_HOME"))
+	if hermesHome == "" {
+		hermesHome = filepath.Join(homeDir, ".hermes")
+	}
+
+	sessionsDir := filepath.Join(hermesHome, "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("cannot read hermes sessions directory: %w", err)
+	}
+
+	sessions := make([]NativeSession, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		if !strings.HasPrefix(entry.Name(), "session_") {
+			continue
+		}
+
+		ns, ok := parseHermesSessionFile(filepath.Join(sessionsDir, entry.Name()), bridgeNativeIDs)
+		if !ok {
+			continue
+		}
+		sessions = append(sessions, ns)
+	}
+
+	sessions = dedupeNativeSessionsByID(sessions)
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].StartedAt.After(sessions[j].StartedAt)
+	})
+	if len(sessions) > maxNativeSessions {
+		sessions = sessions[:maxNativeSessions]
+	}
+
+	return sessions, nil
+}
+
+func parseHermesSessionFile(path string, bridgeNativeIDs map[string]bool) (NativeSession, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return NativeSession{}, false
+	}
+
+	var file hermesSessionFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return NativeSession{}, false
+	}
+
+	id := strings.TrimSpace(file.SessionID)
+	if id == "" {
+		id = strings.TrimPrefix(strings.TrimSuffix(filepath.Base(path), ".json"), "session_")
+	}
+	if id == "" {
+		return NativeSession{}, false
+	}
+
+	title := firstNonEmptyString(file.Title, file.DisplayName, firstHermesUserMessageTitle(file.Messages))
+	project := firstNonEmptyString(file.Project, file.Cwd, file.WorkDir)
+	startedAt := parseHermesSessionTime(file.LastUpdated)
+	if startedAt.IsZero() {
+		startedAt = parseHermesSessionTime(file.SessionStart)
+	}
+
+	return NativeSession{
+		ID:        id,
+		AgentType: "hermes",
+		Project:   project,
+		Title:     ensureNativeTitle(title, project, id),
+		StartedAt: startedAt,
+		InBridge:  bridgeNativeIDs[id],
+	}, true
+}
+
+func firstHermesUserMessageTitle(messages []hermesMessage) string {
+	for _, msg := range messages {
+		if strings.ToLower(strings.TrimSpace(msg.Role)) != "user" {
+			continue
+		}
+		if title := normalizeNativeTitle(hermesMessageContentString(msg.Content)); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func hermesMessageContentString(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			switch typed := item.(type) {
+			case string:
+				parts = append(parts, typed)
+			case map[string]any:
+				if text, _ := typed["text"].(string); strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
+}
+
+func parseHermesSessionTime(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999", "2006-01-02T15:04:05"} {
+		if ts, err := time.Parse(layout, value); err == nil {
+			return ts
+		}
+	}
+	return time.Time{}
+}
+
+func resolveHermesProjectPathBySessionID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	hermesHome := strings.TrimSpace(os.Getenv("HERMES_HOME"))
+	if hermesHome == "" {
+		hermesHome = filepath.Join(homeDir, ".hermes")
+	}
+
+	candidates := []string{
+		filepath.Join(hermesHome, "sessions", "session_"+sessionID+".json"),
+		filepath.Join(hermesHome, "sessions", sessionID+".json"),
+	}
+	for _, candidate := range candidates {
+		ns, ok := parseHermesSessionFile(candidate, nil)
+		if ok && strings.TrimSpace(ns.Project) != "" {
+			return strings.TrimSpace(ns.Project)
+		}
+	}
+	return ""
 }
 
 func listCodexSessionsFromStateDB(codexHome string, bridgeNativeIDs map[string]bool) ([]NativeSession, error) {

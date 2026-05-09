@@ -281,39 +281,39 @@ install_user_skills() {
     local skill_installer="${INSTALL_DIR}/scripts/install-skills.sh"
 
     if [[ -z "${TARGET_USER}" || -z "${TARGET_HOME}" ]]; then
-        log_warning "无法解析目标用户，跳过 Codex/Claude skill 安装"
+        log_warning "无法解析目标用户，跳过 Agent skill 安装"
         SKILLS_INSTALL_NOTE="未安装（无法解析目标用户）"
         return
     fi
 
     if [[ ! -x "${skill_installer}" ]]; then
-        log_warning "未找到 skill 安装脚本，跳过 Codex/Claude skill 安装"
+        log_warning "未找到 skill 安装脚本，跳过 Agent skill 安装"
         SKILLS_INSTALL_NOTE="未安装（缺少安装脚本）"
         return
     fi
 
-    log_info "为用户 ${TARGET_USER} 安装 Codex/Claude 微博 skills..."
+    log_info "为用户 ${TARGET_USER} 安装 Codex/Claude/Hermes 微博 skills..."
 
     if command -v runuser &> /dev/null; then
         if runuser -u "${TARGET_USER}" -- "${skill_installer}" --repo-root "${INSTALL_DIR}" --user-home "${TARGET_HOME}"; then
-            log_success "Codex/Claude 微博 skills 安装完成"
-            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+            log_success "Codex/Claude/Hermes 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
             return
         fi
     fi
 
     if command -v sudo &> /dev/null; then
         if sudo -u "${TARGET_USER}" "${skill_installer}" --repo-root "${INSTALL_DIR}" --user-home "${TARGET_HOME}"; then
-            log_success "Codex/Claude 微博 skills 安装完成"
-            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+            log_success "Codex/Claude/Hermes 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
             return
         fi
     fi
 
     if command -v su &> /dev/null; then
         if su - "${TARGET_USER}" -c "'${skill_installer}' --repo-root '${INSTALL_DIR}' --user-home '${TARGET_HOME}'"; then
-            log_success "Codex/Claude 微博 skills 安装完成"
-            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+            log_success "Codex/Claude/Hermes 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
             return
         fi
     fi
@@ -324,14 +324,15 @@ install_user_skills() {
         target_group="$(id -gn "${TARGET_USER}" 2>/dev/null || echo "${TARGET_USER}")"
         chown -R "${TARGET_USER}:${target_group}" \
             "${TARGET_HOME}/.codex/skills/${SKILL_NAME}" \
-            "${TARGET_HOME}/.claude/skills/${SKILL_NAME}" 2>/dev/null || true
-        log_success "Codex/Claude 微博 skills 安装完成（root 回退）"
-        SKILLS_INSTALL_NOTE="已安装（root 回退）：${TARGET_HOME}/.codex/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.claude/skills/${SKILL_NAME}"
+            "${TARGET_HOME}/.claude/skills/${SKILL_NAME}" \
+            "${TARGET_HOME}/.hermes/skills/${SKILL_NAME}" 2>/dev/null || true
+        log_success "Codex/Claude/Hermes 微博 skills 安装完成（root 回退）"
+        SKILLS_INSTALL_NOTE="已安装（root 回退）：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
         return
     fi
 
     SKILLS_INSTALL_NOTE="未安装（自动安装失败）"
-    log_warning "Codex/Claude skill 自动安装失败，请手动运行: ${skill_installer} --repo-root ${INSTALL_DIR} --user-home ${TARGET_HOME}"
+    log_warning "Agent skill 自动安装失败，请手动运行: ${skill_installer} --repo-root ${INSTALL_DIR} --user-home ${TARGET_HOME}"
 }
 
 # 清理临时文件

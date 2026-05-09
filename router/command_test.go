@@ -56,6 +56,7 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.Contains(t, resp.Content, "/switch")
 	assert.Contains(t, resp.Content, "/claude")
 	assert.Contains(t, resp.Content, "/codex")
+	assert.Contains(t, resp.Content, "/hermes")
 	assert.Contains(t, resp.Content, "/btw")
 	assert.Contains(t, resp.Content, "/model")
 	assert.Contains(t, resp.Content, "/dir")
@@ -355,6 +356,7 @@ func TestCommandHandler_Handle_New(t *testing.T) {
 	agentManager := agent.NewManager()
 	agentManager.Register(&MockAgent{name: "claude-code", available: true})
 	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.Register(&MockAgent{name: "hermes", available: true})
 	agentManager.SetDefault("claude-code")
 	handler := NewCommandHandler(sessionManager, agentManager)
 
@@ -387,6 +389,14 @@ func TestCommandHandler_Handle_New(t *testing.T) {
 			checkResult: func(t *testing.T, resp *Response) {
 				assert.True(t, resp.Success)
 				assert.Contains(t, resp.Content, "codex")
+			},
+		},
+		{
+			name:    "创建 hermes 会话",
+			content: "/new hermes",
+			checkResult: func(t *testing.T, resp *Response) {
+				assert.True(t, resp.Success)
+				assert.Contains(t, resp.Content, "hermes")
 			},
 		},
 		{
@@ -525,6 +535,7 @@ func TestCommandHandler_Handle_New_DefaultsToActiveSessionAgentType(t *testing.T
 	agentManager := agent.NewManager()
 	agentManager.Register(&MockAgent{name: "claude-code", available: true})
 	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.Register(&MockAgent{name: "hermes", available: true})
 	agentManager.SetDefault("claude-code")
 	handler := NewCommandHandler(sessionManager, agentManager)
 
@@ -548,6 +559,33 @@ func TestCommandHandler_Handle_New_DefaultsToActiveSessionAgentType(t *testing.T
 	assert.Equal(t, pendingNativeSessionID("user-1"), activeSession.ID)
 }
 
+func TestCommandHandler_Handle_NewHermesClearsHermesSessionID(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "hermes", available: true})
+	agentManager.SetDefault("hermes")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-new-hermes",
+		Type:    TypeText,
+		Content: "/new hermes",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	activeSession, ok := sessionManager.GetActiveSession("user-1")
+	assert.True(t, ok)
+	assert.Equal(t, "hermes", activeSession.AgentType)
+	hermesSID, hasHermesSID := activeSession.ContextString("hermes_session_id")
+	assert.True(t, hasHermesSID)
+	assert.Equal(t, "", hermesSID)
+}
+
 func TestCommandHandler_Handle_Switch(t *testing.T) {
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,
@@ -556,6 +594,7 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 	agentManager := agent.NewManager()
 	agentManager.Register(&MockAgent{name: "claude-code", available: true})
 	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.Register(&MockAgent{name: "hermes", available: true})
 	agentManager.SetDefault("claude-code")
 	handler := NewCommandHandler(sessionManager, agentManager)
 
@@ -595,6 +634,15 @@ func TestCommandHandler_Handle_Switch(t *testing.T) {
 			checkResult: func(t *testing.T, resp *Response) {
 				assert.True(t, resp.Success)
 				assert.Contains(t, resp.Content, "Switched to codex agent")
+			},
+		},
+		{
+			name:      "别名切换到 hermes",
+			content:   "/hermes",
+			sessionID: "session-1",
+			checkResult: func(t *testing.T, resp *Response) {
+				assert.True(t, resp.Success)
+				assert.Contains(t, resp.Content, "Switched to hermes agent")
 			},
 		},
 		{
@@ -681,6 +729,63 @@ func TestCommandHandler_Handle_SwitchSessionByNumber(t *testing.T) {
 	assert.Contains(t, resp.Content, "Switched to session 2: 未命名会话")
 	assert.Contains(t, resp.Content, "id=session-1")
 	assert.Equal(t, "session-1", sessionManager.GetActiveSessionID("user-1"))
+}
+
+func TestCommandHandler_Handle_ListAndSwitchHermesNativeSession(t *testing.T) {
+	isolateNativeSessionSources(t)
+
+	home := os.Getenv("HOME")
+	sessionsDir := filepath.Join(home, ".hermes", "sessions")
+	assert.NoError(t, os.MkdirAll(sessionsDir, 0o755))
+	hermesID := "20260509_165837_579738"
+	hermesContent := `{
+  "session_id": "20260509_165837_579738",
+  "session_start": "2026-05-09T16:58:38.077125",
+  "last_updated": "2026-05-09T16:58:47.030928",
+  "messages": [
+    {"role":"user","content":"Hermes 原生会话标题"}
+  ]
+}`
+	assert.NoError(t, os.WriteFile(filepath.Join(sessionsDir, "session_"+hermesID+".json"), []byte(hermesContent), 0o644))
+
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "hermes", available: true})
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	active := sessionManager.Create(pendingNativeSessionID("user-1"), "user-1", "hermes")
+	assert.NotNil(t, active)
+
+	listResp, err := handler.Handle(&Message{
+		ID:        "msg-list-hermes",
+		Type:      TypeText,
+		Content:   "/list",
+		UserID:    "user-1",
+		SessionID: active.ID,
+	})
+	assert.NoError(t, err)
+	assert.True(t, listResp.Success)
+	assert.Contains(t, listResp.Content, "Hermes 原生会话标题")
+
+	switchResp, err := handler.Handle(&Message{
+		ID:        "msg-switch-hermes",
+		Type:      TypeText,
+		Content:   "/switch 1",
+		UserID:    "user-1",
+		SessionID: active.ID,
+	})
+	assert.NoError(t, err)
+	assert.True(t, switchResp.Success)
+
+	switched, ok := sessionManager.Get(hermesID)
+	assert.True(t, ok)
+	assert.Equal(t, "hermes", switched.AgentType)
+	nativeID, ok := switched.ContextString("hermes_session_id")
+	assert.True(t, ok)
+	assert.Equal(t, hermesID, nativeID)
 }
 
 func TestCommandHandler_Handle_SwitchSessionByNumber_RejectsInvalidIndex(t *testing.T) {

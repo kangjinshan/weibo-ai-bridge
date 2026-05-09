@@ -47,7 +47,7 @@ bash scripts/crowd_request.sh \
   --override-model-name kimi-k2
 ```
 
-如果 skill 被安装到 Claude 侧个人目录，对应路径为 `~/.claude/skills/weibo-skill-api/`；脚本和文档内容保持一致。
+如果 skill 被安装到 Agent 侧个人目录，对应路径为 `~/.claude/skills/weibo-skill-api/`、`~/.codex/skills/weibo-skill-api/` 或 `~/.hermes/skills/weibo-skill-api/`；脚本和文档内容保持一致。
 
 ---
 

@@ -29,6 +29,12 @@ api_key = "codex-test-key"
 model = "gpt-4-turbo"
 enabled = true
 
+[agent.hermes]
+model = "gpt-5.4"
+profile = "bridge"
+provider = "custom"
+enabled = true
+
 [session]
 timeout = 7200
 max_size = 2000
@@ -57,6 +63,10 @@ output = "/var/log/app.log"
 	assert.Equal(t, "codex-test-key", cfg.Agent.Codex.APIKey)
 	assert.Equal(t, "gpt-4-turbo", cfg.Agent.Codex.Model)
 	assert.True(t, cfg.Agent.Codex.Enabled)
+	assert.Equal(t, "gpt-5.4", cfg.Agent.Hermes.Model)
+	assert.Equal(t, "bridge", cfg.Agent.Hermes.Profile)
+	assert.Equal(t, "custom", cfg.Agent.Hermes.Provider)
+	assert.True(t, cfg.Agent.Hermes.Enabled)
 
 	assert.Equal(t, 7200, cfg.Session.Timeout)
 	assert.Equal(t, 2000, cfg.Session.MaxSize)
@@ -146,6 +156,9 @@ enabled = false
 [agent.codex]
 enabled = false
 
+[agent.hermes]
+enabled = false
+
 [session]
 timeout = 3600
 max_size = 1000
@@ -160,9 +173,11 @@ output = "stdout"
 	t.Setenv("CONFIG_PATH", configFile)
 	t.Setenv("CLAUDE_ENABLED", "1")
 	t.Setenv("CODEX_ENABLED", "TRUE")
+	t.Setenv("HERMES_ENABLED", "true")
 
 	cfg := Load()
 
 	assert.True(t, cfg.Agent.Claude.Enabled)
 	assert.True(t, cfg.Agent.Codex.Enabled)
+	assert.True(t, cfg.Agent.Hermes.Enabled)
 }

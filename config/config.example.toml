@@ -40,6 +40,19 @@ model = ""
 # 是否启用 Codex Agent
 enabled = false
 
+[agent.hermes]
+# Hermes 模型（留空则沿用本机 Hermes 默认配置）
+model = ""
+
+# Hermes profile（CLI fallback 兼容项；ACP 主链路沿用当前 Hermes profile）
+profile = ""
+
+# Hermes provider（留空则沿用本机 Hermes 默认配置）
+provider = ""
+
+# 是否启用 Hermes Agent
+enabled = false
+
 [session]
 # 会话超时时间（秒）
 timeout = 3600

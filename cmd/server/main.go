@@ -165,8 +165,19 @@ func main() {
 		logger.Printf("Codex agent registered: model=%s", cfg.Agent.Codex.Model)
 	}
 
+	// 注册 Hermes Agent（如果启用）
+	if cfg.Agent.Hermes.Enabled {
+		hermesAgent := agent.NewHermesAgent(cfg.Agent.Hermes.Model, cfg.Agent.Hermes.Profile, cfg.Agent.Hermes.Provider)
+		agentMgr.Register(hermesAgent)
+		if defaultAgent == "" {
+			defaultAgent = "hermes"
+			agentMgr.SetDefault("hermes")
+		}
+		logger.Printf("Hermes agent registered: model=%s, profile=%s, provider=%s", cfg.Agent.Hermes.Model, cfg.Agent.Hermes.Profile, cfg.Agent.Hermes.Provider)
+	}
+
 	if defaultAgent == "" {
-		logger.Fatalf("No agent enabled, please enable at least one agent (claude or codex)")
+		logger.Fatalf("No agent enabled, please enable at least one agent (claude, codex, or hermes)")
 	}
 
 	logger.Printf("Agent manager initialized: count=%d, default=%s", agentMgr.Count(), defaultAgent)

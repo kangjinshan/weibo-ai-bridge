@@ -546,6 +546,8 @@ func mapAgentName(agentName string) string {
 		return "claude"
 	case "codex":
 		return "codex"
+	case "hermes":
+		return "hermes"
 	default:
 		return agentName
 	}
@@ -564,6 +566,8 @@ func agentSessionContextKey(agentType string) string {
 		return "claude_session_id"
 	case "codex":
 		return "codex_session_id"
+	case "hermes":
+		return "hermes_session_id"
 	default:
 		return ""
 	}

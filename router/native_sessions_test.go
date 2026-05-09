@@ -506,6 +506,52 @@ func TestListNativeCodexSessions_UsesSessionIndexThreadName(t *testing.T) {
 	}
 }
 
+func TestListNativeHermesSessions_ParsesSessionFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	home := filepath.Join(tmpDir, "home")
+	sessionsDir := filepath.Join(home, ".hermes", "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `{
+  "session_id": "20260509_165837_579738",
+  "platform": "cli",
+  "session_start": "2026-05-09T16:58:38.077125",
+  "last_updated": "2026-05-09T16:58:47.030928",
+  "messages": [
+    {"role":"user","content":"帮我接入 Hermes"},
+    {"role":"assistant","content":"好的"}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(sessionsDir, "session_20260509_165837_579738.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", home)
+	sessions, err := ListNativeHermesSessions(map[string]bool{"20260509_165837_579738": true})
+	if err != nil {
+		t.Fatalf("ListNativeHermesSessions error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+
+	got := sessions[0]
+	if got.ID != "20260509_165837_579738" {
+		t.Fatalf("ID = %q", got.ID)
+	}
+	if got.AgentType != "hermes" {
+		t.Fatalf("AgentType = %q", got.AgentType)
+	}
+	if got.Title != "帮我接入 Hermes" {
+		t.Fatalf("Title = %q", got.Title)
+	}
+	if !got.InBridge {
+		t.Fatal("expected InBridge to be true")
+	}
+}
+
 func TestParseCodexThreadRecordsJSONL(t *testing.T) {
 	data := []byte(`
 {"id":"t-1","title":"标题1","cwd":"/tmp/a","updated_at":100}

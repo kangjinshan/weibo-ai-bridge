@@ -38,6 +38,7 @@ type WeiboConfig struct {
 type AgentConfig struct {
 	Claude ClaudeConfig
 	Codex  CodexConfig
+	Hermes HermesConfig
 }
 
 // ClaudeConfig Claude Agent 配置
@@ -52,6 +53,14 @@ type CodexConfig struct {
 	APIKey  string `toml:"api_key"`
 	Model   string `toml:"model"`
 	Enabled bool   `toml:"enabled"`
+}
+
+// HermesConfig Hermes Agent 配置
+type HermesConfig struct {
+	Model    string `toml:"model"`
+	Profile  string `toml:"profile"`
+	Provider string `toml:"provider"`
+	Enabled  bool   `toml:"enabled"`
 }
 
 // SessionConfig 会话配置
@@ -115,6 +124,18 @@ func Load() *Config {
 	}
 	if val := os.Getenv("CODEX_ENABLED"); val != "" {
 		cfg.Agent.Codex.Enabled = parseBoolEnv(val)
+	}
+	if val := os.Getenv("HERMES_MODEL"); val != "" {
+		cfg.Agent.Hermes.Model = val
+	}
+	if val := os.Getenv("HERMES_PROFILE"); val != "" {
+		cfg.Agent.Hermes.Profile = val
+	}
+	if val := os.Getenv("HERMES_PROVIDER"); val != "" {
+		cfg.Agent.Hermes.Provider = val
+	}
+	if val := os.Getenv("HERMES_ENABLED"); val != "" {
+		cfg.Agent.Hermes.Enabled = parseBoolEnv(val)
 	}
 	if val := os.Getenv("LOG_LEVEL"); val != "" {
 		cfg.Log.Level = val
@@ -214,6 +235,12 @@ func defaultConfig() *Config {
 				Model:   "",
 				Enabled: false,
 			},
+			Hermes: HermesConfig{
+				Model:    "",
+				Profile:  "",
+				Provider: "",
+				Enabled:  false,
+			},
 		},
 		Session: SessionConfig{
 			Timeout:     3600,
@@ -242,7 +269,7 @@ func (c *Config) Validate() error {
 	// Claude 和 Codex 的认证都可以由本地 CLI 自行管理，因此这里不强制要求 API Key。
 
 	// 至少启用一个 Agent
-	if !c.Agent.Claude.Enabled && !c.Agent.Codex.Enabled {
+	if !c.Agent.Claude.Enabled && !c.Agent.Codex.Enabled && !c.Agent.Hermes.Enabled {
 		return errors.New("at least one agent must be enabled")
 	}
 

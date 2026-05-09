@@ -10,9 +10,9 @@ func TestValidateSuccess(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -42,9 +42,9 @@ func TestValidateEmptyAppID(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "",
+				AppID:     "",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -71,9 +71,9 @@ func TestValidateEmptyAppsecret(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -100,9 +100,9 @@ func TestValidateNoEnabledAgent(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -132,9 +132,9 @@ func TestValidateCodexEnabledWithoutAPIKey(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -161,13 +161,47 @@ func TestValidateCodexEnabledWithoutAPIKey(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidateHermesOnlyEnabled(t *testing.T) {
+	cfg := &Config{
+		Platform: PlatformConfig{
+			Weibo: WeiboConfig{
+				AppID:     "test-app-id",
+				Appsecret: "test-Secret",
+				Timeout:   30,
+			},
+		},
+		Agent: AgentConfig{
+			Claude: ClaudeConfig{
+				Enabled: false,
+			},
+			Codex: CodexConfig{
+				Enabled: false,
+			},
+			Hermes: HermesConfig{
+				Enabled: true,
+			},
+		},
+		Session: SessionConfig{
+			Timeout: 3600,
+			MaxSize: 1000,
+		},
+		Log: LogConfig{
+			Level:  "info",
+			Format: "json",
+		},
+	}
+
+	err := cfg.Validate()
+	assert.NoError(t, err)
+}
+
 func TestValidateInvalidLogLevel(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -194,9 +228,9 @@ func TestValidateInvalidLogFormat(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -223,9 +257,9 @@ func TestValidateInvalidTimeout(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        -1,
+				Timeout:   -1,
 			},
 		},
 		Agent: AgentConfig{
@@ -252,9 +286,9 @@ func TestValidateInvalidSessionTimeout(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{
@@ -281,9 +315,9 @@ func TestValidateInvalidMaxSize(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{
 			Weibo: WeiboConfig{
-				AppID:          "test-app-id",
+				AppID:     "test-app-id",
 				Appsecret: "test-Secret",
-				Timeout:        30,
+				Timeout:   30,
 			},
 		},
 		Agent: AgentConfig{

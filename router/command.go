@@ -79,6 +79,8 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 		return h.handleSwitch(msg.UserID, msg.SessionID, append([]string{"claude"}, args...))
 	case "/codex":
 		return h.handleSwitch(msg.UserID, msg.SessionID, append([]string{"codex"}, args...))
+	case "/hermes":
+		return h.handleSwitch(msg.UserID, msg.SessionID, append([]string{"hermes"}, args...))
 	case "/model":
 		return h.handleModel(msg.UserID, msg.SessionID, args)
 	case "/dir":
@@ -99,12 +101,13 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 func (h *CommandHandler) handleHelp() (*Response, error) {
 	helpText := `可用命令：
 /help - 显示帮助信息
-/new [agent_type] - 准备一个新的原生会话（可选参数：claude/codex）
+/new [agent_type] - 准备一个新的原生会话（可选参数：claude/codex/hermes）
 /list - 查看当前用户的原生会话
 /switch [number] - 切换当前活跃会话
 /switch [agent_type] - 切换当前会话的 Agent 类型
 /claude - 等价于 /switch claude（大小写不敏感）
 /codex - 等价于 /switch codex（大小写不敏感）
+/hermes - 等价于 /switch hermes（大小写不敏感）
 /btw [content] - 向当前正在进行的交互会话插入一条补充消息
 /model - 显示当前使用的模型
 /dir [path] - 显示或设置当前工作目录
@@ -122,6 +125,7 @@ func (h *CommandHandler) handleNew(userID string, args []string) (*Response, err
 	if len(args) > 0 {
 		agentType = args[0]
 	}
+	agentType = strings.ToLower(strings.TrimSpace(agentType))
 
 	if strings.TrimSpace(agentType) == "" {
 		return &Response{
@@ -131,10 +135,10 @@ func (h *CommandHandler) handleNew(userID string, args []string) (*Response, err
 	}
 
 	// 验证 agent 类型
-	if agentType != "claude" && agentType != "codex" {
+	if !isSupportedAgentType(agentType) {
 		return &Response{
 			Success: false,
-			Content: "Invalid agent type. Use claude or codex.",
+			Content: "Invalid agent type. Use claude, codex, or hermes.",
 		}, nil
 	}
 	available, err := h.ensureAgentTypeAvailable(agentType)
@@ -162,6 +166,7 @@ func (h *CommandHandler) handleNew(userID string, args []string) (*Response, err
 	h.sessionManager.SetSessionAgentType(newSession.ID, agentType)
 	h.sessionManager.UpdateSession(newSession.ID, "claude_session_id", "")
 	h.sessionManager.UpdateSession(newSession.ID, "codex_session_id", "")
+	h.sessionManager.UpdateSession(newSession.ID, "hermes_session_id", "")
 
 	return &Response{
 		Success: true,
@@ -185,6 +190,15 @@ func (h *CommandHandler) defaultNewSessionAgentType(userID string) string {
 	}
 
 	return ""
+}
+
+func isSupportedAgentType(agentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(agentType)) {
+	case "claude", "codex", "hermes":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *CommandHandler) handleList(userID string) (*Response, error) {
@@ -264,7 +278,7 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 	if len(args) == 0 {
 		return &Response{
 			Success: false,
-			Content: "Please specify a session number or agent type: /switch 1, /switch claude, or /switch codex",
+			Content: "Please specify a session number or agent type: /switch 1, /switch claude, /switch codex, or /switch hermes",
 		}, nil
 	}
 
@@ -284,10 +298,10 @@ func (h *CommandHandler) handleSwitch(userID, sessionID string, args []string) (
 	agentType := strings.ToLower(target)
 
 	// 验证 agent 类型
-	if agentType != "claude" && agentType != "codex" {
+	if !isSupportedAgentType(agentType) {
 		return &Response{
 			Success: false,
-			Content: "Invalid agent type. Use claude or codex.",
+			Content: "Invalid agent type. Use claude, codex, or hermes.",
 		}, nil
 	}
 	available, err := h.ensureAgentTypeAvailable(agentType)
@@ -478,6 +492,11 @@ func (h *CommandHandler) collectSwitchCandidates(userID string) ([]*session.Sess
 	if activeAgentType == "codex" || activeAgentType == "" {
 		if codexNatives, err := ListNativeCodexSessions(bridgeNativeIDs); err == nil {
 			allNative = append(allNative, codexNatives...)
+		}
+	}
+	if activeAgentType == "hermes" || activeAgentType == "" {
+		if hermesNatives, err := ListNativeHermesSessions(bridgeNativeIDs); err == nil {
+			allNative = append(allNative, hermesNatives...)
 		}
 	}
 	sort.Slice(allNative, func(i, j int) bool {
@@ -707,7 +726,7 @@ func newConfigBackedAgentAvailabilityRepairer(agentManager *agent.Manager, confi
 
 func (r *configBackedAgentAvailabilityRepairer) EnsureAvailable(agentType string) (bool, error) {
 	agentType = strings.ToLower(strings.TrimSpace(agentType))
-	if agentType != "claude" && agentType != "codex" {
+	if !isSupportedAgentType(agentType) {
 		return false, nil
 	}
 	if r.agentManager == nil {
@@ -736,6 +755,8 @@ func reparableAgent(agentType string) agent.Agent {
 		return agent.NewClaudeCodeAgent()
 	case "codex":
 		return agent.NewCodeXAgent("")
+	case "hermes":
+		return agent.NewHermesAgent("", "", "")
 	default:
 		return nil
 	}
@@ -921,6 +942,10 @@ func resolveSessionWorkDir(sess *session.Session) string {
 		}
 	case "codex":
 		if resolved := resolveCodexProjectPathByThreadID(nativeID); resolved != "" {
+			return resolved
+		}
+	case "hermes":
+		if resolved := resolveHermesProjectPathBySessionID(nativeID); resolved != "" {
 			return resolved
 		}
 	}

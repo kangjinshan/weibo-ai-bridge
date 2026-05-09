@@ -118,6 +118,7 @@
 - Codex 优先走 `codex app-server` 流式路径，失败时才回退到 JSON CLI 路径
 - Hermes 主链路走 `hermes acp` 交互式形态，按 ACP `sessionId` 持久化到 `hermes_session_id`；`/btw` 在 Hermes turn 运行中会转成 ACP `/steer` 注入当前 turn；一次性 `hermes chat --quiet --source tool --query` 仅作为流式 fallback 保留
 - Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 一致：`type = "acp"`、`command = "hermes"`、`args = ["acp"]`，协议为 stdin/stdout 上的 newline-delimited JSON-RPC
+- Hermes 续接旧 ACP session 后若返回 `API call failed after 3 retries: HTTP 404: Resource not found`，router 会清空旧 `hermes_session_id`、新建 Hermes ACP session，并对当前消息自动重试一次
 - 长回复需要保持中文安全切分，并尽量在自然边界 flush
 - 流式增量对比（delta resolution）必须按 UTF-8 rune 比较而不是按字节比较，避免在多字节中文字符中间截断
 - WebSocket 连接需要设置合理的读超时：微博平台 60 秒，Codex app-server 5 分钟

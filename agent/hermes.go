@@ -612,6 +612,10 @@ func (s *hermesInteractiveSession) handleSessionUpdate(params map[string]any) {
 	switch updateType {
 	case "agent_message_chunk":
 		if text := acpContentText(update["content"]); text != "" {
+			if isHermesACPProviderFailure(text) {
+				sendEvent(s.events, Event{Type: EventTypeError, Error: text})
+				return
+			}
 			sendEvent(s.events, Event{Type: EventTypeDelta, Content: text})
 		}
 	case "agent_thought_chunk":
@@ -625,6 +629,13 @@ func (s *hermesInteractiveSession) handleSessionUpdate(params map[string]any) {
 		title, _ := update["title"].(string)
 		sendEvent(s.events, Event{Type: EventTypeToolEnd, ToolName: firstNonEmpty(title, toolID), ToolInput: acpRawText(update)})
 	}
+}
+
+func isHermesACPProviderFailure(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(normalized, "api call failed after 3 retries") &&
+		strings.Contains(normalized, "http 404") &&
+		strings.Contains(normalized, "resource not found")
 }
 
 func (s *hermesInteractiveSession) shouldSuppressReplayUpdate(updateType string) bool {

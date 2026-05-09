@@ -21,6 +21,7 @@ const interactiveDoneGracePeriod = 200 * time.Millisecond
 const interactiveLeadingDoneWait = 12 * time.Second
 
 var errInteractiveTurnNoSignal = errors.New("interactive turn completed without any turn signal")
+var errInteractiveRetryFreshNativeSession = errors.New("interactive turn should retry with a fresh native session")
 
 func (r *Router) getInteractiveSession(sessionID string) (*interactiveSessionState, bool) {
 	r.liveMu.Lock()
@@ -102,7 +103,7 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 				return err
 			}
 			// 先收尾之前被审批阻塞的 turn。
-			if err := r.drainInteractiveSession(ctx, sess, sessionKey, liveState, emit); err != nil && !errors.Is(err, errInteractiveTurnNoSignal) {
+			if err := r.drainInteractiveSession(ctx, sess, sessionKey, liveState, emit, false); err != nil && !errors.Is(err, errInteractiveTurnNoSignal) {
 				return err
 			}
 			// 兼容“先 pending 审批，再 /super on，再发新消息”的场景：
@@ -149,7 +150,7 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 			})
 		}
 
-		if err := r.drainInteractiveSession(ctx, sess, sessionKey, liveState, emit); err != nil && !errors.Is(err, errInteractiveTurnNoSignal) {
+		if err := r.drainInteractiveSession(ctx, sess, sessionKey, liveState, emit, false); err != nil && !errors.Is(err, errInteractiveTurnNoSignal) {
 			return err
 		}
 		return nil
@@ -178,7 +179,10 @@ func (r *Router) sendAndDrainInteractiveTurn(
 		return err
 	}
 
-	err = r.drainInteractiveSession(ctx, sess, sessionKey, state, emit)
+	err = r.drainInteractiveSession(ctx, sess, sessionKey, state, emit, true)
+	if errors.Is(err, errInteractiveRetryFreshNativeSession) {
+		return r.retryInteractiveTurnWithFreshNativeSession(ctx, sess, sessionKey, input, interactiveAgent, state, emit)
+	}
 	if !errors.Is(err, errInteractiveTurnNoSignal) {
 		return err
 	}
@@ -199,7 +203,49 @@ func (r *Router) sendAndDrainInteractiveTurn(
 		return restartErr
 	}
 
-	return r.drainInteractiveSession(ctx, sess, sessionKey, restartedState, emit)
+	return r.drainInteractiveSession(ctx, sess, sessionKey, restartedState, emit, false)
+}
+
+func (r *Router) retryInteractiveTurnWithFreshNativeSession(
+	ctx context.Context,
+	sess *session.Session,
+	sessionKey string,
+	input string,
+	interactiveAgent agent.InteractiveAgent,
+	previousState *interactiveSessionState,
+	emit func(agent.Event),
+) error {
+	if sess == nil {
+		return errInteractiveRetryFreshNativeSession
+	}
+
+	r.clearAgentNativeSessionID(sess, sessionKey)
+	r.removeInteractiveSession(sess.ID)
+
+	restartedState, _, restartErr := r.getOrCreateInteractiveSession(ctx, sess, sessionKey, "", interactiveAgent)
+	if restartErr != nil {
+		return restartErr
+	}
+	restartedState.allowAll = previousState.allowAll
+	restartedState.awaitingApproval = false
+	r.discardBufferedInteractiveEvents(sess, sessionKey, restartedState)
+
+	restartedState, restartErr = r.sendInteractiveInput(ctx, sess, sessionKey, "", input, interactiveAgent, restartedState)
+	if restartErr != nil {
+		return restartErr
+	}
+
+	return r.drainInteractiveSession(ctx, sess, sessionKey, restartedState, emit, false)
+}
+
+func (r *Router) clearAgentNativeSessionID(sess *session.Session, sessionKey string) {
+	if sess == nil || strings.TrimSpace(sessionKey) == "" {
+		return
+	}
+	sess.SetContext(sessionKey, "")
+	if r.sessionMgr != nil {
+		r.sessionMgr.UpdateSession(sess.ID, sessionKey, "")
+	}
 }
 
 func (r *Router) respondInteractiveApproval(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, action agent.ApprovalAction, interactiveAgent agent.InteractiveAgent, liveState *interactiveSessionState) (*interactiveSessionState, error) {
@@ -293,7 +339,7 @@ func (r *Router) waitInteractiveEventsQuiesced(sess *session.Session, sessionKey
 	}
 }
 
-func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Session, sessionKey string, liveState *interactiveSessionState, emit func(agent.Event)) error {
+func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Session, sessionKey string, liveState *interactiveSessionState, emit func(agent.Event), allowFreshNativeRetry bool) error {
 	sawTurnSignal := false
 
 	for {
@@ -379,6 +425,11 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 						continue
 					case agent.EventTypeError:
 						sawTurnSignal = true
+						if allowFreshNativeRetry && shouldRetryWithFreshNativeSession(sess, sessionKey, event.Error) {
+							r.clearAgentNativeSessionID(sess, sessionKey)
+							r.removeInteractiveSession(sess.ID)
+							return errInteractiveRetryFreshNativeSession
+						}
 						emit(event)
 						r.removeInteractiveSession(sess.ID)
 						return nil
@@ -393,6 +444,11 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 				return r.drainInteractiveTailAfterDone(ctx, sess, sessionKey, liveState, emit)
 			case agent.EventTypeError:
 				sawTurnSignal = true
+				if allowFreshNativeRetry && shouldRetryWithFreshNativeSession(sess, sessionKey, event.Error) {
+					r.clearAgentNativeSessionID(sess, sessionKey)
+					r.removeInteractiveSession(sess.ID)
+					return errInteractiveRetryFreshNativeSession
+				}
 				emit(event)
 				r.removeInteractiveSession(sess.ID)
 				return nil
@@ -404,6 +460,16 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 			}
 		}
 	}
+}
+
+func shouldRetryWithFreshNativeSession(sess *session.Session, sessionKey, errorText string) bool {
+	if sess == nil || strings.TrimSpace(sess.AgentType) != "hermes" || strings.TrimSpace(sessionKey) != "hermes_session_id" {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(errorText))
+	return strings.Contains(normalized, "api call failed after 3 retries") &&
+		strings.Contains(normalized, "http 404") &&
+		strings.Contains(normalized, "resource not found")
 }
 
 func (r *Router) waitForInteractiveEventAfterLeadingDone(

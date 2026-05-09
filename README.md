@@ -186,6 +186,7 @@ output = "stdout"
 - **Hermes** — 主链路使用 `hermes acp` 交互式形态，通过 newline-delimited JSON-RPC 调用 `initialize`、`session/new|resume`、`session/prompt`，从 `session/update` 接收增量、工具和审批事件。Bridge 把 ACP `sessionId` 持久化到 `hermes_session_id`；当当前 turn 仍在运行时，`/btw` 会转成 Hermes ACP `/steer` 注入当前 turn。`hermes chat --quiet --source tool --query` 仅作为 CLI fallback 保留
 - **ID 收敛策略** — bridge 只在首轮创建 pending 锚点；一旦收到 Agent `session/thread` 事件，会将会话 ID 收敛为 native ID，避免长期保留 bridge 自增 ID
 - **交互式 stale 保护** — 若新 turn 首个事件是 `done`，并在 `interactiveLeadingDoneWait` 窗口内没有 delta/message/approval/error，有且仅有一次自动重建会话后重试，避免“发了消息但无回复”
+- **Hermes 续接恢复** — 若 Hermes 续接旧 ACP session 后返回 `API call failed after 3 retries: HTTP 404: Resource not found`，Bridge 会清空旧 `hermes_session_id`、新建 Hermes ACP session，并把当前消息自动重试一次
 
 Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 配置一致，核心是通过 stdio 启动 `hermes acp`：
 
@@ -359,7 +360,7 @@ bash scripts/install-skills.sh
 | 配置验证失败 | 检查 `WEIBO_APP_ID` 和 `WEIBO_APP_SECRET`（兼容 `WEIBO_APP_Secret`） |
 | Claude 不可用 | 确认 `claude --version` 可用，API Key 已在 CLI 中配置 |
 | Codex 404 deployment | `CODEX_MODEL` 留空，让 Bridge 沿用本机 CLI 默认配置 |
-| Hermes 不可用 | 确认 `hermes --version` 和 `hermes acp` 可用；若 ACP 能连接但返回 404，优先检查 Hermes 当前 provider/model/deployment 配置 |
+| Hermes 不可用 | 确认 `hermes --version` 和 `hermes acp` 可用；若新 Hermes ACP 会话仍返回 404，优先检查 Hermes 当前 provider/model/deployment 配置 |
 | WebSocket 断连 | 检查网络、Token 是否过期、心跳配置 |
 | 会话丢失 | 检查 `SESSION_TIMEOUT` 和 `SESSION_STORAGE_PATH` |
 | 消息处理超时 | 增加超时时间，检查 Agent 服务可用性 |

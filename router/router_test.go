@@ -1833,6 +1833,71 @@ func TestHandleMessage_RestartsInteractiveSessionOnClosedNetworkConnection(t *te
 	assert.Equal(t, "second reply", platform.streams[1].chunks[0]["content"])
 }
 
+func TestHandleMessage_RecreatesHermesSessionOnProvider404(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	active := sessionMgr.Create("session-hermes", "user-hermes-404", "hermes")
+	sessionMgr.UpdateSession(active.ID, "hermes_session_id", "bad-hermes-native")
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sessionID = "bad-hermes-native"
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{
+			Type:  agent.EventTypeError,
+			Error: "API call failed after 3 retries: HTTP 404: Resource not found",
+		}
+		firstSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sessionID = "good-hermes-native"
+	secondSession.sendFn = func(input string) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeSession, SessionID: secondSession.sessionID}
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "fresh reply"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	agentMgr := agent.NewManager()
+	mockAgent := &MockInteractiveAgent{
+		name:      "hermes",
+		available: true,
+	}
+	mockAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		switch mockAgent.startCalls {
+		case 1:
+			return firstSession, nil
+		case 2:
+			return secondSession, nil
+		default:
+			t.Fatalf("unexpected StartSession call %d", mockAgent.startCalls)
+			return nil, nil
+		}
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("hermes")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-hermes-404",
+		Type:      weibo.MessageTypeText,
+		Content:   "hello",
+		UserID:    "user-hermes-404",
+		UserName:  "test-user",
+		Timestamp: 1234567890,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"bad-hermes-native", ""}, mockAgent.startSessionIDs)
+	assert.Equal(t, []string{"hello"}, secondSession.sentInputs)
+	assert.Equal(t, "good-hermes-native", sessionContextString(active, "hermes_session_id"))
+	assert.Len(t, platform.streams, 1)
+	assert.Equal(t, "fresh reply", platform.streams[0].chunks[0]["content"])
+}
+
 func TestHandleMessage_ApprovalReplySurvivesOriginalRequestContextCancellation(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})

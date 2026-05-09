@@ -199,6 +199,31 @@ func TestHermesACPInitializeParamsMatchHermesSchema(t *testing.T) {
 	}
 }
 
+func TestHermesACPProviderFailureIsError(t *testing.T) {
+	session := &hermesInteractiveSession{
+		events:        make(chan Event, 1),
+		replayDropped: make(chan struct{}, 1),
+	}
+
+	session.handleSessionUpdate(map[string]any{
+		"update": map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content": map[string]any{
+				"type": "text",
+				"text": "API call failed after 3 retries: HTTP 404: Resource not found",
+			},
+		},
+	})
+
+	event := <-session.events
+	if event.Type != EventTypeError {
+		t.Fatalf("expected provider failure to become error event, got %#v", event)
+	}
+	if !strings.Contains(event.Error, "HTTP 404") {
+		t.Fatalf("unexpected error text: %#v", event)
+	}
+}
+
 func TestHermesACPPromptTextUsesSteerDuringActivePrompt(t *testing.T) {
 	got := hermesACPPromptText("  add this context  ", true)
 	if got != "/steer add this context" {

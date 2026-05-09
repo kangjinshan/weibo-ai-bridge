@@ -113,6 +113,62 @@ done
 	}
 }
 
+func TestHermesAgent_ResumeIgnoresACPHistoryReplay(t *testing.T) {
+	binDir := t.TempDir()
+	hermesPath := filepath.Join(binDir, "hermes")
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+      ;;
+    *\"method\":\"session/resume\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"hermes-existing-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"previous answer replay"}}}}'
+      ;;
+    *\"method\":\"session/prompt\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"hermes-existing-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"current answer"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(hermesPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake hermes: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	agent := NewHermesAgent("", "", "")
+	session, err := agent.StartSession(context.Background(), "hermes-existing-session")
+	if err != nil {
+		t.Fatalf("StartSession error: %v", err)
+	}
+	defer session.Close()
+
+	if err := session.Send("next prompt"); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	var gotCurrent, gotDone bool
+	deadline := time.After(2 * time.Second)
+	for !gotCurrent || !gotDone {
+		select {
+		case event := <-session.Events():
+			switch event.Type {
+			case EventTypeDelta, EventTypeMessage:
+				if event.Content == "previous answer replay" {
+					t.Fatalf("history replay leaked into current turn: %#v", event)
+				}
+				gotCurrent = event.Content == "current answer"
+			case EventTypeDone:
+				gotDone = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for ACP events; current=%v done=%v", gotCurrent, gotDone)
+		}
+	}
+}
+
 func TestHermesACPInitializeParamsMatchHermesSchema(t *testing.T) {
 	raw, err := json.Marshal(hermesACPInitializeParams())
 	if err != nil {

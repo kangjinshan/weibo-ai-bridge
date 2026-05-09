@@ -63,6 +63,9 @@ type hermesInteractiveSession struct {
 
 	sessionID atomic.Value
 
+	suppressReplay atomic.Bool
+	replayDropped  chan struct{}
+
 	approvalMu sync.Mutex
 	approval   *hermesPendingApproval
 }
@@ -83,6 +86,11 @@ type hermesPermissionOption struct {
 	Kind     string
 	Name     string
 }
+
+const (
+	hermesReplayQuietPeriod = 250 * time.Millisecond
+	hermesReplayMaxDrain    = 2 * time.Second
+)
 
 // Execute 执行 AI 任务并等待完整结果。
 func (a *HermesAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
@@ -197,18 +205,20 @@ func (a *HermesAgent) StartSession(ctx context.Context, sessionID string) (Inter
 	}
 
 	session := &hermesInteractiveSession{
-		cmd:       cmd,
-		stdin:     stdin,
-		events:    make(chan Event, 128),
-		ctx:       childCtx,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		pending:   make(map[int64]chan hermesACPResponse),
-		promptIDs: make(map[int64]struct{}),
+		cmd:           cmd,
+		stdin:         stdin,
+		events:        make(chan Event, 128),
+		ctx:           childCtx,
+		cancel:        cancel,
+		done:          make(chan struct{}),
+		pending:       make(map[int64]chan hermesACPResponse),
+		promptIDs:     make(map[int64]struct{}),
+		replayDropped: make(chan struct{}, 1),
 	}
 	session.alive.Store(true)
 	if strings.TrimSpace(sessionID) != "" {
 		session.sessionID.Store(strings.TrimSpace(sessionID))
+		session.suppressReplay.Store(true)
 	}
 
 	go session.readLoop(stdout)
@@ -239,6 +249,12 @@ func (a *HermesAgent) StartSession(ctx context.Context, sessionID string) (Inter
 	if err != nil {
 		_ = session.Close()
 		return nil, fmt.Errorf("failed to create hermes ACP session: %w", err)
+	}
+	if method == "session/resume" {
+		if err := session.waitForReplayDrain(ctx); err != nil {
+			_ = session.Close()
+			return nil, err
+		}
 	}
 	if sid, _ := resp.Result["sessionId"].(string); strings.TrimSpace(sid) != "" {
 		session.SetCurrentSessionID(sid)
@@ -590,6 +606,9 @@ func (s *hermesInteractiveSession) handleSessionUpdate(params map[string]any) {
 		return
 	}
 	updateType, _ := update["sessionUpdate"].(string)
+	if s.shouldSuppressReplayUpdate(updateType) {
+		return
+	}
 	switch updateType {
 	case "agent_message_chunk":
 		if text := acpContentText(update["content"]); text != "" {
@@ -606,6 +625,59 @@ func (s *hermesInteractiveSession) handleSessionUpdate(params map[string]any) {
 		title, _ := update["title"].(string)
 		sendEvent(s.events, Event{Type: EventTypeToolEnd, ToolName: firstNonEmpty(title, toolID), ToolInput: acpRawText(update)})
 	}
+}
+
+func (s *hermesInteractiveSession) shouldSuppressReplayUpdate(updateType string) bool {
+	if !s.suppressReplay.Load() {
+		return false
+	}
+	switch updateType {
+	case "user_message_chunk", "agent_message_chunk", "tool_call", "tool_call_update":
+		select {
+		case s.replayDropped <- struct{}{}:
+		default:
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *hermesInteractiveSession) waitForReplayDrain(ctx context.Context) error {
+	if !s.suppressReplay.Load() {
+		return nil
+	}
+	defer s.suppressReplay.Store(false)
+
+	quiet := time.NewTimer(hermesReplayQuietPeriod)
+	defer quiet.Stop()
+	maxWait := time.NewTimer(hermesReplayMaxDrain)
+	defer maxWait.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.done:
+			return fmt.Errorf("hermes ACP exited")
+		case <-s.replayDropped:
+			resetTimer(quiet, hermesReplayQuietPeriod)
+		case <-quiet.C:
+			return nil
+		case <-maxWait.C:
+			return nil
+		}
+	}
+}
+
+func resetTimer(timer *time.Timer, duration time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(duration)
 }
 
 func (s *hermesInteractiveSession) handlePermissionRequest(id int64, params map[string]any) {

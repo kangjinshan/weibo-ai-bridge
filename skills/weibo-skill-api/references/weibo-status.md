@@ -1,27 +1,24 @@
 # 微博状态查询
 
-> **Base URL**: `https://open-im.api.weibo.com`
-
 包含两个功能：获取用户微博列表、根据 MID 或 URL 查询单条微博。
 
 ---
 
 ## 一、用户微博列表
 
-获取用户自己发布的微博内容，支持分页查询。
+使用 `status` 命令获取用户自己发布的微博内容，支持分页查询。
 
-### API 说明
+### 基本用法
 
+```bash
+node scripts/weibo-skill.js status
 ```
-GET /open/weibo/user_status?token={token}&count={count}
-```
 
-**Query 参数**：
+### 参数说明
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `token` | string | 是 | - | 访问令牌 |
-| `count` | number | 否 | 20 | 每页数量，最大 100 |
+| `--count` | number | 否 | 20 | 每页数量，最大 100 |
 
 ### 返回结果
 
@@ -70,36 +67,46 @@ GET /open/weibo/user_status?token={token}&count={count}
 
 ### 使用示例
 
-```http
-GET /open/weibo/user_status?token={token}
-GET /open/weibo/user_status?token={token}&count=20
+#### 获取最新微博（默认参数）
+
+```bash
+node scripts/weibo-skill.js status
+```
+
+#### 获取指定数量的微博
+
+```bash
+node scripts/weibo-skill.js status --count=20
 ```
 
 ### 注意事项
 
-1. 返回的微博按时间倒序排列（最新的在前）
-2. `count` 参数最大值为 100
+1. 需要先配置好 `weibo-ai-bridge` 的微博凭证；脚本会自动读取或刷新 Token
+2. 返回的微博按时间倒序排列（最新的在前）
+3. `--count` 参数最大值为 100
 
 ---
 
 ## 二、单条微博查询
 
-根据 MID 或 URL 获取单条微博内容。
+使用 `status-show` 命令根据 MID 或 URL 获取单条微博内容。Token 由脚本自动获取，无需手动传入。
 
-### API 说明
+### 基本用法
 
+```bash
+# 通过 MID 查询
+node scripts/weibo-skill.js status-show --id=<MID>
+
+# 通过 URL 查询
+node scripts/weibo-skill.js status-show --url=<URL>
 ```
-GET /open/weibo/status_show?token={token}&id={id}
-GET /open/weibo/status_show?token={token}&url={url}
-```
 
-**Query 参数**：
+### 参数说明
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `token` | string | 是 | 访问令牌 |
-| `id` | string | 与 `url` 二选一 | 微博数字 MID |
-| `url` | string | 与 `id` 二选一 | 微博 URL |
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--id` | 与 `--url` 二选一 | 微博数字 MID |
+| `--url` | 与 `--id` 二选一 | 微博 URL |
 
 支持的 URL 格式：
 - `https://m.weibo.cn/status/JBAV53jMk`
@@ -151,13 +158,26 @@ GET /open/weibo/status_show?token={token}&url={url}
 
 ### 使用示例
 
-```http
-GET /open/weibo/status_show?token={token}&id=4559512851192225
-GET /open/weibo/status_show?token={token}&url=https%3A%2F%2Fm.weibo.cn%2Fstatus%2FJBAV53jMk
-GET /open/weibo/status_show?token={token}&url=http%3A%2F%2Ft.cn%2FAXMdzqjJ
+#### 通过 MID 查询
+
+```bash
+node scripts/weibo-skill.js status-show --id=4559512851192225
+```
+
+#### 通过微博 URL 查询
+
+```bash
+node scripts/weibo-skill.js status-show --url="https://m.weibo.cn/status/JBAV53jMk"
+```
+
+#### 通过短链查询
+
+```bash
+node scripts/weibo-skill.js status-show --url="http://t.cn/AXMdzqjJ"
 ```
 
 ### 注意事项
 
-1. `id` 和 `url` 必须提供其中一个
-2. `url` 参数需要进行 URL 编码
+1. 需要先配置好 `weibo-ai-bridge` 的微博凭证；脚本会自动读取或刷新 Token
+2. `--id` 和 `--url` 必须提供其中一个
+3. Token 由脚本自动从 bridge 配置中获取，无需手动传入

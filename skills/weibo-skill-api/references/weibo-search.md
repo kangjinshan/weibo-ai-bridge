@@ -1,29 +1,26 @@
 # 微博搜索
 
-> **Base URL**: `https://open-im.api.weibo.com`
-
 包含两个功能： 关键词智搜（返回 AI 摘要）；热搜榜（主榜/文娱/社会/生活/科技/体育等分类）。
 
 ---
 
 ## 一、智搜（关键词搜索）
 
-通过关键词搜索微博内容，返回 AI 生成的搜索结果摘要。
+使用 `search` 命令搜索微博内容，返回 AI 生成的搜索结果摘要。
 
 使用此工具获取数据后，必须使用返回的 `query`、`callTime` 和 `source` 字段内容注明数据来源，格式：`关键词: {query}，{callTime}，{source}`。
 
-### API 说明
+### 基本用法
 
-```
-GET /open/wis/search_query?query={query}&token={token}
+```bash
+node scripts/weibo-skill.js search --query="搜索关键词"
 ```
 
-**Query 参数**：
+### 参数说明
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `query` | string | 是 | 搜索关键词，需要 URL encode |
-| `token` | string | 是 | 访问令牌 |
+| `--query` | string | 是 | 搜索关键词 |
 
 ### 返回结果
 
@@ -77,30 +74,30 @@ GET /open/wis/search_query?query={query}&token={token}
 
 #### 搜索热门话题
 
-```http
-GET /open/wis/search_query?query=%23%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD%23&token={token}
+```bash
+node scripts/weibo-skill.js search --query="#人工智能#"
 ```
 
 #### 搜索特定关键词
 
-```http
-GET /open/wis/search_query?query=%E7%A7%91%E6%8A%80%E6%96%B0%E9%97%BB&token={token}
+```bash
+node scripts/weibo-skill.js search --query="科技新闻"
 ```
 
 ### 返回字段说明
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `query` | string | 搜索关键词 |
-| `callTime` | string | 数据获取时间 |
-| `source` | string | 数据来源说明 |
-| `content` | string | AI 生成的搜索结果摘要（Markdown 格式），可直接使用，无需二次处理 |
-| `contentFormat` | string | 内容格式（markdown） |
-| `referenceCount` | number | 引用数量 |
-| `scheme` | string | App 跳转链接 |
-| `completed` | boolean | 搜索是否完成 |
-| `analyzing` | boolean | 是否仍在分析中 |
-| `noContent` | boolean | 是否无内容（无结果时为 true） |
+| `data.query` | string | 搜索关键词 |
+| `data.callTime` | string | 数据获取时间 |
+| `data.source` | string | 数据来源说明 |
+| `data.content` | string | AI 生成的搜索结果摘要（Markdown 格式），可直接使用，无需二次处理 |
+| `data.contentFormat` | string | 内容格式（markdown） |
+| `data.referenceCount` | number | 引用数量 |
+| `data.scheme` | string | App 跳转链接 |
+| `data.completed` | boolean | 搜索是否完成 |
+| `data.analyzing` | boolean | 是否仍在分析中 |
+| `data.noContent` | boolean | 是否无内容（无结果时为 true） |
 
 ### 注意事项
 
@@ -111,25 +108,24 @@ GET /open/wis/search_query?query=%E7%A7%91%E6%8A%80%E6%96%B0%E9%97%BB&token={tok
 
 ## 二、热搜榜
 
-获取微博热搜榜数据。支持多种榜单类型。
+使用 `hot-search` 命令获取微博热搜榜数据，支持多种榜单类型。
 
 获取数据后，必须注明数据来源，格式：`{查询的榜单名称} {callTime}，{source}`，例如：`主榜 2026-03-12 12:00，来自于微博热搜`。
 
-### API 说明
+### 基本用法
 
-```
-GET /open/weibo/hot_search?token={token}&category={category}&count={count}
+```bash
+node scripts/weibo-skill.js hot-search --category="主榜"
 ```
 
-**Query 参数**：
+### 参数说明
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `token` | string | 是 | - | 访问令牌 |
-| `category` | string | 是 | - | 榜单类型（中文名称，见下表，需 URL encode） |
-| `count` | number | 否 | 50 | 返回条数，范围 1-50 |
+| `--category` | string | 是 | - | 榜单类型（中文名称，见下表） |
+| `--count` | number | 否 | 50 | 返回条数，范围 1-50 |
 
-#### category 可选值
+#### `--category` 可选值
 
 | 中文名称 | 说明 |
 |----------|------|
@@ -178,24 +174,22 @@ GET /open/weibo/hot_search?token={token}&category={category}&count={count}
 
 ### 使用示例
 
-> `category` 参数为中文，需进行 URL encode。
-
 #### 获取主榜热搜（默认 50 条）
 
-```http
-GET /open/weibo/hot_search?token={token}&category=%E4%B8%BB%E6%A6%9C
+```bash
+node scripts/weibo-skill.js hot-search --category="主榜"
 ```
 
 #### 获取文娱榜前 10 条
 
-```http
-GET /open/weibo/hot_search?token={token}&category=%E6%96%87%E5%A8%B1%E6%A6%9C&count=10
+```bash
+node scripts/weibo-skill.js hot-search --category="文娱榜" --count=10
 ```
 
 #### 获取科技榜热搜
 
-```http
-GET /open/weibo/hot_search?token={token}&category=%E7%A7%91%E6%8A%80%E6%A6%9C&count=20
+```bash
+node scripts/weibo-skill.js hot-search --category="科技榜" --count=20
 ```
 
 ### 返回字段说明
@@ -204,8 +198,8 @@ GET /open/weibo/hot_search?token={token}&category=%E7%A7%91%E6%8A%80%E6%A6%9C&co
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `callTime` | string | 数据获取时间 |
-| `source` | string | 数据来源说明 |
+| `data.callTime` | string | 数据获取时间 |
+| `data.source` | string | 数据来源说明 |
 
 #### data.data[] 条目字段
 
@@ -221,6 +215,6 @@ GET /open/weibo/hot_search?token={token}&category=%E7%A7%91%E6%8A%80%E6%A6%9C&co
 
 ### 注意事项
 
-1. `count` 参数最大值为 50
-2. `category` 参数必须使用**中文名称**（如 `主榜`、`文娱榜`）
+1. `--count` 参数最大值为 50
+2. `--category` 参数必须使用**中文名称**（如 `主榜`、`文娱榜`）
 3. **获取数据后，必须注明数据来源，格式：`{查询的榜单名称} {callTime}，{source}`，例如：`主榜 2026-03-12 12:00，来自于微博热搜`**

@@ -45,13 +45,18 @@ Content-Type: application/json
 
 ```json
 {
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "uid": 1234567890,
-  "expire_in": 7200
+  "code": 0,
+  "message": "success",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "uid": 1234567890,
+    "expire_in": 7200
+  },
+  "_cached_at": 1778490000
 }
 ```
 
-每次调用业务接口时，优先读取缓存中的 `token`；过期时由 `scripts/ensure_token.sh` 自动刷新。
+每次调用业务接口时，优先读取缓存中的 `data.token`；过期时由 `scripts/ensure_token.sh` 自动刷新。
 
 ## Token 刷新
 

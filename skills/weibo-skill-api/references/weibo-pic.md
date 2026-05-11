@@ -1,25 +1,27 @@
 # 微博图片上传
 
-> **Base URL**: `https://open-im.api.weibo.com`
+使用 `pic-upload` 命令将本地图片文件上传到微博平台，返回图片 ID（`pic_id`），供发帖时使用。
 
-将本地图片文件上传到微博平台，返回图片 ID（`pic_id`），供发帖时使用。
+## 基本用法
 
-## API 说明
-
-```
-POST /open/pic/upload?token={token}
-Content-Type: application/octet-stream
-
-<图片文件的二进制内容>
+```bash
+node scripts/weibo-skill.js pic-upload --file="/path/to/image.jpg"
 ```
 
-**Query 参数**：
+## 参数说明
 
-| 参数 | 必填 | 说明 |
+| 参数 | 说明 | 必填 |
 |------|------|------|
-| `token` | 是 | 访问令牌（从 Token 管理获取） |
+| `--file` | 图片文件路径 | 是 |
 
-**请求体**：图片文件的原始二进制内容（`application/octet-stream`）
+## 上传过程输出
+
+```
+[INFO] 准备上传图片: image.jpg
+[INFO] 文件大小: 1.25 MB
+[INFO] 上传中...
+[SUCCESS] ✓ 图片上传完成！
+```
 
 ## 返回结果
 
@@ -67,5 +69,6 @@ Content-Type: application/octet-stream
 ## 核心红线（必须遵守）
 
 1. **Token 必须有效** — 上传接口需要携带有效的 Token，过期后需重新获取
-2. **文件大小限制** — 图片文件大小不能超过 10MB
-3. **频率限制** — 收到 42900 错误需等待次日
+2. **文件必须存在** — 上传前会检查文件是否存在，不存在会报错
+3. **文件大小限制** — 图片文件大小不能超过 10MB
+4. **频率限制** — 收到 42900 错误需等待次日

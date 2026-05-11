@@ -1,146 +1,44 @@
 # 微博视频上传
 
-> **Base URL**: `https://open-im.api.weibo.com`
+使用 `video-upload` 命令将本地视频文件上传到微博平台。支持大文件分片上传，自动计算 MD5 校验值，显示上传进度，返回 `mediaId` 供发帖使用。
 
-将本地视频文件上传到微博平台。支持大文件分片上传，返回 `mediaId` 供发帖使用。
+## 基本用法
 
-## 上传流程
-
-视频上传分两步：**初始化** → **分片上传**。
-
----
-
-## 第一步：初始化上传
-
-```http
-GET /open/video/init?token={token}&check={md5}&name={filename}&length={filesize}
+```bash
+node scripts/weibo-skill.js video-upload --file="/path/to/video.mp4"
 ```
 
-**Query 参数**：
+## 参数说明
 
-| 参数 | 必填 | 说明 |
+| 参数 | 说明 | 必填 |
 |------|------|------|
-| `token` | 是 | 访问令牌 |
-| `check` | 是 | 整个文件的 MD5 校验值（十六进制字符串） |
-| `name` | 是 | 文件名（如 `video.mp4`） |
-| `length` | 是 | 文件大小（字节数） |
-| `type` | 否 | 文件类型，默认 `video` |
-| `video_type` | 否 | 视频类型，默认 `normal` |
-| `upload_only` | 否 | 是否仅上传，默认 `false` |
-| `custom_name_support` | 否 | 是否支持自定义名称，默认 `false` |
+| `--file` | 视频文件路径 | 是 |
 
-**响应示例**：
+## 上传过程输出
+
+```
+[INFO] 准备上传视频: video.mp4
+[INFO] 文件大小: 25.50 MB
+[INFO] 计算文件校验值...
+[INFO] 初始化上传...
+[INFO] 分片数量: 6
+[████████████████████░] 85% 上传分片 5/6
+[SUCCESS] ✓ 视频上传完成！
+```
+
+## 返回示例
 
 ```json
 {
   "code": 0,
   "message": "success",
   "data": {
-    "fileToken": "upload_token_xxx",
-    "mediaId": "media_id_xxx",
-    "length": 10240
-  }
-}
-```
-
-**响应字段说明**：
-
-| 字段 | 说明 |
-|------|------|
-| `fileToken` | 上传令牌，后续分片上传时使用 |
-| `mediaId` | 媒体 ID，发帖时使用此值 |
-| `length` | 服务端建议的分片大小（单位：KB），若为 0 则使用默认值 10240 KB（10MB） |
-
----
-
-## 第二步：分片上传
-
-将文件按分片大小切割，逐片上传。
-
-```http
-POST /open/video/upload?token={token}&filetoken={fileToken}&filelength={fileLength}&filecheck={fileMD5}&chunksize={chunkSize}&startloc={startLoc}&chunkindex={chunkIndex}&chunkcount={chunkCount}&sectioncheck={sectionMD5}
-Content-Type: application/octet-stream
-
-<当前分片的二进制内容>
-```
-
-**Query 参数**：
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `token` | 是 | 访问令牌 |
-| `filetoken` | 是 | 初始化返回的 `fileToken` |
-| `filelength` | 是 | 文件总大小（字节） |
-| `filecheck` | 是 | 整个文件的 MD5 校验值 |
-| `chunksize` | 是 | 当前分片大小（字节） |
-| `startloc` | 是 | 当前分片在文件中的起始位置（字节偏移量） |
-| `chunkindex` | 是 | 当前分片序号（从 1 开始） |
-| `chunkcount` | 是 | 总分片数 |
-| `sectioncheck` | 是 | 当前分片的 MD5 校验值 |
-| `type` | 否 | 文件类型，默认 `video` |
-| `video_type` | 否 | 视频类型，默认 `normal` |
-
-**最后一片响应示例**：
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "complete": true,
-    "fmid": "fmid_xxx",
+    "mediaId": "xxx",
+    "fmid": "xxx",
     "url": "https://video.weibo.com/xxx"
   }
 }
 ```
-
-**中间分片响应示例**：
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "complete": false
-  }
-}
-```
-
----
-
-## 分片计算方法
-
-```
-分片大小 = init 响应中的 data.length * 1024（字节）
-         若 data.length 为 0，则使用默认值 10 * 1024 * 1024（10MB）
-         若分片大小 >= 文件大小，则分片大小 = 文件大小（即单片上传）
-
-总分片数 = ceil(文件大小 / 分片大小)
-
-第 i 片（从 1 开始）：
-  startloc = (i - 1) * 分片大小
-  chunksize = min(分片大小, 文件大小 - startloc)
-  sectioncheck = 该分片内容的 MD5
-```
-
----
-
-## 完整上传流程示例
-
-```
-1. 计算文件 MD5：fileMD5 = md5(文件全部内容)
-2. 初始化：GET /open/video/init?check={fileMD5}&name=video.mp4&length={fileSize}&token={token}
-   → 获得 fileToken、mediaId、建议分片大小
-3. 按分片大小切割文件，逐片上传：
-   POST /open/video/upload?filetoken={fileToken}&chunkindex=1&chunkcount=N&...
-   POST /open/video/upload?filetoken={fileToken}&chunkindex=2&chunkcount=N&...
-   ...
-   POST /open/video/upload?filetoken={fileToken}&chunkindex=N&chunkcount=N&...
-4. 最后一片响应中 data.complete = true，上传完成
-5. 使用 mediaId 发帖（不要使用 url 字段）
-```
-
----
 
 ## 错误码说明
 

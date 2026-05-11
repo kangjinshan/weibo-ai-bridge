@@ -343,7 +343,7 @@ bash scripts/install-skills.sh
 - `~/.claude/skills/weibo-skill-api`
 - `~/.hermes/skills/weibo-skill-api`
 
-上面的命令用于手动重装/修复，仍会自动复用 bridge 的微博配置与 token 缓存。
+上面的命令用于手动重装/修复，仍会自动复用 bridge 的微博配置与 token 缓存。内置 skill 提供热搜/智搜、微博状态查询、超话发帖评论与点赞、图片/视频上传、定时任务和创作者数据摘要等能力。
 
 ## 微博凭证获取
 

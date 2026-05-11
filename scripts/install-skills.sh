@@ -74,6 +74,7 @@ copy_skill() {
   rm -rf "${dest_dir}"
   cp -r "${SKILL_SOURCE_DIR}" "${dest_dir}"
   find "${dest_dir}/scripts" -type f -name '*.sh' -exec chmod +x {} \;
+  find "${dest_dir}/scripts" -type f -name '*.js' -exec chmod +x {} \;
   echo "Installed ${SKILL_NAME} -> ${dest_dir}"
 }
 

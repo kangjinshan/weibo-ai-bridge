@@ -74,7 +74,7 @@
 
 ### `skills/`
 
-- `weibo-skill-api/` — 内置微博 Skill 能力包，安装 bridge 时同步安装到 `~/.codex/skills/`、`~/.claude/skills/` 和 `~/.hermes/skills/`。复用 bridge 的微博配置与 token 缓存。
+- `weibo-skill-api/` — 内置微博 Skill 能力包，包含热搜/智搜、微博状态查询、超话互动、媒体上传、定时任务和创作者数据摘要；安装 bridge 时同步安装到 `~/.codex/skills/`、`~/.claude/skills/` 和 `~/.hermes/skills/`。复用 bridge 的微博配置与 token 缓存。
 
 ### `deploy/`
 

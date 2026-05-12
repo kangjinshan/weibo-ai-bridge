@@ -236,10 +236,11 @@ if [[ -z "${CONFIG_FILE_PATH}" ]]; then
   exit 1
 fi
 
-mapfile -t WEIBO_CFG < <(resolve_weibo_config "${CONFIG_FILE_PATH}")
-APP_ID="${WEIBO_CFG[0]}"
-APP_SECRET="${WEIBO_CFG[1]}"
-TOKEN_URL="${WEIBO_CFG[2]}"
+WEIBO_CFG="$(resolve_weibo_config "${CONFIG_FILE_PATH}")"
+APP_ID="${WEIBO_CFG%%$'\n'*}"
+WEIBO_CFG="${WEIBO_CFG#*$'\n'}"
+APP_SECRET="${WEIBO_CFG%%$'\n'*}"
+TOKEN_URL="${WEIBO_CFG#*$'\n'}"
 
 TOKEN="$(read_cached_token "${TOKEN_FILE}" 2>/dev/null || true)"
 if [[ -z "${TOKEN}" ]]; then

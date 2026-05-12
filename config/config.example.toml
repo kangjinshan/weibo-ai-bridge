@@ -53,6 +53,13 @@ provider = ""
 # 是否启用 Hermes Agent
 enabled = false
 
+[agent.gemini]
+# Gemini 模型（留空则沿用本机 Gemini CLI 默认配置）
+model = ""
+
+# 是否启用 Gemini Agent
+enabled = false
+
 [session]
 # 会话超时时间（秒）
 timeout = 3600

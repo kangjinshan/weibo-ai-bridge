@@ -16,6 +16,7 @@
 - Claude Code：内部注册名是 `claude-code`，会话层暴露为 `claude`
 - Codex CLI：会话层暴露为 `codex`
 - Hermes CLI：会话层暴露为 `hermes`
+- Gemini CLI：会话层暴露为 `gemini`
 
 服务运行时的主流程：
 
@@ -39,14 +40,14 @@
 
 - `router_core.go` — Router 类型定义、Handle/Route 主入口、toRouterMessage 转换。非命令消息统一走 `streamRouterMessage`。
 - `router_stream.go` — 统一流式路径 `streamRouterMessage`、`forwardStreamToPlatform`（delta/message/approval/error→分片回传）、`IsBenignCancellation`。
-- `router_agent.go` — `resolveAgentExecution`（会话获取/Agent 解析）、`streamAIMessage`（交互式优先→流式回退）、`handleAIMessage`（私有方法，主入口不再调用）、`agentSessionContextKey`（`claude_session_id` / `codex_session_id` / `hermes_session_id`）。
+- `router_agent.go` — `resolveAgentExecution`（会话获取/Agent 解析）、`streamAIMessage`（交互式优先→流式回退）、`handleAIMessage`（私有方法，主入口不再调用）、`agentSessionContextKey`（`claude_session_id` / `codex_session_id` / `hermes_session_id` / `gemini_session_id`）。执行上下文会携带当前会话 `work_dir` 和 `Allow All` 状态，供 Agent 选择 CLI 参数。
 - `router_interactive.go` — `liveSessions` 生命周期管理、`getOrCreateInteractiveSession`、`drainInteractiveSession`、审批等待态、`allowAll` 标记、交互式会话尾部静默保护（`interactiveDoneGracePeriod` 200ms）、leading done 防误判等待（`interactiveLeadingDoneWait` 12s）与 stale 会话“空 done”自动重建重试。
 - `router_approval.go` — `formatApprovalPrompt`（审批提示格式化）、`parseApprovalAction`（28 个同义词解析，分为允许类/取消类/允许所有类）。
 - `router_bytheway.go` — `/btw` 命令注入逻辑，区分流式/交互式两种注入路径。
 - `stream_sender.go` — 流式分片发送器 `streamReplySender`，delta 缓冲与边界感知 flush，`idleLineBreakAfter`（5s 静默补换行）、`maxBufferDelay`。
 - `agent_repair.go` — Agent 可用性自动修复：`configBackedAgentAvailabilityRepairer` 会写入 TOML 配置文件并重新注册 Agent。
-- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/claude`、`/codex`、`/hermes`、`/model`、`/dir`、`/status`、`/super`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。
-- `native_sessions.go` — 原生会话扫描与元数据提取。Claude 数据源：① `sessions-index.json` ② `.jsonl` 文件解析 ③ `~/.claude/history.jsonl` 补充；Codex 数据源：`state_5.sqlite` / `session_index.jsonl` / `.jsonl`；Hermes 数据源：`~/.hermes/sessions/session_*.json`。
+- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/claude`、`/codex`、`/hermes`、`/gemini`、`/model`、`/dir`、`/status`、`/super`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。
+- `native_sessions.go` — 原生会话扫描与元数据提取。Claude 数据源：① `sessions-index.json` ② `.jsonl` 文件解析 ③ `~/.claude/history.jsonl` 补充；Codex 数据源：`state_5.sqlite` / `session_index.jsonl` / `.jsonl`；Hermes 数据源：`~/.hermes/sessions/session_*.json`；Gemini 数据源：`~/.gemini/tmp|history/*/chats/session-*.jsonl`。
 - `router_utils.go` — rune 安全切分等辅助函数。
 
 ### `agent/`
@@ -59,6 +60,7 @@
 - `codex_interactive_session.go` — Codex WebSocket 交互式会话。审批（`requestApproval` 系列）、`Interrupt`（turn/interrupt）、`shouldIgnoreCodexAppServerReadError`（EOF/close 1006 容错）。
 - `codex_appserver.go` — Codex app-server 客户端。自动分配端口、`waitForCodexAppServerReady`、initialize/ensureThread/startTurn、5 分钟读超时、`parseCodexAppServerMessage`（delta/completed）。
 - `hermes.go` — Hermes CLI 执行与 ACP 交互式会话。流式 fallback 仍可走 `hermes chat --quiet --source tool --query`，主链路优先启动 `hermes acp`，通过 newline-delimited JSON-RPC 的 `initialize` / `session/new|resume` / `session/prompt` 接收 `session/update` 增量、审批请求和 `done`。
+- `gemini.go` — Gemini CLI 流式执行（`--output-format stream-json --prompt`）、默认追加 `--include-directories /`、`Allow All` 时追加 `-y`、`init.session_id` 会话 ID 提取、`message/tool_use/tool_result/error/result` 事件翻译，以及 Gemini preview API 不支持 tool `id` 时的请求 payload / resume history 清理。
 - `prompt.go` — `wrapUserPrompt`。
 
 ### `session/`
@@ -78,7 +80,7 @@
 
 ### `skills/`
 
-- `weibo-skill-api/` — 内置微博 Skill 能力包，包含热搜/智搜、微博状态查询、超话互动、媒体上传、定时任务和创作者数据摘要；安装 bridge 时同步安装到 `~/.codex/skills/`、`~/.claude/skills/` 和 `~/.hermes/skills/`。复用 bridge 的微博配置与 token 缓存。
+- `weibo-skill-api/` — 内置微博 Skill 能力包，包含热搜/智搜、微博状态查询、超话互动、媒体上传、定时任务和创作者数据摘要；安装 bridge 时同步安装到 `~/.codex/skills/`、`~/.claude/skills/`、`~/.hermes/skills/` 和 `~/.gemini/skills/`。复用 bridge 的微博配置与 token 缓存。
 
 ### `deploy/`
 
@@ -113,7 +115,7 @@
 - 默认 HTTP 端口是 `5533`，除非设置了 `SERVER_PORT`
 - 默认配置文件路径是 `config/config.toml`，可由 `CONFIG_PATH` 覆盖
 - 至少要启用一个 Agent，否则服务会在启动时失败
-- 会话层的 Agent 类型统一使用 `claude`、`codex` 或 `hermes`
+- 会话层的 Agent 类型统一使用 `claude`、`codex`、`hermes` 或 `gemini`
 - Agent Manager 内部把 Claude 注册为 `claude-code`，并把 `claude` 解析到 `claude-code`
 - 会话管理采用 native-first：`/new` 只准备 pending 会话锚点，收到 Agent `session/thread` 事件后会把会话 ID 收敛为 native ID
 - 非命令消息会进入当前活跃会话路径；命令消息由 `router/command.go` 处理
@@ -123,6 +125,10 @@
 - Hermes 主链路走 `hermes acp` 交互式形态，按 ACP `sessionId` 持久化到 `hermes_session_id`；`/btw` 在 Hermes turn 运行中会转成 ACP `/steer` 注入当前 turn；一次性 `hermes chat --quiet --source tool --query` 仅作为流式 fallback 保留
 - Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 一致：`type = "acp"`、`command = "hermes"`、`args = ["acp"]`，协议为 stdin/stdout 上的 newline-delimited JSON-RPC
 - Hermes 续接旧 ACP session 后若返回 `API call failed after 3 retries: HTTP 404: Resource not found`，router 会清空旧 `hermes_session_id`、新建 Hermes ACP session，并对当前消息自动重试一次
+- Gemini 走 `gemini --output-format stream-json --prompt` 流式路径，按 `init.session_id` 持久化到 `gemini_session_id`，续接时使用 `--resume`
+- Gemini 默认追加 `--include-directories /`，跨目录读取是默认能力；不要要求用户先确认或先开 `/super on` 才能读取当前项目外目录
+- `/super on` / `Allow All` 对 Gemini 仅用于追加 `-y` 自动批准工具调用，不负责放开目录读取
+- Gemini preview API 当前不接受 `functionCall.id` / `functionResponse.id`，保留请求 payload sanitizer 和 resume history sanitizer；不要通过禁用工具调用来规避这个 400
 - 长回复需要保持中文安全切分，并尽量在自然边界 flush
 - 流式增量对比（delta resolution）必须按 UTF-8 rune 比较而不是按字节比较，避免在多字节中文字符中间截断
 - WebSocket 连接需要设置合理的读超时：微博平台 60 秒，Codex app-server 5 分钟
@@ -138,12 +144,13 @@
 当前由 `router/command.go` 处理的用户命令：
 
 - `/help`
-- `/new [claude|codex|hermes]`
+- `/new [claude|codex|hermes|gemini]`
 - `/list`（展示所有项目的 native 会话列表，带项目名前缀）
-- `/switch [index|claude|codex|hermes]`
+- `/switch [index|claude|codex|hermes|gemini]`
 - `/claude`（等价于 `/switch claude`）
 - `/codex`（等价于 `/switch codex`）
 - `/hermes`（等价于 `/switch hermes`）
+- `/gemini`（等价于 `/switch gemini`）
 - `/model`
 - `/dir [path]`（不传参数显示当前目录；传 `path` 时设置当前会话目录）
 - `/status`
@@ -153,7 +160,7 @@
 命令语义备注：
 - `/new` 不直接创建 bridge 自增会话，而是准备下一条消息要使用的新 native 会话
 - `/list` 展示所有项目的 native 会话（不再按当前项目过滤），标题前带项目名前缀（如 `weibo-ai-bridge/会话标题`）
-- `/claude`、`/codex` 与 `/hermes` 是 `/switch` 的快捷别名（大小写不敏感）
+- `/claude`、`/codex`、`/hermes` 与 `/gemini` 是 `/switch` 的快捷别名（大小写不敏感）
 - `/status` 在 `session_id` 缺失时，会回退到该用户当前 active session
 - native 会话标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
 - native 会话扫描有三个数据源：sessions-index.json、.jsonl 文件解析、history.jsonl 补充
@@ -165,6 +172,7 @@
 - 取消类：取消/拒绝/不允许/不行/不/否/deny/no/n/reject/cancel
 - 允许所有类：允许所有/允许全部/全部允许/所有允许/都允许/全部同意/allow all/allowall/approve all/yes all
 - `允许所有` 仅对当前会话生效；router 会把后续同会话审批自动转成 allow
+- Gemini 是一次性 stream-json 进程，不走交互式审批等待；router 会把当前会话 `Allow All` 状态下传，Gemini Agent 只用它决定是否追加 `-y`
 - `/btw` 与授权回复都依赖交互式会话；当前测试已覆盖 `claude-code`、`codex` 和 `hermes`
 
 当前由 `cmd/server/main.go` 暴露的 HTTP 接口：
@@ -236,6 +244,7 @@ go test ./...
 
 - 改命令解析时，更新 `router/command_test.go`
 - 改流式事件或事件翻译时，更新 `agent/*_test.go` 和 `router/router_test.go`
+- 改 Gemini CLI 参数、preview payload sanitizer 或 resume history sanitizer 时，更新 `agent/gemini_test.go`，并尽量用一次真实工具调用验证跨目录读取与工具能力仍可用
 - 改 delta resolution 时，`agent/resolve_delta_test.go` 和 `router/resolve_delta_test.go` 各有一份测试
 - 改 HTTP handler 时，更新 `cmd/server/main_test.go`
 - 改配置逻辑时，更新 `config/*_test.go`
@@ -246,7 +255,7 @@ go test ./...
 - 用户可见的中文提示文案应尽量与现有风格保持一致，除非任务明确要求改文案
 - 不要静默重命名 `claude-code` 或 `codex` 这些标识；改之前先检查解析逻辑和测试
 - 保持流式事件顺序稳定；router 和 HTTP 流式出口都依赖这个顺序
-- 谨慎修改会话上下文键，例如 `claude_session_id`、`codex_session_id`、`hermes_session_id`，它们直接影响续接逻辑
+- 谨慎修改会话上下文键，例如 `claude_session_id`、`codex_session_id`、`hermes_session_id`、`gemini_session_id`，它们直接影响续接逻辑
 - `session.Session.Context` 视为私有并发敏感字段：禁止在 `session` 包外直接 `sess.Context[...]` 读写；统一使用 `sess.GetContext/SetContext`、`sess.ContextString/ContextBool` 或 `Snapshot`
 - 不要引入按字节切分中文消息的逻辑，必须保持 rune 安全
 - delta resolution（`resolveTextDelta` 和 `resolveDeltaFromSnapshot`）同样必须按 UTF-8 rune 比较，不能按字节比较
@@ -254,6 +263,8 @@ go test ./...
 - `/btw` 的语义是"注入当前活跃 turn 的补充说明"，不是"打断当前 turn 并单独开新回复"
 - 保持 `cmd/server/main.go` 里的优雅关闭语义
 - 不要把 Codex 当成只有 JSON CLI 一种路径；这个仓库把 app-server 当作一等能力
+- 不要把 Gemini 跨目录读取能力绑定到 `/super on`；默认应允许读取当前项目外目录，`Allow All` 只影响是否自动批准工具调用
+- 不要通过禁用 Gemini 工具调用来绕过 preview API 的 tool `id` 400；应继续保留工具能力，并在出站请求和旧会话历史中清理不被 API 接受的字段
 - Claude Agent 只走流式路径（`--output-format stream-json`），`--print --output-format json` 路径已移除
 - `IsBenignCancellation` 是 router 包的导出函数，`cmd/server` 和 `router/stream` 共用，不要在各自包内再定义私有版本
 - `liveSessions` 生命周期由 `router_interactive.go` 管理，修改时注意锁边界和并发安全
@@ -280,6 +291,8 @@ go test ./...
 - `HERMES_PROFILE` — Hermes profile 覆盖（当前 ACP 主链路沿用 Hermes 当前 profile；该字段保留给 CLI fallback 兼容）
 - `HERMES_PROVIDER` — Hermes provider 覆盖
 - `HERMES_ENABLED` — 是否启用 Hermes
+- `GEMINI_MODEL` — Gemini 模型覆盖
+- `GEMINI_ENABLED` — 是否启用 Gemini
 - `SESSION_TIMEOUT` — 会话超时（秒）
 - `SESSION_MAX_SIZE` — 最大会话数
 - `SESSION_STORAGE_PATH` — 会话存储路径
@@ -287,7 +300,7 @@ go test ./...
 - `LOG_FORMAT` — 日志格式
 - `LOG_OUTPUT` — 日志输出位置
 
-Claude 的认证主要由本地 CLI 环境负责。Codex 和 Hermes 也可能依赖本地 CLI 或 provider 的现有配置。
+Claude 的认证主要由本地 CLI 环境负责。Codex、Hermes 和 Gemini 也可能依赖本地 CLI 或 provider 的现有配置；Gemini 会从 `~/.gemini/.env` 补齐当前进程缺失的 Gemini API 环境变量。
 
 ## 建议的改动方式
 

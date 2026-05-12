@@ -17,3 +17,14 @@ func TestWorkDirFromContext(t *testing.T) {
 		t.Fatalf("unexpected work dir: %q", got)
 	}
 }
+
+func TestAllowAllFromContext(t *testing.T) {
+	if AllowAllFromContext(context.Background()) {
+		t.Fatal("allow all should be disabled by default")
+	}
+
+	ctx := WithAllowAll(context.Background(), true)
+	if !AllowAllFromContext(ctx) {
+		t.Fatal("allow all should be enabled")
+	}
+}

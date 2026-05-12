@@ -28,7 +28,7 @@ type Session struct {
 	ID        string
 	UserID    string
 	Title     string
-	AgentType string // "claude" or "codex"
+	AgentType string // "claude", "codex", "hermes" or "gemini"
 	State     State
 	Context   map[string]interface{}
 	CreatedAt time.Time

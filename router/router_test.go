@@ -500,11 +500,13 @@ func TestHandleMessage_PassesSessionWorkDirToAgentContext(t *testing.T) {
 	})
 
 	var gotWorkDir string
+	var gotAllowAll bool
 	mockAgent := &MockAgent{
 		name:      "codex",
 		available: true,
 		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
 			gotWorkDir = agent.WorkDirFromContext(ctx)
+			gotAllowAll = agent.AllowAllFromContext(ctx)
 			events := make(chan agent.Event, 2)
 			events <- agent.Event{Type: agent.EventTypeMessage, Content: "ok"}
 			events <- agent.Event{Type: agent.EventTypeDone}
@@ -519,6 +521,7 @@ func TestHandleMessage_PassesSessionWorkDirToAgentContext(t *testing.T) {
 	sess := sessionMgr.Create("session-1", "user-1", "codex")
 	assert.NotNil(t, sess)
 	sess.Update("work_dir", "/tmp/project-a")
+	sess.Update(superAutoApproveContextKey, true)
 	assert.True(t, sessionMgr.SetActiveSession("user-1", "session-1"))
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
@@ -533,6 +536,7 @@ func TestHandleMessage_PassesSessionWorkDirToAgentContext(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, "/tmp/project-a", gotWorkDir)
+	assert.True(t, gotAllowAll)
 }
 
 func TestHandleMessage_RestartsClosedInteractiveSession(t *testing.T) {

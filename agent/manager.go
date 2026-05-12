@@ -110,6 +110,8 @@ func agentCandidates(agentType string) []string {
 		return []string{"codex"}
 	case "hermes":
 		return []string{"hermes"}
+	case "gemini":
+		return []string{"gemini"}
 	default:
 		return []string{strings.TrimSpace(agentType)}
 	}

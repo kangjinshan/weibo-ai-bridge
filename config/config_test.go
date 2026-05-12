@@ -19,6 +19,8 @@ func TestLoad(t *testing.T) {
 	t.Setenv("HERMES_MODEL", "gpt-5.4")
 	t.Setenv("HERMES_PROFILE", "bridge")
 	t.Setenv("HERMES_PROVIDER", "custom")
+	t.Setenv("GEMINI_ENABLED", "true")
+	t.Setenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 	cfg := Load()
 
@@ -31,6 +33,8 @@ func TestLoad(t *testing.T) {
 	assert.Equal(t, "gpt-5.4", cfg.Agent.Hermes.Model)
 	assert.Equal(t, "bridge", cfg.Agent.Hermes.Profile)
 	assert.Equal(t, "custom", cfg.Agent.Hermes.Provider)
+	assert.True(t, cfg.Agent.Gemini.Enabled)
+	assert.Equal(t, "gemini-3-flash-preview", cfg.Agent.Gemini.Model)
 }
 
 func TestLoad_LegacyWeiboAppsecretEnvStillWorks(t *testing.T) {
@@ -93,6 +97,8 @@ func TestDefaultValues(t *testing.T) {
 	os.Unsetenv("WEIBO_APP_Secret")
 	os.Unsetenv("CLAUDE_ENABLED")
 	os.Unsetenv("CODEX_ENABLED")
+	os.Unsetenv("GEMINI_ENABLED")
+	os.Unsetenv("GEMINI_MODEL")
 	os.Unsetenv("LOG_LEVEL")
 	os.Unsetenv("LOG_FORMAT")
 	os.Unsetenv("LOG_OUTPUT")
@@ -110,6 +116,7 @@ func TestDefaultValues(t *testing.T) {
 	assert.True(t, cfg.Agent.Claude.Enabled)
 	assert.False(t, cfg.Agent.Codex.Enabled)
 	assert.False(t, cfg.Agent.Hermes.Enabled)
+	assert.False(t, cfg.Agent.Gemini.Enabled)
 }
 
 func TestLoad_SessionStoragePathEnvOverride(t *testing.T) {

@@ -195,6 +195,43 @@ func TestValidateHermesOnlyEnabled(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidateGeminiOnlyEnabled(t *testing.T) {
+	cfg := &Config{
+		Platform: PlatformConfig{
+			Weibo: WeiboConfig{
+				AppID:     "test-app-id",
+				Appsecret: "test-Secret",
+				Timeout:   30,
+			},
+		},
+		Agent: AgentConfig{
+			Claude: ClaudeConfig{
+				Enabled: false,
+			},
+			Codex: CodexConfig{
+				Enabled: false,
+			},
+			Hermes: HermesConfig{
+				Enabled: false,
+			},
+			Gemini: GeminiConfig{
+				Enabled: true,
+			},
+		},
+		Session: SessionConfig{
+			Timeout: 3600,
+			MaxSize: 1000,
+		},
+		Log: LogConfig{
+			Level:  "info",
+			Format: "json",
+		},
+	}
+
+	err := cfg.Validate()
+	assert.NoError(t, err)
+}
+
 func TestValidateInvalidLogLevel(t *testing.T) {
 	cfg := &Config{
 		Platform: PlatformConfig{

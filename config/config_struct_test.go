@@ -26,6 +26,10 @@ func TestConfigStruct(t *testing.T) {
 				Model:   "gpt-4",
 				Enabled: false,
 			},
+			Gemini: GeminiConfig{
+				Model:   "gemini-3-flash-preview",
+				Enabled: true,
+			},
 		},
 		Session: SessionConfig{
 			Timeout: 3600,
@@ -70,10 +74,15 @@ func TestAgentConfigStruct(t *testing.T) {
 			Model:   "gpt-4",
 			Enabled: false,
 		},
+		Gemini: GeminiConfig{
+			Model:   "gemini-3-flash-preview",
+			Enabled: true,
+		},
 	}
 
 	assert.True(t, agent.Claude.Enabled)
 	assert.False(t, agent.Codex.Enabled)
+	assert.True(t, agent.Gemini.Enabled)
 }
 
 func TestSessionConfigStruct(t *testing.T) {

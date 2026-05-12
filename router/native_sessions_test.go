@@ -552,6 +552,55 @@ func TestListNativeHermesSessions_ParsesSessionFiles(t *testing.T) {
 	}
 }
 
+func TestListNativeGeminiSessions_ParsesSessionFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	home := filepath.Join(tmpDir, "home")
+	projectDir := filepath.Join(home, ".gemini", "tmp", "weibo-ai-bridge")
+	chatsDir := filepath.Join(projectDir, "chats")
+	if err := os.MkdirAll(chatsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".project_root"), []byte("/repo/weibo-ai-bridge"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	content := strings.Join([]string{
+		`{"sessionId":"24431794-9579-4b40-a08d-0c2467122e96","projectHash":"abc","startTime":"2026-05-12T11:17:04.002Z","lastUpdated":"2026-05-12T11:17:07.887Z","kind":"main"}`,
+		`{"id":"a2529d9c-d935-466a-963b-14f38c1747dd","timestamp":"2026-05-12T11:17:04.015Z","type":"user","content":[{"text":"帮我接入 Gemini"}]}`,
+		`{"id":"d040b083-befb-4287-8018-d87924ac88ce","timestamp":"2026-05-12T11:17:07.885Z","type":"gemini","content":"好的"}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(chatsDir, "session-2026-05-12T11-17-24431794.jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", home)
+	sessions, err := ListNativeGeminiSessions(map[string]bool{"24431794-9579-4b40-a08d-0c2467122e96": true})
+	if err != nil {
+		t.Fatalf("ListNativeGeminiSessions error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+
+	got := sessions[0]
+	if got.ID != "24431794-9579-4b40-a08d-0c2467122e96" {
+		t.Fatalf("ID = %q", got.ID)
+	}
+	if got.AgentType != "gemini" {
+		t.Fatalf("AgentType = %q", got.AgentType)
+	}
+	if got.Project != "/repo/weibo-ai-bridge" {
+		t.Fatalf("Project = %q", got.Project)
+	}
+	if got.Title != "帮我接入 Gemini" {
+		t.Fatalf("Title = %q", got.Title)
+	}
+	if !got.InBridge {
+		t.Fatal("expected InBridge to be true")
+	}
+}
+
 func TestParseCodexThreadRecordsJSONL(t *testing.T) {
 	data := []byte(`
 {"id":"t-1","title":"标题1","cwd":"/tmp/a","updated_at":100}

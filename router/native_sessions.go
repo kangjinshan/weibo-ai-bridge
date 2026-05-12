@@ -13,10 +13,10 @@ import (
 	"time"
 )
 
-// NativeSession 代表一个原生 Claude/Codex 会话
+// NativeSession 代表一个原生 Agent 会话
 type NativeSession struct {
 	ID        string    // session UUID / thread ID
-	AgentType string    // "claude" or "codex"
+	AgentType string    // "claude" / "codex" / "hermes" / "gemini"
 	Project   string    // 解码后的工作目录
 	Title     string    // 首条用户消息（截断）
 	StartedAt time.Time // 创建时间
@@ -51,6 +51,19 @@ type hermesSessionFile struct {
 type hermesMessage struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
+}
+
+type geminiSessionMeta struct {
+	SessionID   string `json:"sessionId"`
+	StartTime   string `json:"startTime"`
+	LastUpdated string `json:"lastUpdated"`
+	Kind        string `json:"kind"`
+}
+
+type geminiMessageLine struct {
+	Type      string          `json:"type"`
+	Content   json.RawMessage `json:"content"`
+	Timestamp string          `json:"timestamp"`
 }
 
 type claudeSessionIndex struct {
@@ -794,6 +807,163 @@ func parseHermesSessionTime(value string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// ListNativeGeminiSessions 扫描 ~/.gemini/tmp 和 ~/.gemini/history 下的 Gemini 会话。
+func ListNativeGeminiSessions(bridgeNativeIDs map[string]bool) ([]NativeSession, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("cannot determine home directory: %w", err)
+	}
+
+	geminiHome := strings.TrimSpace(os.Getenv("GEMINI_HOME"))
+	if geminiHome == "" {
+		geminiHome = filepath.Join(homeDir, ".gemini")
+	}
+
+	var sessions []NativeSession
+	for _, root := range []string{filepath.Join(geminiHome, "tmp"), filepath.Join(geminiHome, "history")} {
+		if _, err := os.Stat(root); err != nil {
+			continue
+		}
+
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() || filepath.Ext(d.Name()) != ".jsonl" {
+				return nil
+			}
+			if !strings.HasPrefix(d.Name(), "session-") {
+				return nil
+			}
+
+			project := geminiProjectRootForSessionFile(path)
+			ns, ok := parseGeminiSessionFile(path, project, bridgeNativeIDs)
+			if ok {
+				sessions = append(sessions, ns)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cannot walk gemini sessions directory: %w", err)
+		}
+	}
+
+	sessions = dedupeNativeSessionsByID(sessions)
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].StartedAt.After(sessions[j].StartedAt)
+	})
+	if len(sessions) > maxNativeSessions {
+		sessions = sessions[:maxNativeSessions]
+	}
+
+	return sessions, nil
+}
+
+func parseGeminiSessionFile(path, project string, bridgeNativeIDs map[string]bool) (NativeSession, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return NativeSession{}, false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 128*1024), 8*1024*1024)
+
+	var meta geminiSessionMeta
+	title := ""
+	var startedAt time.Time
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		if meta.SessionID == "" {
+			if err := json.Unmarshal([]byte(line), &meta); err != nil {
+				return NativeSession{}, false
+			}
+			if !isValidUUID(strings.TrimSpace(meta.SessionID)) {
+				return NativeSession{}, false
+			}
+			startedAt = parseGeminiSessionTime(firstNonEmptyString(meta.LastUpdated, meta.StartTime))
+			continue
+		}
+
+		if title != "" {
+			continue
+		}
+
+		var msg geminiMessageLine
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(msg.Type)) != "user" {
+			continue
+		}
+		title = normalizeNativeTitle(geminiContentString(msg.Content))
+	}
+	if scanner.Err() != nil {
+		return NativeSession{}, false
+	}
+	if meta.SessionID == "" {
+		return NativeSession{}, false
+	}
+
+	return NativeSession{
+		ID:        strings.TrimSpace(meta.SessionID),
+		AgentType: "gemini",
+		Project:   project,
+		Title:     ensureNativeTitle(title, project, meta.SessionID),
+		StartedAt: startedAt,
+		InBridge:  bridgeNativeIDs[meta.SessionID],
+	}, true
+}
+
+func geminiProjectRootForSessionFile(path string) string {
+	projectFile := filepath.Join(filepath.Dir(filepath.Dir(path)), ".project_root")
+	data, err := os.ReadFile(projectFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func parseGeminiSessionTime(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return ts
+	}
+	return parseHermesSessionTime(value)
+}
+
+func geminiContentString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var plain string
+	if err := json.Unmarshal(raw, &plain); err == nil {
+		return plain
+	}
+
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part.Text) != "" {
+			texts = append(texts, part.Text)
+		}
+	}
+	return strings.Join(texts, " ")
 }
 
 func resolveHermesProjectPathBySessionID(sessionID string) string {

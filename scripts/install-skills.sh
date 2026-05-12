@@ -10,16 +10,18 @@ TARGET_HOME="${HOME}"
 INSTALL_CODEX="true"
 INSTALL_CLAUDE="true"
 INSTALL_HERMES="true"
+INSTALL_GEMINI="true"
 
 usage() {
   cat <<'EOF'
 Usage:
-  install-skills.sh [--repo-root PATH] [--user-home PATH] [--no-codex] [--no-claude] [--no-hermes]
+  install-skills.sh [--repo-root PATH] [--user-home PATH] [--no-codex] [--no-claude] [--no-hermes] [--no-gemini]
 
 Installs the bundled weibo skill package into:
   - Codex personal skills:   ~/.codex/skills/
   - Claude personal skills:  ~/.claude/skills/
   - Hermes personal skills:  ~/.hermes/skills/
+  - Gemini personal skills:  ~/.gemini/skills/
 EOF
 }
 
@@ -41,6 +43,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-hermes)
       INSTALL_HERMES="false"
+      ;;
+    --no-gemini)
+      INSTALL_GEMINI="false"
       ;;
     --help|-h)
       usage
@@ -88,4 +93,8 @@ fi
 
 if [[ "${INSTALL_HERMES}" == "true" ]]; then
   copy_skill "${TARGET_HOME}/.hermes"
+fi
+
+if [[ "${INSTALL_GEMINI}" == "true" ]]; then
+  copy_skill "${TARGET_HOME}/.gemini"
 fi

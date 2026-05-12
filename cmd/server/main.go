@@ -176,8 +176,19 @@ func main() {
 		logger.Printf("Hermes agent registered: model=%s, profile=%s, provider=%s", cfg.Agent.Hermes.Model, cfg.Agent.Hermes.Profile, cfg.Agent.Hermes.Provider)
 	}
 
+	// 注册 Gemini Agent（如果启用）
+	if cfg.Agent.Gemini.Enabled {
+		geminiAgent := agent.NewGeminiAgent(cfg.Agent.Gemini.Model)
+		agentMgr.Register(geminiAgent)
+		if defaultAgent == "" {
+			defaultAgent = "gemini"
+			agentMgr.SetDefault("gemini")
+		}
+		logger.Printf("Gemini agent registered: model=%s", cfg.Agent.Gemini.Model)
+	}
+
 	if defaultAgent == "" {
-		logger.Fatalf("No agent enabled, please enable at least one agent (claude, codex, or hermes)")
+		logger.Fatalf("No agent enabled, please enable at least one agent (claude, codex, hermes, or gemini)")
 	}
 
 	logger.Printf("Agent manager initialized: count=%d, default=%s", agentMgr.Count(), defaultAgent)

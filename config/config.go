@@ -39,6 +39,7 @@ type AgentConfig struct {
 	Claude ClaudeConfig
 	Codex  CodexConfig
 	Hermes HermesConfig
+	Gemini GeminiConfig
 }
 
 // ClaudeConfig Claude Agent 配置
@@ -61,6 +62,12 @@ type HermesConfig struct {
 	Profile  string `toml:"profile"`
 	Provider string `toml:"provider"`
 	Enabled  bool   `toml:"enabled"`
+}
+
+// GeminiConfig Gemini Agent 配置
+type GeminiConfig struct {
+	Model   string `toml:"model"`
+	Enabled bool   `toml:"enabled"`
 }
 
 // SessionConfig 会话配置
@@ -136,6 +143,12 @@ func Load() *Config {
 	}
 	if val := os.Getenv("HERMES_ENABLED"); val != "" {
 		cfg.Agent.Hermes.Enabled = parseBoolEnv(val)
+	}
+	if val := os.Getenv("GEMINI_MODEL"); val != "" {
+		cfg.Agent.Gemini.Model = val
+	}
+	if val := os.Getenv("GEMINI_ENABLED"); val != "" {
+		cfg.Agent.Gemini.Enabled = parseBoolEnv(val)
 	}
 	if val := os.Getenv("LOG_LEVEL"); val != "" {
 		cfg.Log.Level = val
@@ -241,6 +254,10 @@ func defaultConfig() *Config {
 				Provider: "",
 				Enabled:  false,
 			},
+			Gemini: GeminiConfig{
+				Model:   "",
+				Enabled: false,
+			},
 		},
 		Session: SessionConfig{
 			Timeout:     3600,
@@ -266,10 +283,10 @@ func (c *Config) Validate() error {
 	}
 
 	// 验证 Agent 配置
-	// Claude 和 Codex 的认证都可以由本地 CLI 自行管理，因此这里不强制要求 API Key。
+	// 各 Agent 的认证都可以由本地 CLI 自行管理，因此这里不强制要求 API Key。
 
 	// 至少启用一个 Agent
-	if !c.Agent.Claude.Enabled && !c.Agent.Codex.Enabled && !c.Agent.Hermes.Enabled {
+	if !c.Agent.Claude.Enabled && !c.Agent.Codex.Enabled && !c.Agent.Hermes.Enabled && !c.Agent.Gemini.Enabled {
 		return errors.New("at least one agent must be enabled")
 	}
 

@@ -80,6 +80,7 @@ func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, 
 	}
 
 	execCtx := agent.WithWorkDir(ctx, sessionWorkDir(sess))
+	execCtx = agent.WithAllowAll(execCtx, isSuperAutoApproveEnabled(sess))
 	response, err := currentAgent.Execute(execCtx, agentSessionID, execInput)
 	if err != nil {
 		return &Response{
@@ -125,6 +126,7 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 
 	injectedFeedback := ""
 	execInput := msg.Content
+	allowAllForTurn := isSuperAutoApproveEnabled(sess)
 	superEnabled := isSuperModeEnabled(sess)
 	if superEnabled {
 		if feedback, ready := superFeedbackReadyForAgent(sess, currentAgentType); ready {
@@ -140,6 +142,7 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 	}
 
 	execCtx := agent.WithWorkDir(ctx, sessionWorkDir(sess))
+	execCtx = agent.WithAllowAll(execCtx, allowAllForTurn)
 	if interactiveAgent, ok := currentAgent.(agent.InteractiveAgent); ok {
 		execMsg := *msg
 		execMsg.Content = execInput
@@ -548,6 +551,8 @@ func mapAgentName(agentName string) string {
 		return "codex"
 	case "hermes":
 		return "hermes"
+	case "gemini":
+		return "gemini"
 	default:
 		return agentName
 	}
@@ -568,6 +573,8 @@ func agentSessionContextKey(agentType string) string {
 		return "codex_session_id"
 	case "hermes":
 		return "hermes_session_id"
+	case "gemini":
+		return "gemini_session_id"
 	default:
 		return ""
 	}

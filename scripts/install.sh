@@ -292,28 +292,28 @@ install_user_skills() {
         return
     fi
 
-    log_info "为用户 ${TARGET_USER} 安装 Codex/Claude/Hermes 微博 skills..."
+    log_info "为用户 ${TARGET_USER} 安装 Codex/Claude/Hermes/Gemini 微博 skills..."
 
     if command -v runuser &> /dev/null; then
         if runuser -u "${TARGET_USER}" -- "${skill_installer}" --repo-root "${INSTALL_DIR}" --user-home "${TARGET_HOME}"; then
-            log_success "Codex/Claude/Hermes 微博 skills 安装完成"
-            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
+            log_success "Codex/Claude/Hermes/Gemini 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME}、${TARGET_HOME}/.hermes/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.gemini/skills/${SKILL_NAME}"
             return
         fi
     fi
 
     if command -v sudo &> /dev/null; then
         if sudo -u "${TARGET_USER}" "${skill_installer}" --repo-root "${INSTALL_DIR}" --user-home "${TARGET_HOME}"; then
-            log_success "Codex/Claude/Hermes 微博 skills 安装完成"
-            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
+            log_success "Codex/Claude/Hermes/Gemini 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME}、${TARGET_HOME}/.hermes/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.gemini/skills/${SKILL_NAME}"
             return
         fi
     fi
 
     if command -v su &> /dev/null; then
         if su - "${TARGET_USER}" -c "'${skill_installer}' --repo-root '${INSTALL_DIR}' --user-home '${TARGET_HOME}'"; then
-            log_success "Codex/Claude/Hermes 微博 skills 安装完成"
-            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
+            log_success "Codex/Claude/Hermes/Gemini 微博 skills 安装完成"
+            SKILLS_INSTALL_NOTE="已安装：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME}、${TARGET_HOME}/.hermes/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.gemini/skills/${SKILL_NAME}"
             return
         fi
     fi
@@ -325,9 +325,10 @@ install_user_skills() {
         chown -R "${TARGET_USER}:${target_group}" \
             "${TARGET_HOME}/.codex/skills/${SKILL_NAME}" \
             "${TARGET_HOME}/.claude/skills/${SKILL_NAME}" \
-            "${TARGET_HOME}/.hermes/skills/${SKILL_NAME}" 2>/dev/null || true
-        log_success "Codex/Claude/Hermes 微博 skills 安装完成（root 回退）"
-        SKILLS_INSTALL_NOTE="已安装（root 回退）：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.hermes/skills/${SKILL_NAME}"
+            "${TARGET_HOME}/.hermes/skills/${SKILL_NAME}" \
+            "${TARGET_HOME}/.gemini/skills/${SKILL_NAME}" 2>/dev/null || true
+        log_success "Codex/Claude/Hermes/Gemini 微博 skills 安装完成（root 回退）"
+        SKILLS_INSTALL_NOTE="已安装（root 回退）：${TARGET_HOME}/.codex/skills/${SKILL_NAME}、${TARGET_HOME}/.claude/skills/${SKILL_NAME}、${TARGET_HOME}/.hermes/skills/${SKILL_NAME} 与 ${TARGET_HOME}/.gemini/skills/${SKILL_NAME}"
         return
     fi
 

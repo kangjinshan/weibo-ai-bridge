@@ -458,6 +458,33 @@ func TestCommandHandler_Handle_New_DefaultsToCodexWhenOnlyCodexAvailable(t *test
 	assert.Equal(t, "codex", activeSession.AgentType)
 }
 
+func TestCommandHandler_Handle_New_Gemini(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "gemini", available: true})
+	agentManager.SetDefault("gemini")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-1",
+		Type:    TypeText,
+		Content: "/new gemini",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Agent: gemini")
+
+	activeSession, ok := sessionManager.GetActiveSession("user-1")
+	assert.True(t, ok)
+	assert.Equal(t, "gemini", activeSession.AgentType)
+}
+
 func TestCommandHandler_Handle_New_RepairsUnavailableAgent(t *testing.T) {
 	sessionManager := session.NewManager(session.ManagerConfig{
 		Timeout: 3600,

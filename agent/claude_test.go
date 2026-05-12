@@ -133,6 +133,53 @@ func TestParseClaudeStreamEvent_StreamEventTextDelta(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStructuredStreamEvent_ContentBlockStartEmitsInitialText(t *testing.T) {
+	state := &claudeStreamState{messageSnapshot: make(map[string]string)}
+
+	parseClaudeStreamEvent(state, map[string]any{
+		"type":       "stream_event",
+		"session_id": "session-1",
+		"event": map[string]any{
+			"type": "message_start",
+			"message": map[string]any{
+				"id": "msg-1",
+			},
+		},
+	})
+	events := parseClaudeStreamEvent(state, map[string]any{
+		"type":       "stream_event",
+		"session_id": "session-1",
+		"event": map[string]any{
+			"type": "content_block_start",
+			"content_block": map[string]any{
+				"type": "text",
+				"text": "开头文本",
+			},
+		},
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeDelta || events[0].Content != "开头文本" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if got := state.messageSnapshot["msg-1"]; got != "开头文本" {
+		t.Fatalf("unexpected snapshot: %q", got)
+	}
+}
+
+func TestExtractClaudeMessageTextJoinsOnlyTextBlocks(t *testing.T) {
+	got := extractClaudeMessageText(map[string]any{
+		"content": []any{
+			map[string]any{"type": "text", "text": "第一段"},
+			map[string]any{"type": "tool_use", "name": "Read"},
+			map[string]any{"type": "text", "text": "第二段"},
+		},
+	})
+
+	if got != "第一段\n第二段" {
+		t.Fatalf("unexpected extracted text: %q", got)
+	}
+}
+
 func TestParseClaudeStreamEvent_StreamEventThinkingDeltaIgnored(t *testing.T) {
 	state := &claudeStreamState{
 		sessionID:       "session-1",

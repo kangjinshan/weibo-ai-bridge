@@ -31,6 +31,10 @@
 
 - `main.go` — 服务入口。HTTP 服务（`/health`、`/stats`、`/chat/stream`）、平台启动与关闭、顶层消息排队（`messageProcessor`）、`/btw` 注入分发、优雅关闭。日志初始化在配置加载之后，`initLogger` 接受 `LogConfig` 参数以支持文件输出和 JSON 格式。
 
+### `cmd/test-report/`
+
+- `main.go` — 测试报告生成工具。运行 `go test -json -coverprofile`，解析包覆盖率、低覆盖函数和失败测试，输出 `reports/test-report.md`、`reports/test-report.txt`、`reports/go-test.jsonl` 和 `reports/coverage.out`。
+
 ### `router/`
 
 - `router_core.go` — Router 类型定义、Handle/Route 主入口、toRouterMessage 转换。非命令消息统一走 `streamRouterMessage`。
@@ -190,6 +194,7 @@ SSE 事件类型（8 种，定义在 `agent/agent.go`）：
 ```bash
 make build
 make test
+make test-report
 make fmt
 make lint
 make dev
@@ -202,6 +207,7 @@ make dev
 补充说明：
 
 - `make test` 实际执行 `go test -v -race -coverprofile=coverage.out ./...`
+- `make test-report` 执行 `go run ./cmd/test-report`，输出 Markdown/文本报告、测试 JSON 日志和 coverage profile 到 `reports/`
 - `make fmt` 会执行 `gofmt -w -s .`
 - `make lint` 依赖 `golangci-lint`
 - 产物目录约定：`build/` 放本地构建产物，`dist/` 放发布包；仓库根目录不应出现可执行文件

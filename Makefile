@@ -1,4 +1,4 @@
-.PHONY: all build test clean fmt lint check-root-executables
+.PHONY: all build test test-report clean fmt lint check-root-executables
 
 # Go parameters
 GOCMD=go
@@ -44,11 +44,17 @@ test-coverage: test
 	@echo "Generating coverage report..."
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 
+test-report:
+	@echo "Generating readable test report..."
+	@$(MAKE) check-root-executables
+	$(GOCMD) run ./cmd/test-report
+
 clean:
 	@echo "Cleaning..."
 	$(GOCLEAN)
 	rm -rf $(BUILD_DIR)
 	rm -f coverage.out coverage.html
+	rm -rf reports
 
 fmt:
 	@echo "Formatting code..."
@@ -83,6 +89,7 @@ help:
 	@echo "  all          - Run tests and build"
 	@echo "  build        - Build the binary"
 	@echo "  test         - Run tests with coverage"
+	@echo "  test-report  - Run tests and write Markdown/text reports under reports/"
 	@echo "  test-coverage- Generate HTML coverage report"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  fmt          - Format code"

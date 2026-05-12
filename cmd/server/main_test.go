@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log"
@@ -299,6 +300,91 @@ func TestHealthHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStatsHandlerIncludesSessionsAgentsAndBuildInfo(t *testing.T) {
+	oldVersion, oldCommit, oldBuildTime := version, gitCommit, buildTime
+	version = "2.0.0"
+	gitCommit = "feed123"
+	buildTime = "2026-05-12T10:00:00Z"
+	t.Cleanup(func() {
+		version = oldVersion
+		gitCommit = oldCommit
+		buildTime = oldBuildTime
+	})
+
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	sessionMgr.Create("session-1", "user-1", "codex")
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&sseTestAgent{name: "codex", available: true})
+	agentMgr.Register(&sseTestAgent{name: "claude-code", available: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+
+	statsHandler(sessionMgr, agentMgr)(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var body map[string]any
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	sessions := body["sessions"].(map[string]any)
+	assert.Equal(t, float64(1), sessions["count"])
+
+	agents := body["agents"].(map[string]any)
+	assert.Equal(t, float64(2), agents["count"])
+	assert.ElementsMatch(t, []any{"claude-code", "codex"}, agents["list"].([]any))
+
+	build := body["build"].(map[string]any)
+	assert.Equal(t, "2.0.0", build["version"])
+	assert.Equal(t, "feed123", build["git_commit"])
+	assert.Equal(t, "2026-05-12T10:00:00Z", build["build_time"])
+}
+
+func TestStatsHandlerRejectsNonGET(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/stats", nil)
+	w := httptest.NewRecorder()
+
+	statsHandler(session.NewManager(session.ManagerConfig{}), agent.NewManager())(w, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	assert.Equal(t, "Method not allowed\n", w.Body.String())
+}
+
+func TestCurrentBuildInfoFallsBackWhenValuesBlank(t *testing.T) {
+	oldVersion, oldCommit, oldBuildTime := version, gitCommit, buildTime
+	version = " "
+	gitCommit = ""
+	buildTime = "\t"
+	t.Cleanup(func() {
+		version = oldVersion
+		gitCommit = oldCommit
+		buildTime = oldBuildTime
+	})
+
+	info := currentBuildInfo()
+
+	assert.Equal(t, "dev", info.Version)
+	assert.Equal(t, "unknown", info.GitCommit)
+	assert.Equal(t, "unknown", info.BuildTime)
+}
+
+func TestJSONLogWriterWrapsLogLine(t *testing.T) {
+	var buf bytes.Buffer
+	writer := &jsonLogWriter{w: &buf}
+
+	n, err := writer.Write([]byte("hello\n"))
+
+	assert.NoError(t, err)
+	assert.Equal(t, len("hello\n"), n)
+
+	var entry map[string]string
+	assert.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
+	assert.Equal(t, "hello", entry["msg"])
+	assert.Equal(t, "weibo-ai-bridge", entry["app"])
+	assert.NotEmpty(t, entry["ts"])
 }
 
 func TestGracefulShutdown(t *testing.T) {

@@ -51,6 +51,7 @@ make dev
 | `make build` | 构建到 `build/weibo-ai-bridge` |
 | `make build-linux` | 交叉编译 Linux AMD64 |
 | `make test` | 运行测试（含覆盖率） |
+| `make test-report` | 生成 Markdown/文本测试报告到 `reports/` |
 | `make test-coverage` | 生成 HTML 覆盖率报告 |
 | `make fmt` | 格式化代码 |
 | `make lint` | 代码检查（需 golangci-lint） |
@@ -373,6 +374,7 @@ bash scripts/install-skills.sh
 weibo-ai-bridge/
 ├── cmd/server/               # 服务入口
 │   └── main.go               # HTTP 服务、消息排队、平台生命周期
+├── cmd/test-report/          # 可读测试报告生成工具
 ├── router/                   # 消息路由
 │   ├── router_core.go        # Router 类型、Handle 主入口
 │   ├── router_stream.go      # 统一流式路径、forwardStreamToPlatform

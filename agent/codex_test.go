@@ -217,6 +217,62 @@ func TestCodeXAgent_streamCodexOutput_CapturesCLIErrorEvents(t *testing.T) {
 	}
 }
 
+func TestParseCodexEvent_ItemStartedEmitsToolStart(t *testing.T) {
+	events := parseCodexEvent(&codexSession{}, map[string]any{
+		"type": "item.started",
+		"item": map[string]any{
+			"type":    "command_execution",
+			"command": "go test ./...",
+		},
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeToolStart {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if events[0].Metadata["command"] != "go test ./..." {
+		t.Fatalf("unexpected metadata: %+v", events[0].Metadata)
+	}
+}
+
+func TestParseCodexItemCompleted_CommandExecutionEmitsToolEnd(t *testing.T) {
+	events := parseCodexItemCompleted(map[string]any{
+		"type":              "command_execution",
+		"command":           "go test ./router",
+		"aggregated_output": "ok",
+		"exit_code":         float64(0),
+	})
+
+	if len(events) != 1 || events[0].Type != EventTypeToolEnd {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	metadata := events[0].Metadata
+	if metadata["command"] != "go test ./router" || metadata["aggregated_output"] != "ok" || metadata["exit_code"] != 0 {
+		t.Fatalf("unexpected metadata: %+v", metadata)
+	}
+}
+
+func TestExtractMessageTextSupportsPartsAndMessageFallbacks(t *testing.T) {
+	got := extractMessageText(map[string]any{
+		"type": "message",
+		"parts": []any{
+			map[string]any{"type": "text", "text": "第一段"},
+			map[string]any{"type": "image", "text": "忽略"},
+			map[string]any{"type": "text", "text": "第二段"},
+		},
+	})
+	if got != "第一段\n第二段" {
+		t.Fatalf("unexpected parts text: %q", got)
+	}
+
+	got = extractMessageText(map[string]any{
+		"type":    "agent_message",
+		"message": "fallback message",
+	})
+	if got != "fallback message" {
+		t.Fatalf("unexpected fallback message: %q", got)
+	}
+}
+
 func TestCleanCodexStderr(t *testing.T) {
 	stderr := "Reading additional input from stdin...\nreal error\n"
 	if got := cleanCodexStderr(stderr); got != "real error" {

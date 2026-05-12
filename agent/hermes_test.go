@@ -239,6 +239,68 @@ func TestHermesACPPromptTextWrapsNormalPrompt(t *testing.T) {
 	}
 }
 
+func TestHermesJSONRPCIDParsesNumericRepresentations(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  any
+		want int64
+		ok   bool
+	}{
+		{name: "float64", raw: float64(42), want: 42, ok: true},
+		{name: "int64", raw: int64(43), want: 43, ok: true},
+		{name: "int", raw: 44, want: 44, ok: true},
+		{name: "string", raw: "45", want: 45, ok: true},
+		{name: "invalid", raw: "abc", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := jsonRPCID(tt.raw)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("jsonRPCID(%#v) = %d, %v; want %d, %v", tt.raw, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestHermesApprovalOptionIDPrefersMatchingAllowKind(t *testing.T) {
+	options := []hermesPermissionOption{
+		{OptionID: "deny", Kind: "reject_once"},
+		{OptionID: "once", Kind: "allow_once"},
+		{OptionID: "always", Kind: "allow_always"},
+	}
+
+	if got := hermesApprovalOptionID(options, ApprovalActionAllow); got != "once" {
+		t.Fatalf("allow should prefer allow_once, got %q", got)
+	}
+	if got := hermesApprovalOptionID(options, ApprovalActionAllowAll); got != "always" {
+		t.Fatalf("allow all should prefer allow_always, got %q", got)
+	}
+}
+
+func TestHermesApprovalOptionIDFallsBackToAnyAllowOption(t *testing.T) {
+	options := []hermesPermissionOption{
+		{OptionID: "custom", Kind: "allow_custom"},
+	}
+
+	if got := hermesApprovalOptionID(options, ApprovalActionAllow); got != "custom" {
+		t.Fatalf("expected fallback allow option, got %q", got)
+	}
+}
+
+func TestHermesRawTextAndFirstNonEmpty(t *testing.T) {
+	raw := acpRawText(map[string]any{"text": "hello"})
+	if !strings.Contains(raw, `"text":"hello"`) {
+		t.Fatalf("unexpected raw text: %q", raw)
+	}
+	if got := acpRawText(nil); got != "" {
+		t.Fatalf("nil raw text should be empty, got %q", got)
+	}
+	if got := firstNonEmpty("", "  ", " value ", "other"); got != "value" {
+		t.Fatalf("unexpected first non-empty value: %q", got)
+	}
+}
+
 func TestParseHermesOutputExtractsSessionAndContent(t *testing.T) {
 	session := &hermesSession{}
 	output := "\n╭─ ⚕ Hermes ─╮\nOK\n\nsession_id: 20260509_165837_579738\n"

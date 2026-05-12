@@ -453,6 +453,113 @@ func TestManager_UpdateSession_NonExistent(t *testing.T) {
 	assert.Equal(t, 0, mgr.Count())
 }
 
+func TestManager_UpdateSessionContextAtomicallyPersistsChangedContext(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "sessions")
+	mgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+	mgr.Create("test-id", "user-123", "codex")
+
+	changed := mgr.UpdateSessionContextAtomically("test-id", func(ctx map[string]interface{}) bool {
+		ctx["codex_session_id"] = "thread-123"
+		ctx["super_mode"] = true
+		return true
+	})
+
+	assert.True(t, changed)
+
+	reloaded := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+	restored, exists := reloaded.Get("test-id")
+	assert.True(t, exists)
+	assert.Equal(t, "thread-123", restored.Context["codex_session_id"])
+	assert.Equal(t, true, restored.Context["super_mode"])
+}
+
+func TestManager_UpdateSessionContextAtomicallySkipsPersistenceWhenUnchanged(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "sessions")
+	mgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+	sess := mgr.Create("test-id", "user-123", "codex")
+	assert.NotNil(t, sess)
+
+	before := sess.UpdatedAtValue()
+	changed := mgr.UpdateSessionContextAtomically("test-id", func(ctx map[string]interface{}) bool {
+		ctx["ignored"] = "value"
+		delete(ctx, "ignored")
+		return false
+	})
+
+	assert.False(t, changed)
+	after, exists := mgr.Get("test-id")
+	assert.True(t, exists)
+	assert.Equal(t, before, after.UpdatedAtValue())
+	_, ok := after.ContextValue("ignored")
+	assert.False(t, ok)
+}
+
+func TestSession_ContextBoolParsesBoolStringsAndRejectsInvalidValues(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+	sess := mgr.Create("test-id", "user-123", "codex")
+	assert.NotNil(t, sess)
+
+	sess.SetContext("native_bool", true)
+	sess.SetContext("string_true", " true ")
+	sess.SetContext("string_false", "FALSE")
+	sess.SetContext("invalid", "yes please")
+	sess.SetContext("number", 1)
+
+	got, ok := sess.ContextBool("native_bool")
+	assert.True(t, ok)
+	assert.True(t, got)
+
+	got, ok = sess.ContextBool("string_true")
+	assert.True(t, ok)
+	assert.True(t, got)
+
+	got, ok = sess.ContextBool("string_false")
+	assert.True(t, ok)
+	assert.False(t, got)
+
+	_, ok = sess.ContextBool("invalid")
+	assert.False(t, ok)
+	_, ok = sess.ContextBool("number")
+	assert.False(t, ok)
+	_, ok = sess.ContextBool("missing")
+	assert.False(t, ok)
+}
+
+func TestManager_PersistSessionWritesCurrentDetachedState(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "sessions")
+	mgr := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+	sess := mgr.Create("test-id", "user-123", "claude")
+	assert.NotNil(t, sess)
+	sess.SetContext("claude_session_id", "native-session-1")
+
+	mgr.PersistSession(sess.ID)
+
+	reloaded := NewManager(ManagerConfig{
+		Timeout:     3600,
+		MaxSize:     100,
+		StoragePath: storagePath,
+	})
+	restored, exists := reloaded.Get(sess.ID)
+	assert.True(t, exists)
+	assert.Equal(t, "native-session-1", restored.Context["claude_session_id"])
+}
+
 func TestManager_AdoptSessionID_RekeysSessionAndActivePointer(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 3600})
 

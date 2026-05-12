@@ -1290,6 +1290,64 @@ func TestStreamReplySender_FlushesSingleShortDeltaAfterBufferDelay(t *testing.T)
 	assert.Equal(t, false, writer.chunks[0]["done"])
 }
 
+func TestStreamReplySender_PushPartialSnapshotEmitsOnlyNewSuffix(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-partial", messageID: "stream-msg-user-partial"}
+	sender := newStreamReplySender(writer)
+
+	assert.NoError(t, sender.PushPartialSnapshot(context.Background(), "你好"))
+	assert.NoError(t, sender.PushPartialSnapshot(context.Background(), "你好呀"))
+	assert.NoError(t, sender.PushPartialSnapshot(context.Background(), "你好呀"))
+
+	assert.Len(t, writer.chunks, 2)
+	assert.Equal(t, "你好", writer.chunks[0]["content"])
+	assert.Equal(t, "呀", writer.chunks[1]["content"])
+}
+
+func TestStreamReplySender_FinalDeliverAfterPartialSnapshotSendsDoneOnly(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-final-partial", messageID: "stream-msg-user-final-partial"}
+	sender := newStreamReplySender(writer)
+
+	assert.NoError(t, sender.PushPartialSnapshot(context.Background(), "回答"))
+	assert.NoError(t, sender.PushDeliverText(context.Background(), "回答", true))
+
+	assert.Len(t, writer.chunks, 2)
+	assert.Equal(t, "回答", writer.chunks[0]["content"])
+	assert.Equal(t, false, writer.chunks[0]["done"])
+	assert.Equal(t, "", writer.chunks[1]["content"])
+	assert.Equal(t, true, writer.chunks[1]["done"])
+}
+
+func TestStreamReplySender_InformationalTextFlushesBufferedDeltaFirst(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-info", messageID: "stream-msg-user-info"}
+	sender := newStreamReplySender(writer)
+
+	assert.NoError(t, sender.PushDelta(context.Background(), "短"))
+	assert.NoError(t, sender.PushInformationalText(context.Background(), "需要授权"))
+
+	assert.Len(t, writer.chunks, 2)
+	assert.Equal(t, "短", writer.chunks[0]["content"])
+	assert.Equal(t, "需要授权", writer.chunks[1]["content"])
+}
+
+func TestLegacyStreamReplyWriterSkipsEmptyDoneChunk(t *testing.T) {
+	var sent []string
+	writer := &legacyStreamReplyWriter{
+		send: func(content string) error {
+			sent = append(sent, content)
+			return nil
+		},
+	}
+
+	assert.NoError(t, writer.SendChunk(context.Background(), "", true))
+	assert.NoError(t, writer.SendChunk(context.Background(), "", false))
+	assert.NoError(t, writer.SendChunk(context.Background(), "hello", false))
+
+	assert.Equal(t, []string{"hello"}, sent)
+}
+
 func TestForwardStreamToPlatform_FlushesIdleShortDeltaWithoutNextChunk(t *testing.T) {
 	platform := &timedStreamPlatform{
 		stream: &timedReplyStream{chunks: make(chan timedStreamChunk, 4)},

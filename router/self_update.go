@@ -15,6 +15,7 @@ const (
 	selfUpdateTimeout       = 15 * time.Minute
 	selfUpdateOutputLimit   = 4000
 	selfUpdateRestartMarker = "WEIBO_AI_BRIDGE_RESTART_SCHEDULED=1"
+	selfUpdateCurrentMarker = "WEIBO_AI_BRIDGE_ALREADY_UP_TO_DATE=1"
 )
 
 type shellSelfUpdater struct {
@@ -56,6 +57,7 @@ func (u *shellSelfUpdater) Run(args []string) (selfUpdateResult, error) {
 	result := selfUpdateResult{
 		Output:           text,
 		RestartScheduled: strings.Contains(output.String(), selfUpdateRestartMarker),
+		AlreadyUpToDate:  strings.Contains(output.String(), selfUpdateCurrentMarker),
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return result, ctx.Err()
@@ -102,7 +104,8 @@ func cleanSelfUpdateOutput(output string) string {
 	lines := strings.Split(output, "\n")
 	kept := lines[:0]
 	for _, line := range lines {
-		if strings.TrimSpace(line) == selfUpdateRestartMarker {
+		switch strings.TrimSpace(line) {
+		case selfUpdateRestartMarker, selfUpdateCurrentMarker:
 			continue
 		}
 		kept = append(kept, line)

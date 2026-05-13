@@ -81,7 +81,7 @@ make dev
 | `/dir [path]` | 显示当前工作目录；传 `path` 时设置当前会话工作目录 |
 | `/status` | 显示当前会话状态（`session_id` 缺失时自动回退到当前活跃会话） |
 | `/super [on\|off\|status]` | 管理 Super 模式；`on` 等价于对当前会话开启 `Allow All` |
-| `/upgrade [--ref branch\|tag]` | 从 GitHub 下载最新代码，编译安装，并在当前回复发出后延迟重启服务 |
+| `/upgrade [--ref branch\|tag]` | 先比对本地与 GitHub 目标版本；不一致时下载、编译安装，并在当前回复发出后延迟重启服务 |
 
 ### 授权回复
 
@@ -373,7 +373,9 @@ scripts/service.sh logs
 /upgrade
 ```
 
-服务会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由后台任务延迟重启服务。不要在 Agent 普通对话里直接执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，这些命令会先杀掉承载当前回复的 bridge 进程，导致升级流程和对话中断。
+服务会先读取本地二进制的 commit，再查询 GitHub 目标 ref 的 commit；两边一致时直接回复“已经是最新版本”，不下载、不编译、不重启。只有版本不一致时，才会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由后台任务延迟重启服务。
+
+不要在 Agent 普通对话里直接执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，这些命令会先杀掉承载当前回复的 bridge 进程，导致升级流程和对话中断。
 
 可选用法：
 

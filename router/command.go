@@ -33,6 +33,7 @@ type selfUpdater interface {
 type selfUpdateResult struct {
 	Output           string
 	RestartScheduled bool
+	AlreadyUpToDate  bool
 }
 
 // NewCommandHandler 创建命令处理器
@@ -156,7 +157,9 @@ func (h *CommandHandler) handleUpgrade(args []string) (*Response, error) {
 	}
 
 	content := "升级已完成。"
-	if result.RestartScheduled {
+	if result.AlreadyUpToDate {
+		content = "已经是最新版本，无需升级。"
+	} else if result.RestartScheduled {
 		content += " 已安排服务延迟重启，当前回复发出后再切换到新版本。"
 	} else {
 		content += " 未检测到可用的服务管理脚本，请手动重启服务以运行新版本。"

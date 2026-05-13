@@ -23,6 +23,10 @@ func TestSelfUpdateScriptNoRestartExitsCleanly(t *testing.T) {
 
 	writeExecutable(t, filepath.Join(fakeBin, "git"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "ls-remote" ]]; then
+  echo "def4567890abcdef	refs/heads/main"
+  exit 0
+fi
 if [[ "${1:-}" == "clone" ]]; then
   dest="${@: -1}"
   mkdir -p "${dest}/scripts" "${dest}/skills"
@@ -44,6 +48,9 @@ exit 1
 `)
 	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "version" && "${2:-}" == "-m" ]]; then
+  exit 1
+fi
 if [[ "${1:-}" == "mod" && "${2:-}" == "download" ]]; then
   exit 0
 fi
@@ -81,6 +88,73 @@ exit 1
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "install", "scripts", "self-update.sh")); err != nil {
 		t.Fatalf("scripts not installed: %v\n%s", err, output)
+	}
+}
+
+func TestSelfUpdateScriptSkipsWhenTargetMatchesRemote(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	scriptPath, err := filepath.Abs(filepath.Join(repoRoot, "scripts", "self-update.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tmp := t.TempDir()
+	fakeBin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	const commit = "abcdef1234567890abcdef1234567890abcdef12"
+	writeExecutable(t, filepath.Join(fakeBin, "git"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "ls-remote" ]]; then
+  echo "`+commit+`	refs/heads/main"
+  exit 0
+fi
+if [[ "${1:-}" == "clone" ]]; then
+  echo "clone should not run when local version is current" >&2
+  exit 1
+fi
+echo "unexpected git args: $*" >&2
+exit 1
+`)
+	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "version" && "${2:-}" == "-m" ]]; then
+  cat <<EOF
+$3: go1.25.0
+	build	vcs.revision=`+commit+`
+EOF
+  exit 0
+fi
+if [[ "${1:-}" == "build" || "${1:-}" == "mod" ]]; then
+  echo "go build/mod should not run when local version is current" >&2
+  exit 1
+fi
+echo "unexpected go args: $*" >&2
+exit 1
+`)
+
+	targetBin := filepath.Join(tmp, "install", "weibo-ai-bridge")
+	if err := os.MkdirAll(filepath.Dir(targetBin), 0o755); err != nil {
+		t.Fatalf("mkdir install dir: %v", err)
+	}
+	if err := os.WriteFile(targetBin, []byte("fake binary"), 0o755); err != nil {
+		t.Fatalf("write target binary: %v", err)
+	}
+
+	cmd := exec.Command("bash", scriptPath, "--no-restart", "--repo", "fake-repo", "--ref", "main", "--target-bin", targetBin)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("self-update script failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "本地版本已是最新") {
+		t.Fatalf("expected up-to-date message, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "WEIBO_AI_BRIDGE_ALREADY_UP_TO_DATE=1") {
+		t.Fatalf("expected up-to-date marker, got:\n%s", output)
 	}
 }
 

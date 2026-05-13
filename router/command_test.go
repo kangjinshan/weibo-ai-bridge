@@ -135,6 +135,34 @@ func TestCommandHandler_Handle_UpgradeFailure(t *testing.T) {
 	assert.Contains(t, resp.Content, "git clone failed")
 }
 
+func TestCommandHandler_Handle_UpgradeAlreadyCurrent(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+	updater := &stubSelfUpdater{
+		result: selfUpdateResult{
+			Output:          "本地版本已是最新",
+			AlreadyUpToDate: true,
+		},
+	}
+	handler.SetSelfUpdater(updater)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-upgrade-current",
+		Type:    TypeText,
+		Content: "/upgrade",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, 1, updater.calls)
+	assert.Contains(t, resp.Content, "已经是最新版本")
+	assert.NotContains(t, resp.Content, "手动重启")
+	assert.NotContains(t, resp.Content, "延迟重启")
+}
+
 func TestCommandHandler_Handle_List(t *testing.T) {
 	isolateNativeSessionSources(t)
 

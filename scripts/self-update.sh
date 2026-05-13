@@ -288,6 +288,95 @@ schedule_restart() {
     log_success "延迟重启已安排，日志: ${restart_log}"
 }
 
+resolve_remote_commit() {
+    local ref="$1"
+    local output commit
+    local patterns=(
+        "${ref}"
+        "refs/heads/${ref}"
+        "refs/tags/${ref}^{}"
+        "refs/tags/${ref}"
+    )
+
+    local pattern
+    for pattern in "${patterns[@]}"; do
+        output="$(git ls-remote "${REPO_URL}" "${pattern}" 2>/dev/null || true)"
+        commit="$(printf '%s\n' "${output}" | awk 'NF >= 2 && $1 ~ /^[0-9a-fA-F]{40}$/ { print $1; exit }')"
+        if [[ -n "${commit}" ]]; then
+            echo "${commit}"
+            return
+        fi
+    done
+
+    if [[ "${ref}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+        echo "${ref}"
+    fi
+}
+
+resolve_local_commit() {
+    local target="$1"
+    local commit=""
+
+    if [[ -f "${target}" ]]; then
+        commit="$(go version -m "${target}" 2>/dev/null | awk -F= '$1 ~ /vcs\.revision$/ && $2 ~ /^[0-9a-fA-F]{40}$/ { print $2; exit }')"
+        if [[ -n "${commit}" ]]; then
+            echo "${commit}"
+            return
+        fi
+    fi
+
+    if [[ -d "${REPO_ROOT}/.git" || -f "${REPO_ROOT}/.git" ]]; then
+        git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true
+    fi
+}
+
+commits_match() {
+    local local_commit="$1"
+    local remote_commit="$2"
+
+    local_commit="$(printf '%s' "${local_commit}" | tr '[:upper:]' '[:lower:]')"
+    remote_commit="$(printf '%s' "${remote_commit}" | tr '[:upper:]' '[:lower:]')"
+
+    [[ -n "${local_commit}" && -n "${remote_commit}" ]] || return 1
+    [[ "${local_commit}" == "${remote_commit}" ]] && return 0
+
+    if [[ ${#local_commit} -ge 7 && "${remote_commit}" == "${local_commit}"* ]]; then
+        return 0
+    fi
+    if [[ ${#remote_commit} -ge 7 && "${local_commit}" == "${remote_commit}"* ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+skip_if_current() {
+    local target_bin="$1"
+    local remote_commit local_commit
+
+    remote_commit="$(resolve_remote_commit "${REF}")"
+    local_commit="$(resolve_local_commit "${target_bin}")"
+
+    if [[ -z "${remote_commit}" ]]; then
+        log_warn "无法解析远端版本，继续执行完整升级流程"
+        return 1
+    fi
+    if [[ -z "${local_commit}" ]]; then
+        log_warn "无法解析本地版本，继续执行完整升级流程"
+        return 1
+    fi
+
+    log_info "版本检查: local=${local_commit:0:12}, remote=${remote_commit:0:12}"
+    if commits_match "${local_commit}" "${remote_commit}"; then
+        log_success "本地版本已是最新: ${local_commit:0:12}"
+        echo "WEIBO_AI_BRIDGE_ALREADY_UP_TO_DATE=1"
+        return 0
+    fi
+
+    log_info "发现新版本: ${local_commit:0:12} -> ${remote_commit:0:12}"
+    return 1
+}
+
 main() {
     need_command git
     need_command go
@@ -296,12 +385,17 @@ main() {
     target_bin="$(resolve_target_bin)"
     target_bin="$(resolve_symlink_target "${target_bin}")"
     asset_root="$(asset_root_for_target "${target_bin}")"
+
+    log_info "目标二进制: ${target_bin}"
+    if skip_if_current "${target_bin}"; then
+        return
+    fi
+
     tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/${PROJECT_NAME}-update.XXXXXX")"
     SELF_UPDATE_TMP_DIR="${tmp_dir}"
     src="${tmp_dir}/src"
     built="${tmp_dir}/${BINARY_NAME}"
 
-    log_info "目标二进制: ${target_bin}"
     checkout_source "${src}"
     build_source "${src}" "${built}"
     install_binary "${built}" "${target_bin}"

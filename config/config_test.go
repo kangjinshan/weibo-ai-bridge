@@ -21,6 +21,8 @@ func TestLoad(t *testing.T) {
 	t.Setenv("HERMES_PROVIDER", "custom")
 	t.Setenv("GEMINI_ENABLED", "true")
 	t.Setenv("GEMINI_MODEL", "gemini-3-flash-preview")
+	t.Setenv("SERVER_PORT", "7788")
+	t.Setenv("HTTP_API_KEY", "http-secret")
 
 	cfg := Load()
 
@@ -35,6 +37,8 @@ func TestLoad(t *testing.T) {
 	assert.Equal(t, "custom", cfg.Agent.Hermes.Provider)
 	assert.True(t, cfg.Agent.Gemini.Enabled)
 	assert.Equal(t, "gemini-3-flash-preview", cfg.Agent.Gemini.Model)
+	assert.Equal(t, "7788", cfg.HTTP.Port)
+	assert.Equal(t, "http-secret", cfg.HTTP.APIKey)
 }
 
 func TestLoad_LegacyWeiboAppsecretEnvStillWorks(t *testing.T) {
@@ -65,6 +69,10 @@ enabled = true
 timeout = 3600
 max_size = 1000
 
+[http]
+port = "6644"
+api_key = "file-http-secret"
+
 [log]
 level = "info"
 format = "json"
@@ -88,6 +96,8 @@ output = "stdout"
 	assert.Equal(t, "external-app-secret", cfg.Platform.Weibo.Appsecret)
 	assert.False(t, cfg.Agent.Claude.Enabled)
 	assert.True(t, cfg.Agent.Codex.Enabled)
+	assert.Equal(t, "6644", cfg.HTTP.Port)
+	assert.Equal(t, "file-http-secret", cfg.HTTP.APIKey)
 }
 
 func TestDefaultValues(t *testing.T) {
@@ -103,6 +113,8 @@ func TestDefaultValues(t *testing.T) {
 	os.Unsetenv("LOG_FORMAT")
 	os.Unsetenv("LOG_OUTPUT")
 	os.Unsetenv("CONFIG_PATH")
+	os.Unsetenv("SERVER_PORT")
+	os.Unsetenv("HTTP_API_KEY")
 
 	cfg := Load()
 
@@ -113,6 +125,8 @@ func TestDefaultValues(t *testing.T) {
 	assert.Equal(t, "info", cfg.Log.Level)
 	assert.Equal(t, "json", cfg.Log.Format)
 	assert.Equal(t, "stdout", cfg.Log.Output)
+	assert.Equal(t, "5533", cfg.HTTP.Port)
+	assert.Equal(t, "", cfg.HTTP.APIKey)
 	assert.True(t, cfg.Agent.Claude.Enabled)
 	assert.False(t, cfg.Agent.Codex.Enabled)
 	assert.False(t, cfg.Agent.Hermes.Enabled)

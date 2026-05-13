@@ -71,6 +71,15 @@ max_size = 1000
 # 默认会使用当前系统用户目录下的稳定路径，避免重装或替换仓库目录时丢失
 storage_path = "~/.config/weibo-ai-bridge/sessions"
 
+[http]
+# HTTP 服务器监听端口（可选，默认 5533）
+port = "5533"
+
+# API Key 认证（可选，留空则不启用认证）
+# 设置后，/stats 和 /chat/stream 端点需要 Bearer Token 认证
+# 也可通过环境变量 HTTP_API_KEY 设置
+api_key = ""
+
 [log]
 # 日志级别: debug, info, warn, error
 level = "info"

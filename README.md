@@ -118,6 +118,7 @@ make dev
 | `WEIBO_APP_ID` | 微博应用 ID | 必填 |
 | `WEIBO_APP_SECRET` | 微博应用密钥（兼容旧名 `WEIBO_APP_Secret`） | 必填 |
 | `SERVER_PORT` | HTTP 端口 | 5533 |
+| `HTTP_API_KEY` | `/stats`、`/chat/stream` 的 Bearer Token；留空不启用认证 | 空 |
 | `CONFIG_PATH` | TOML 配置路径 | `config/config.toml` |
 | `CLAUDE_ENABLED` | 启用 Claude | true |
 | `CODEX_ENABLED` | 启用 Codex | false |
@@ -165,6 +166,10 @@ model = ""  # 留空沿用本机 gemini CLI 默认配置
 timeout = 3600
 max_size = 1000
 storage_path = "~/.config/weibo-ai-bridge/sessions"
+
+[http]
+port = "5533"
+api_key = ""  # 留空不启用 /stats 和 /chat/stream 认证
 
 [log]
 level = "info"
@@ -244,6 +249,11 @@ Bot: 授权成功，这对话内将不再需要再次授权。
 | `/stats` | GET | 统计信息 |
 | `/chat/stream` | GET/POST | SSE 调试流 |
 
+认证说明：
+- `/health` 始终不需要认证，便于服务健康检查。
+- `http.api_key` 或 `HTTP_API_KEY` 设置后，`/stats` 和 `/chat/stream` 需要携带 `Authorization: Bearer <api_key>`。
+- 未设置 API Key 时保持兼容行为，不启用 HTTP 认证；服务默认只监听 `127.0.0.1`。
+
 `/health` 返回示例：
 ```json
 {
@@ -263,7 +273,17 @@ Bot: 授权成功，这对话内将不再需要再次授权。
 
 ### `/chat/stream`
 
-GET 请求：`/chat/stream?user_id=<user>&content=<urlencoded-content>&session_id=<optional>`
+推荐使用 POST，避免把 `content` 写入 URL、shell history 或代理访问日志：
+
+```bash
+curl -N \
+  -H "Authorization: Bearer your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"123456","content":"请用中文写三段文字","session_id":"optional-session-id"}' \
+  http://127.0.0.1:5533/chat/stream
+```
+
+GET 仍保留用于本地调试：`/chat/stream?user_id=<user>&content=<urlencoded-content>&session_id=<optional>`
 
 POST 请求：
 ```json

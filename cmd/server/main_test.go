@@ -322,7 +322,7 @@ func TestStatsHandlerIncludesSessionsAgentsAndBuildInfo(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 
-	statsHandler(sessionMgr, agentMgr)(w, req)
+	statsHandler(sessionMgr, agentMgr, log.Default())(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
@@ -347,10 +347,79 @@ func TestStatsHandlerRejectsNonGET(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/stats", nil)
 	w := httptest.NewRecorder()
 
-	statsHandler(session.NewManager(session.ManagerConfig{}), agent.NewManager())(w, req)
+	statsHandler(session.NewManager(session.ManagerConfig{}), agent.NewManager(), log.Default())(w, req)
 
 	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 	assert.Equal(t, "Method not allowed\n", w.Body.String())
+}
+
+func TestWithAPIKey(t *testing.T) {
+	tests := []struct {
+		name           string
+		apiKey         string
+		authHeader     string
+		expectedStatus int
+		expectCalled   bool
+	}{
+		{
+			name:           "empty API key disables auth",
+			apiKey:         "",
+			expectedStatus: http.StatusNoContent,
+			expectCalled:   true,
+		},
+		{
+			name:           "whitespace API key disables auth",
+			apiKey:         "   \t",
+			expectedStatus: http.StatusNoContent,
+			expectCalled:   true,
+		},
+		{
+			name:           "missing header returns unauthorized",
+			apiKey:         "secret",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "wrong token returns forbidden",
+			apiKey:         "secret",
+			authHeader:     "Bearer wrong",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "valid bearer token calls handler",
+			apiKey:         "secret",
+			authHeader:     "Bearer secret",
+			expectedStatus: http.StatusNoContent,
+			expectCalled:   true,
+		},
+		{
+			name:           "configured key is trimmed",
+			apiKey:         " secret \n",
+			authHeader:     "Bearer secret",
+			expectedStatus: http.StatusNoContent,
+			expectCalled:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			handler := withAPIKey(tt.apiKey, func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			w := httptest.NewRecorder()
+
+			handler(w, req)
+
+			assert.Equal(t, tt.expectedStatus, w.Code)
+			assert.Equal(t, tt.expectCalled, called)
+		})
+	}
 }
 
 func TestCurrentBuildInfoFallsBackWhenValuesBlank(t *testing.T) {
@@ -862,7 +931,7 @@ func TestChatStreamHandler_StreamsEvents(t *testing.T) {
 	agentMgr.SetDefault("codex")
 
 	msgRouter := router.NewRouter(nil, sessionMgr, agentMgr)
-	handler := chatStreamHandler(msgRouter)
+	handler := chatStreamHandler(msgRouter, log.Default())
 
 	req := httptest.NewRequest(http.MethodGet, "/chat/stream?user_id=user-1&content=hello&session_id=session-1", nil)
 	w := httptest.NewRecorder()
@@ -888,7 +957,7 @@ func TestChatStreamHandler_RejectsMissingContent(t *testing.T) {
 		Timeout: 300,
 		MaxSize: 10,
 	}), agent.NewManager())
-	handler := chatStreamHandler(msgRouter)
+	handler := chatStreamHandler(msgRouter, log.Default())
 
 	req := httptest.NewRequest(http.MethodGet, "/chat/stream?user_id=user-1", nil)
 	w := httptest.NewRecorder()

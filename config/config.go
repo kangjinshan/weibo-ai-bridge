@@ -18,6 +18,13 @@ type Config struct {
 	Agent    AgentConfig
 	Session  SessionConfig
 	Log      LogConfig
+	HTTP     HTTPConfig
+}
+
+// HTTPConfig HTTP 服务器配置
+type HTTPConfig struct {
+	Port   string `toml:"port"`
+	APIKey string `toml:"api_key"`
 }
 
 // PlatformConfig 平台配置
@@ -170,6 +177,12 @@ func Load() *Config {
 	if val := os.Getenv("SESSION_STORAGE_PATH"); val != "" {
 		cfg.Session.StoragePath = val
 	}
+	if val := os.Getenv("SERVER_PORT"); val != "" {
+		cfg.HTTP.Port = val
+	}
+	if val := os.Getenv("HTTP_API_KEY"); val != "" {
+		cfg.HTTP.APIKey = val
+	}
 
 	return cfg
 }
@@ -263,6 +276,9 @@ func defaultConfig() *Config {
 			Timeout:     3600,
 			MaxSize:     1000,
 			StoragePath: defaultSessionStoragePath(),
+		},
+		HTTP: HTTPConfig{
+			Port: "5533",
 		},
 		Log: LogConfig{
 			Level:  "info",

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,8 +24,6 @@ import (
 )
 
 var (
-	logger *log.Logger
-
 	version   = "dev"
 	gitCommit = "unknown"
 	buildTime = "unknown"
@@ -123,7 +122,7 @@ func main() {
 	cfg := config.Load()
 
 	// 初始化日志
-	initLogger(cfg.Log)
+	logger := newLogger(cfg.Log)
 
 	logger.Printf("Build info: version=%s, git_commit=%s, build_time=%s", version, gitCommit, buildTime)
 	logger.Printf("Configuration loaded: log_level=%s, log_format=%s", cfg.Log.Level, cfg.Log.Format)
@@ -236,22 +235,22 @@ func main() {
 	}()
 
 	// 启动消息处理循环
-	go processMessages(ctx, platform, msgRouter)
+	go processMessages(ctx, platform, msgRouter, logger)
 
 	// 设置 HTTP 路由
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/stats", statsHandler(sessionMgr, agentMgr))
-	mux.HandleFunc("/chat/stream", chatStreamHandler(msgRouter))
+	mux.HandleFunc("/stats", withAPIKey(cfg.HTTP.APIKey, statsHandler(sessionMgr, agentMgr, logger)))
+	mux.HandleFunc("/chat/stream", withAPIKey(cfg.HTTP.APIKey, chatStreamHandler(msgRouter, logger)))
 
 	// 获取服务端口
-	port := os.Getenv("SERVER_PORT")
-	if port == "" {
-		port = "5533" // 默认端口
-	}
+	port := cfg.HTTP.Port
 
 	// 创建 HTTP 服务器
 	server := newHTTPServer(port, mux)
+	if strings.TrimSpace(cfg.HTTP.APIKey) == "" {
+		logger.Printf("HTTP API key is not configured; /stats and /chat/stream are unauthenticated on %s", server.Addr)
+	}
 
 	// 启动 HTTP 服务器（在 goroutine 中）
 	go func() {
@@ -289,8 +288,8 @@ func main() {
 	logger.Println("Server shutdown completed")
 }
 
-// initLogger 初始化日志
-func initLogger(logCfg config.LogConfig) {
+// newLogger 创建日志记录器
+func newLogger(logCfg config.LogConfig) *log.Logger {
 	var output io.Writer = os.Stdout
 
 	switch strings.ToLower(strings.TrimSpace(logCfg.Output)) {
@@ -311,7 +310,7 @@ func initLogger(logCfg config.LogConfig) {
 		output = &jsonLogWriter{w: output}
 	}
 
-	logger = log.New(output, "[weibo-ai-bridge] ", log.LstdFlags|log.Lshortfile)
+	return log.New(output, "[weibo-ai-bridge] ", log.LstdFlags|log.Lshortfile)
 }
 
 func newHTTPServer(port string, handler http.Handler) *http.Server {
@@ -326,7 +325,7 @@ func newHTTPServer(port string, handler http.Handler) *http.Server {
 }
 
 // processMessages 处理消息循环
-func processMessages(ctx context.Context, platform messagePlatform, msgRouter messageHandler) {
+func processMessages(ctx context.Context, platform messagePlatform, msgRouter messageHandler, logger *log.Logger) {
 	processor := newMessageProcessor(platform, msgRouter, logger)
 
 	for {
@@ -575,6 +574,30 @@ func isSlashCommandMessage(content string) bool {
 	return strings.HasPrefix(content, "/")
 }
 
+func withAPIKey(apiKey string, next http.HandlerFunc) http.HandlerFunc {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return next
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "missing Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		token, ok := strings.CutPrefix(authHeader, "Bearer ")
+		token = strings.TrimSpace(token)
+		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
+			http.Error(w, "invalid API key", http.StatusForbidden)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
 // healthHandler 健康检查处理器
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -598,7 +621,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // statsHandler 统计信息处理器
-func statsHandler(sessionMgr *session.Manager, agentMgr *agent.Manager) http.HandlerFunc {
+func statsHandler(sessionMgr *session.Manager, agentMgr *agent.Manager, logger *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -628,7 +651,7 @@ func statsHandler(sessionMgr *session.Manager, agentMgr *agent.Manager) http.Han
 	}
 }
 
-func chatStreamHandler(msgRouter *router.Router) http.HandlerFunc {
+func chatStreamHandler(msgRouter *router.Router, logger *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

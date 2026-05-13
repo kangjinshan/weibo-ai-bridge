@@ -44,6 +44,10 @@ timeout = 7200
 max_size = 2000
 storage_path = "/tmp/weibo-ai-bridge-sessions"
 
+[http]
+port = "6644"
+api_key = "file-http-secret"
+
 [log]
 level = "debug"
 format = "text"
@@ -77,6 +81,9 @@ output = "/var/log/app.log"
 	assert.Equal(t, 7200, cfg.Session.Timeout)
 	assert.Equal(t, 2000, cfg.Session.MaxSize)
 	assert.Equal(t, "/tmp/weibo-ai-bridge-sessions", cfg.Session.StoragePath)
+
+	assert.Equal(t, "6644", cfg.HTTP.Port)
+	assert.Equal(t, "file-http-secret", cfg.HTTP.APIKey)
 
 	assert.Equal(t, "debug", cfg.Log.Level)
 	assert.Equal(t, "text", cfg.Log.Format)

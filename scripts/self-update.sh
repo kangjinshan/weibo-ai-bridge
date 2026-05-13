@@ -8,7 +8,7 @@ DEFAULT_REPO_URL="https://github.com/kangjinshan/weibo-ai-bridge.git"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-OS_NAME="$(uname -s)"
+OS_NAME="${WEIBO_AI_BRIDGE_TEST_OS:-$(uname -s)}"
 
 REPO_URL="${WEIBO_AI_BRIDGE_REPO_URL:-${DEFAULT_REPO_URL}}"
 REF="${WEIBO_AI_BRIDGE_REF:-main}"
@@ -278,11 +278,15 @@ schedule_restart() {
     fi
 
     local restart_log="${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.log"
-    log_info "将在 ${RESTART_DELAY}s 后重启服务: ${service_script} restart"
+    local restart_command
     if [[ "${OS_NAME}" == "Linux" ]]; then
+        restart_command="${service_script} restart --scope ${SCOPE}"
+        log_info "将在 ${RESTART_DELAY}s 后重启服务: ${restart_command}"
         nohup bash -c 'delay="$1"; shift; sleep "${delay}"; exec "$@"' _ "${RESTART_DELAY}" bash "${service_script}" restart --scope "${SCOPE}" >"${restart_log}" 2>&1 &
     else
-        nohup bash -c 'delay="$1"; shift; sleep "${delay}"; exec "$@"' _ "${RESTART_DELAY}" bash "${service_script}" restart >"${restart_log}" 2>&1 &
+        restart_command="${service_script} install && ${service_script} start"
+        log_info "将在 ${RESTART_DELAY}s 后刷新并启动服务: ${restart_command}"
+        nohup bash -c 'delay="$1"; service_script="$2"; sleep "${delay}"; bash "${service_script}" install && bash "${service_script}" start' _ "${RESTART_DELAY}" "${service_script}" >"${restart_log}" 2>&1 &
     fi
     echo "WEIBO_AI_BRIDGE_RESTART_SCHEDULED=1"
     log_success "延迟重启已安排，日志: ${restart_log}"

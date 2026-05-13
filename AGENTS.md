@@ -46,7 +46,8 @@
 - `router_bytheway.go` — `/btw` 命令注入逻辑，区分流式/交互式两种注入路径。
 - `stream_sender.go` — 流式分片发送器 `streamReplySender`，delta 缓冲与边界感知 flush，`idleLineBreakAfter`（5s 静默补换行）、`maxBufferDelay`。
 - `agent_repair.go` — Agent 可用性自动修复：`configBackedAgentAvailabilityRepairer` 会写入 TOML 配置文件并重新注册 Agent。
-- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/claude`、`/codex`、`/hermes`、`/gemini`、`/model`、`/dir`、`/status`、`/super`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。
+- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/claude`、`/codex`、`/hermes`、`/gemini`、`/model`、`/dir`、`/status`、`/super`、`/upgrade`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。
+- `self_update.go` — `/upgrade` 的 shell 自更新适配器，调用 `scripts/self-update.sh`，收集输出并识别延迟重启标记。
 - `native_sessions.go` — 原生会话扫描与元数据提取。Claude 数据源：① `sessions-index.json` ② `.jsonl` 文件解析 ③ `~/.claude/history.jsonl` 补充；Codex 数据源：`state_5.sqlite` / `session_index.jsonl` / `.jsonl`；Hermes 数据源：`~/.hermes/sessions/session_*.json`；Gemini 数据源：`~/.gemini/tmp|history/*/chats/session-*.jsonl`。
 - `router_utils.go` — rune 安全切分等辅助函数。
 
@@ -92,6 +93,7 @@
 
 - `install.sh` — 完整安装（含 skills）。
 - `install-skills.sh` — 仅安装 skills。
+- `self-update.sh` — 安全自升级脚本：从 GitHub 下载指定 ref，编译后原子替换二进制，并通过后台延迟任务重启服务。
 - `setup.sh` — 初始设置。
 - `service.sh` — 跨平台服务管理入口（Linux systemd / macOS launchd）。
 
@@ -121,6 +123,7 @@
 - 非命令消息会进入当前活跃会话路径；命令消息由 `router/command.go` 处理
 - `/btw` 是特殊命令，它会把补充内容注入当前活跃的交互式会话，而不是走普通命令逻辑
 - 当用户已有普通消息在处理中时，其它 slash 指令应旁路消息队列并立即执行；不要把 `/help`、`/status` 之类命令排到当前回复之后
+- 从微博对话里升级 bridge 时优先使用 `/upgrade` 或 `scripts/self-update.sh`；不要在普通 Agent turn 中直接同步执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，否则会先终止承载当前回复的 bridge 进程
 - Codex 优先走 `codex app-server` 流式路径，失败时才回退到 JSON CLI 路径
 - Hermes 主链路走 `hermes acp` 交互式形态，按 ACP `sessionId` 持久化到 `hermes_session_id`；`/btw` 在 Hermes turn 运行中会转成 ACP `/steer` 注入当前 turn；一次性 `hermes chat --quiet --source tool --query` 仅作为流式 fallback 保留
 - Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 一致：`type = "acp"`、`command = "hermes"`、`args = ["acp"]`，协议为 stdin/stdout 上的 newline-delimited JSON-RPC
@@ -155,6 +158,7 @@
 - `/dir [path]`（不传参数显示当前目录；传 `path` 时设置当前会话目录）
 - `/status`
 - `/super [on|off|status]`（开启/关闭/查看 Super 模式，`on` 等价于当前会话 `Allow All`）
+- `/upgrade [--ref branch|tag]`（从 GitHub 下载最新代码，编译安装，并在当前回复发出后延迟重启服务）
 - `/btw <content>`（实际在 `router_core.go` 和 `router_bytheway.go` 中处理，不走 command.go）
 
 命令语义备注：
@@ -162,6 +166,7 @@
 - `/list` 展示所有项目的 native 会话（不再按当前项目过滤），标题前带项目名前缀（如 `weibo-ai-bridge/会话标题`）
 - `/claude`、`/codex`、`/hermes` 与 `/gemini` 是 `/switch` 的快捷别名（大小写不敏感）
 - `/status` 在 `session_id` 缺失时，会回退到该用户当前 active session
+- `/upgrade` 由 bridge 命令层直接执行，不进入 Agent；成功构建并安装后只安排后台延迟重启，确保本轮回复先发给用户
 - native 会话标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
 - native 会话扫描有三个数据源：sessions-index.json、.jsonl 文件解析、history.jsonl 补充
 

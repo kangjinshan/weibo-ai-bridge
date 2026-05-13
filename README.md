@@ -15,6 +15,7 @@
 - **交互会话自愈** — 若新 turn 出现 stale “空 done”，会自动重建交互会话并重试一次
 - **Codex 收尾容错** — `turn/completed` 后紧跟 EOF 或 WebSocket `close 1006` 按正常结束处理
 - **Super 协作模式** — `/super on` 后自动 `Allow All`，主 Agent 完成后自动调用对侧 Agent 复盘，并把结论注入下一轮
+- **安全自升级** — `/upgrade` 从 GitHub 下载最新代码、编译安装，并在回复发出后延迟重启
 - **内置微博 Skills** — 仓库自带 `weibo-skill-api`，安装时同步到 Agent skills 目录
 - **SSE 调试出口** — `/chat/stream` 接口可观察内部事件流
 - **启动自检通知** — 服务启动成功后自动给 bot 自己发一条微博私信，包含编译时间和版本信息
@@ -80,6 +81,7 @@ make dev
 | `/dir [path]` | 显示当前工作目录；传 `path` 时设置当前会话工作目录 |
 | `/status` | 显示当前会话状态（`session_id` 缺失时自动回退到当前活跃会话） |
 | `/super [on\|off\|status]` | 管理 Super 模式；`on` 等价于对当前会话开启 `Allow All` |
+| `/upgrade [--ref branch\|tag]` | 从 GitHub 下载最新代码，编译安装，并在当前回复发出后延迟重启服务 |
 
 ### 授权回复
 
@@ -362,6 +364,30 @@ scripts/service.sh logs
 - 统一入口脚本会根据系统自动选择 Linux `systemd` 或 macOS `launchd`
 - 服务进程通过 `CONFIG_PATH` 读取 TOML，并按现有逻辑自动尝试加载 `.env`
 - 模板文件位于 `deploy/weibo-ai-bridge.service.tmpl` 与 `deploy/com.weibo-ai-bridge.plist.tmpl`
+
+### 安全自升级
+
+在微博私信里发送：
+
+```text
+/upgrade
+```
+
+服务会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由后台任务延迟重启服务。不要在 Agent 普通对话里直接执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，这些命令会先杀掉承载当前回复的 bridge 进程，导致升级流程和对话中断。
+
+可选用法：
+
+```text
+/upgrade --ref v1.2.3
+/upgrade --ref main
+```
+
+也可以在 shell 中手动运行：
+
+```bash
+scripts/self-update.sh
+scripts/self-update.sh --ref main
+```
 
 ### 重装/修复内置微博 Skills（`install.sh` 已自动安装）
 

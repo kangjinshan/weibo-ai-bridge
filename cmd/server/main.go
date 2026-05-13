@@ -498,6 +498,9 @@ func (p *messageProcessor) tryHandleBusySlashCommand(ctx context.Context, msg *w
 	if msg == nil || !isSlashCommandMessage(msg.Content) || isByTheWayMessage(msg.Content) {
 		return false
 	}
+	if isUpgradeCommandMessage(msg.Content) {
+		return false
+	}
 
 	p.mu.Lock()
 	_, busy := p.inFlightUsers[msg.UserID]
@@ -572,6 +575,11 @@ func isByTheWayMessage(content string) bool {
 func isSlashCommandMessage(content string) bool {
 	content = strings.TrimSpace(content)
 	return strings.HasPrefix(content, "/")
+}
+
+func isUpgradeCommandMessage(content string) bool {
+	fields := strings.Fields(strings.TrimSpace(content))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "/upgrade")
 }
 
 func withAPIKey(apiKey string, next http.HandlerFunc) http.HandlerFunc {

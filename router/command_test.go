@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,76 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.Contains(t, resp.Content, "/dir")
 	assert.Contains(t, resp.Content, "/status")
 	assert.Contains(t, resp.Content, "/super")
+	assert.Contains(t, resp.Content, "/upgrade")
+}
+
+type stubSelfUpdater struct {
+	calls  int
+	args   []string
+	result selfUpdateResult
+	err    error
+}
+
+func (s *stubSelfUpdater) Run(args []string) (selfUpdateResult, error) {
+	s.calls++
+	s.args = append([]string(nil), args...)
+	return s.result, s.err
+}
+
+func TestCommandHandler_Handle_UpgradeRunsSelfUpdater(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+	updater := &stubSelfUpdater{
+		result: selfUpdateResult{
+			Output:           "build ok\nrestart scheduled",
+			RestartScheduled: true,
+		},
+	}
+	handler.SetSelfUpdater(updater)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-upgrade",
+		Type:    TypeText,
+		Content: "/upgrade",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, 1, updater.calls)
+	assert.Empty(t, updater.args)
+	assert.Contains(t, resp.Content, "升级已完成")
+	assert.Contains(t, resp.Content, "已安排服务延迟重启")
+	assert.Contains(t, resp.Content, "build ok")
+}
+
+func TestCommandHandler_Handle_UpgradeFailure(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+	updater := &stubSelfUpdater{
+		result: selfUpdateResult{Output: "git clone failed"},
+		err:    errors.New("exit status 1"),
+	}
+	handler.SetSelfUpdater(updater)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-upgrade-fail",
+		Type:    TypeText,
+		Content: "/upgrade --ref test",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Equal(t, 1, updater.calls)
+	assert.Equal(t, []string{"--ref", "test"}, updater.args)
+	assert.Contains(t, resp.Content, "升级失败")
+	assert.Contains(t, resp.Content, "exit status 1")
+	assert.Contains(t, resp.Content, "git clone failed")
 }
 
 func TestCommandHandler_Handle_List(t *testing.T) {

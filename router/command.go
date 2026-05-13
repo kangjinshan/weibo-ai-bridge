@@ -19,10 +19,20 @@ type CommandHandler struct {
 	sessionManager *session.Manager
 	agentManager   *agent.Manager
 	agentRepairer  agentAvailabilityRepairer
+	selfUpdater    selfUpdater
 }
 
 type agentAvailabilityRepairer interface {
 	EnsureAvailable(agentType string) (bool, error)
+}
+
+type selfUpdater interface {
+	Run(args []string) (selfUpdateResult, error)
+}
+
+type selfUpdateResult struct {
+	Output           string
+	RestartScheduled bool
 }
 
 // NewCommandHandler 创建命令处理器
@@ -35,6 +45,10 @@ func NewCommandHandler(sessionManager *session.Manager, agentManager *agent.Mana
 
 func (h *CommandHandler) SetAgentAvailabilityRepairer(repairer agentAvailabilityRepairer) {
 	h.agentRepairer = repairer
+}
+
+func (h *CommandHandler) SetSelfUpdater(updater selfUpdater) {
+	h.selfUpdater = updater
 }
 
 // Handle 处理消息
@@ -91,6 +105,8 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 		return h.handleStatus(msg.UserID, msg.SessionID)
 	case "/super":
 		return h.handleSuper(msg.UserID, msg.SessionID, args)
+	case "/upgrade":
+		return h.handleUpgrade(args)
 	default:
 		return &Response{
 			Success: false,
@@ -115,11 +131,41 @@ func (h *CommandHandler) handleHelp() (*Response, error) {
 /model - 显示当前使用的模型
 /dir [path] - 显示或设置当前工作目录
 /status - 显示当前会话状态
-/super [on|off|status] - 管理 Super 模式（on 等价于 Allow All）`
+/super [on|off|status] - 管理 Super 模式（on 等价于 Allow All）
+/upgrade [--ref branch|tag] - 从 GitHub 下载最新代码，编译安装，并在回复后延迟重启服务`
 	return &Response{
 		Success: true,
 		Content: helpText,
 	}, nil
+}
+
+func (h *CommandHandler) handleUpgrade(args []string) (*Response, error) {
+	updater := h.selfUpdater
+	if updater == nil {
+		updater = newShellSelfUpdater()
+	}
+
+	result, err := updater.Run(args)
+	output := strings.TrimSpace(result.Output)
+	if err != nil {
+		content := fmt.Sprintf("升级失败: %v", err)
+		if output != "" {
+			content += "\n\n输出:\n" + output
+		}
+		return &Response{Success: false, Content: content}, nil
+	}
+
+	content := "升级已完成。"
+	if result.RestartScheduled {
+		content += " 已安排服务延迟重启，当前回复发出后再切换到新版本。"
+	} else {
+		content += " 未检测到可用的服务管理脚本，请手动重启服务以运行新版本。"
+	}
+	if output != "" {
+		content += "\n\n输出:\n" + output
+	}
+
+	return &Response{Success: true, Content: content}, nil
 }
 
 // handleNew 处理创建新会话命令

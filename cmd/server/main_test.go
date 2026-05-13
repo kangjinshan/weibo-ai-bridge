@@ -858,6 +858,59 @@ func TestMessageProcessor_SlashCommandBypassesBusyQueue(t *testing.T) {
 	close(release)
 }
 
+func TestMessageProcessor_UpgradeCommandWaitsForBusyTurn(t *testing.T) {
+	platform := newProcessorTestPlatform()
+	release := make(chan struct{})
+	router := &processorTestRouter{
+		started: make(chan string, 3),
+		release: release,
+	}
+
+	processor := newMessageProcessor(platform, router, log.New(os.Stdout, "", 0))
+	ctx := context.Background()
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-1",
+		UserID:  "user-upgrade",
+		Content: "先执行第一条",
+	})
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-upgrade:msg-1", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first message did not start")
+	}
+
+	processor.dispatch(ctx, &weibo.Message{
+		ID:      "msg-upgrade",
+		UserID:  "user-upgrade",
+		Content: "/upgrade",
+	})
+
+	select {
+	case started := <-router.started:
+		t.Fatalf("/upgrade should wait for current turn, got %s", started)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case started := <-router.started:
+		assert.Equal(t, "user-upgrade:msg-upgrade", started)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("/upgrade did not run after current turn completed")
+	}
+
+	assert.Eventually(t, func() bool {
+		replies := platform.Replies()
+		return len(replies) >= 2 &&
+			strings.Contains(replies[0], processingAckMessage) &&
+			strings.Contains(replies[1], messageQueuedHint)
+	}, time.Second, 20*time.Millisecond)
+}
+
 func TestMessageProcessor_AllowsDifferentUsersInParallel(t *testing.T) {
 	platform := newProcessorTestPlatform()
 	router := &processorTestRouter{

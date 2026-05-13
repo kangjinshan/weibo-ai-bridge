@@ -380,15 +380,35 @@ start_macos_launchd() {
     [[ -f "${plist_path}" ]] || die "未安装 plist：${plist_path}，请先执行 install"
 
     local target="gui/$(id -u)"
-    launchctl bootout "${target}/${LAUNCHD_LABEL}" >/dev/null 2>&1 || true
-    launchctl bootstrap "${target}" "${plist_path}"
-    launchctl kickstart -k "${target}/${LAUNCHD_LABEL}"
+    if launchctl print "${target}/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+        launchctl kickstart -k "${target}/${LAUNCHD_LABEL}"
+        log_success "已启动 ${LAUNCHD_LABEL}"
+        return
+    fi
+
+    if ! launchctl bootstrap "${target}" "${plist_path}"; then
+        sleep 1
+        launchctl bootout "${target}/${LAUNCHD_LABEL}" >/dev/null 2>&1 || true
+        for _ in {1..30}; do
+            if ! launchctl print "${target}/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.1
+        done
+        launchctl bootstrap "${target}" "${plist_path}"
+    fi
     log_success "已启动 ${LAUNCHD_LABEL}"
 }
 
 stop_macos_launchd() {
     local target="gui/$(id -u)"
     launchctl bootout "${target}/${LAUNCHD_LABEL}" >/dev/null 2>&1 || true
+    for _ in {1..30}; do
+        if ! launchctl print "${target}/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.1
+    done
     log_success "已停止 ${LAUNCHD_LABEL}"
 }
 
@@ -448,7 +468,7 @@ run_command() {
                 install) install_macos_launchd ;;
                 start) start_macos_launchd ;;
                 stop) stop_macos_launchd ;;
-                restart) stop_macos_launchd; start_macos_launchd ;;
+                restart) install_macos_launchd; stop_macos_launchd; start_macos_launchd ;;
                 status) status_macos_launchd ;;
                 logs) logs_macos_launchd ;;
                 uninstall) uninstall_macos_launchd ;;

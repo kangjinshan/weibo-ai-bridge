@@ -55,6 +55,11 @@ if [[ "${1:-}" == "mod" && "${2:-}" == "download" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "build" ]]; then
+  {
+    echo "GOOS=${GOOS:-}"
+    echo "GOARCH=${GOARCH:-}"
+    echo "CGO_ENABLED=${CGO_ENABLED:-}"
+  } > "${GO_BUILD_ENV:-/dev/null}"
   out=""
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "-o" ]]; then
@@ -209,6 +214,11 @@ if [[ "${1:-}" == "mod" && "${2:-}" == "download" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "build" ]]; then
+  {
+    echo "GOOS=${GOOS:-}"
+    echo "GOARCH=${GOARCH:-}"
+    echo "CGO_ENABLED=${CGO_ENABLED:-}"
+  } > "${GO_BUILD_ENV:-/dev/null}"
   out=""
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "-o" ]]; then
@@ -233,11 +243,14 @@ exit 1
 		t.Fatalf("write target binary: %v", err)
 	}
 
+	buildEnv := filepath.Join(tmp, "go-build-env.txt")
 	cmd := exec.Command("bash", scriptPath, "--repo", "fake-repo", "--ref", "main", "--target-bin", targetBin)
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"WEIBO_AI_BRIDGE_TEST_OS=Darwin",
+		"WEIBO_AI_BRIDGE_TEST_ARCH=arm64",
+		"GO_BUILD_ENV="+buildEnv,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -250,6 +263,14 @@ exit 1
 	}
 	if !strings.Contains(out, "service.sh install") || !strings.Contains(out, "service.sh start") {
 		t.Fatalf("macOS restart schedule should install then start, got:\n%s", output)
+	}
+	envBytes, err := os.ReadFile(buildEnv)
+	if err != nil {
+		t.Fatalf("read build env: %v", err)
+	}
+	envText := string(envBytes)
+	if !strings.Contains(envText, "GOOS=darwin") || !strings.Contains(envText, "GOARCH=arm64") || !strings.Contains(envText, "CGO_ENABLED=0") {
+		t.Fatalf("macOS arm64 self-update should build a native binary, env:\n%s", envText)
 	}
 }
 

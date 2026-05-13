@@ -9,6 +9,7 @@ DEFAULT_REPO_URL="https://github.com/kangjinshan/weibo-ai-bridge.git"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OS_NAME="${WEIBO_AI_BRIDGE_TEST_OS:-$(uname -s)}"
+ARCH_NAME="${WEIBO_AI_BRIDGE_TEST_ARCH:-$(uname -m)}"
 
 REPO_URL="${WEIBO_AI_BRIDGE_REPO_URL:-${DEFAULT_REPO_URL}}"
 REF="${WEIBO_AI_BRIDGE_REF:-main}"
@@ -207,7 +208,13 @@ build_source() {
 
     log_info "编译 ${BINARY_NAME}: version=${version}, commit=${commit}"
     mkdir -p "$(dirname "${out}")"
-    (cd "${src}" && CGO_ENABLED=0 go build \
+
+    local build_env=(CGO_ENABLED=0)
+    if [[ "${OS_NAME}" == "Darwin" && "${ARCH_NAME}" == "arm64" ]]; then
+        build_env+=(GOOS=darwin GOARCH=arm64)
+    fi
+
+    (cd "${src}" && env "${build_env[@]}" go build \
         -ldflags "-X 'main.version=${version}' -X 'main.gitCommit=${commit}' -X 'main.buildTime=${build_time}'" \
         -o "${out}" ./cmd/server)
 }

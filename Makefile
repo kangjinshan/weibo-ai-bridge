@@ -25,6 +25,15 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -X 'main.version=$(VERSION)' -X 'main.gitCommit=$(GIT_COMMIT)' -X 'main.buildTime=$(BUILD_TIME)'
 
+HOST_OS := $(shell uname -s)
+HOST_ARCH := $(shell uname -m)
+BUILD_ENV :=
+ifeq ($(HOST_OS),Darwin)
+ifeq ($(HOST_ARCH),arm64)
+BUILD_ENV := CGO_ENABLED=0 GOOS=darwin GOARCH=arm64
+endif
+endif
+
 all: test build
 
 check-root-executables:
@@ -33,7 +42,7 @@ check-root-executables:
 build:
 	@echo "Building..."
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
+	$(BUILD_ENV) $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
 
 test:
 	@echo "Running tests..."

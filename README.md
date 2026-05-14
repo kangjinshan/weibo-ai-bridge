@@ -1,48 +1,75 @@
 # Weibo AI Bridge
 
-微博私信与 AI Agent 的桥接服务。通过微博开放平台 WebSocket API 连接微博和多个 AI Agent（Claude Code、Codex CLI、Hermes CLI、Gemini CLI），实现智能对话功能。
+微博私信与本地 AI Agent CLI 的桥接服务。它通过微博开放平台 WebSocket API 接收私信，把消息路由到 Claude Code、Codex CLI、Hermes CLI 或 Gemini CLI，再把 Agent 输出流式回传到微博。
+
+它不只是把微博当成聊天入口，也把微博能力接到 Agent 工作流里：Agent 可以复用 bridge 的微博配置与 token 缓存，使用内置 skill 查询热搜和智搜、检查微博状态、参与超话互动、上传图片/视频，并生成创作者数据摘要。
+
+适合用来把一台本地机器上的编码 Agent、安全审批、项目会话、微博私信入口和微博内容能力连在一起。
 
 ## 核心特性
 
-- **微博私信桥接** — 通过 WebSocket API 实时收发微博私信
-- **多 Agent 支持** — Claude Code、Codex CLI、Hermes CLI 和 Gemini CLI，可灵活切换
-- **流式回复** — 先发"正在处理中"提示，再逐片流式发送真实回复
-- **会话管理** — native session 优先，bridge 仅维护索引与持久化
-- **自动建会话** — 无活跃会话时自动准备原生会话，首轮拿到 `session/thread` 后收敛为 native ID
-- **审批回复** — Agent 请求授权时回复 `允许` / `允许所有` / `取消`
-- **交互式插话** — `/btw` 向正在执行的 Agent turn 注入补充信息
-- **命令旁路** — `/help`、`/status` 等命令立即执行，不排队
-- **交互会话自愈** — 若新 turn 出现 stale “空 done”，会自动重建交互会话并重试一次
-- **Codex 收尾容错** — `turn/completed` 后紧跟 EOF 或 WebSocket `close 1006` 按正常结束处理
-- **Super 协作模式** — `/super on` 后自动 `Allow All`，主 Agent 完成后自动调用对侧 Agent 复盘，并把结论注入下一轮
-- **安全自升级** — `/upgrade` 从 GitHub 下载最新代码、编译安装，并在回复发出后延迟重启
-- **内置微博 Skills** — 仓库自带 `weibo-skill-api`，安装时同步到 Agent skills 目录
-- **SSE 调试出口** — `/chat/stream` 接口可观察内部事件流
-- **启动自检通知** — 服务启动成功后自动给 bot 自己发一条微博私信，包含编译时间和版本信息
+- **微博私信桥接** — 通过 WebSocket API 实时收发微博私信，长回复按自然边界分片回传。
+- **微博能力接入** — 内置 `weibo-skill-api` 让 Agent 可使用热搜/智搜、微博状态查询、超话发帖评论点赞、图片/视频上传和创作者数据摘要等能力。
+- **多 Agent 支持** — 支持 Claude Code、Codex CLI、Hermes CLI 和 Gemini CLI，并可在会话中切换。
+- **原生会话续接** — 优先使用各 Agent 自己的 session/thread ID，bridge 只维护索引、活动会话和少量上下文。
+- **流式交互与审批** — Agent 请求授权时可直接回复 `允许`、`允许所有` 或 `取消`；`/btw` 可向正在运行的交互式 turn 注入补充说明。
+- **命令即时响应** — `/help`、`/status`、`/super` 等 slash 命令会旁路普通消息队列，避免被长任务堵住。
+- **Super 协作模式** — `/super on` 会开启当前会话的 `Allow All`，并在主 Agent 回复后异步调用对侧 Agent 复盘，把结论注入下一轮。
+- **安全自升级** — `/upgrade` 会先比较本地和目标 Git commit；确实有新版本时才构建替换，并在当前回复发出后延迟重启。
+- **统一微博凭证** — 内置微博 Skills 复用 bridge 的微博配置与 token 缓存，不需要为每个 Agent 单独维护一套微博凭证。
+- **本地调试接口** — `/health`、`/stats` 和 `/chat/stream` 可用于健康检查、状态观察和 SSE 调试。
+- **启动自检通知** — 服务启动成功后会给 bot 自己发送一条私信，包含版本、commit 和编译时间。
 
 ## 快速开始
 
 ### 前置要求
 
 - Go 1.22+
-- 至少安装一个 Agent CLI（`claude`、`codex`、`hermes` 或 `gemini`）
+- 微博开放平台 App ID / App secret
+- 至少安装并配置一个 Agent CLI：`claude`、`codex`、`hermes` 或 `gemini`
 
 ### 安装运行
 
 ```bash
-# 克隆
 git clone https://github.com/kangjinshan/weibo-ai-bridge.git
 cd weibo-ai-bridge
 
-# 配置
 cp .env.example .env
-# 编辑 .env 填入微博 App ID / App secret
+```
 
-# 构建并运行（统一入口）
+编辑 `.env`，至少填入微博凭证，并确保有一个 Agent 已启用：
+
+```dotenv
+WEIBO_APP_ID=your-app-id
+WEIBO_APP_SECRET=your-app-secret
+
+# 默认启用 Claude；如果使用其它 Agent，启用对应开关
+CLAUDE_ENABLED=true
+CODEX_ENABLED=false
+HERMES_ENABLED=false
+GEMINI_ENABLED=false
+```
+
+构建并运行：
+
+```bash
 make build && ./build/weibo-ai-bridge
+```
 
-# 开发模式
+开发时也可以使用：
+
+```bash
 make dev
+```
+
+服务默认监听 `127.0.0.1:5533`。启动成功后，bridge 会连接微博 WebSocket，并给 bot 自己发送一条启动通知。
+
+微博凭证获取方式见 [微博凭证获取](#微博凭证获取)。
+
+如果要安装为系统服务并同步内置微博 Skills，使用仓库脚本：
+
+```bash
+bash scripts/install.sh
 ```
 
 ### 常用命令
@@ -69,7 +96,7 @@ make dev
 |------|------|
 | `/help` | 显示帮助信息 |
 | `/new [claude\|codex\|hermes\|gemini]` | 准备新的原生会话（不传参数时沿用当前 Agent） |
-| `/list` | 查看所有项目的原生会话列表（带项目名前缀和编号） |
+| `/list` | 查看可切换的原生会话列表（编号、标题、目录、时间） |
 | `/switch <编号>` | 按 `/list` 中的编号切换活跃会话 |
 | `/switch <agent类型>` | 切换当前会话的 Agent 类型 |
 | `/claude` | 等价于 `/switch claude`（大小写不敏感） |
@@ -188,25 +215,25 @@ output = "stdout"
 
 ## 会话管理
 
-### 核心特性
+Bridge 采用 native-first 会话模型：真正的对话历史保存在 Claude/Codex/Hermes/Gemini 自己的原生会话里，bridge 只负责记录当前用户正在使用哪个会话、工作目录、Agent 类型和必要的上下文标记。
 
-- **持久化存储** — 会话数据默认存储在 `~/.config/weibo-ai-bridge/sessions/`，服务重启后自动恢复
-- **多会话支持** — 每个用户可切换多个原生会话（Claude/Codex/Hermes/Gemini），按编号切换
-- **自动建会话** — 无活跃会话时先建立 pending 锚点，首轮自动绑定为 native 会话 ID
-- **会话标题** — 与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content
-- **旧路径迁移** — 新版本首次启动时会自动导入旧版 `data/sessions/` 的数据
+### 使用方式
 
-### Agent Session ID
+- 第一次发普通消息时，如果没有活跃会话，bridge 会先准备一个 pending 锚点；等 Agent 返回原生 `session_id` 或 `thread_id` 后，再绑定为 native 会话。
+- `/new [agent]` 用于准备下一条消息的新原生会话，不会提前创建 bridge 自增会话。
+- `/list` 会扫描本机 Agent 的原生会话，并显示可切换编号、标题、目录和时间。
+- `/switch <编号>` 切换到 `/list` 中的原生会话；`/switch <agent>` 或 `/claude`、`/codex`、`/hermes`、`/gemini` 切换当前会话的 Agent 类型。
+- 会话索引默认持久化到 `~/.config/weibo-ai-bridge/sessions/`，服务重启后可恢复。
+- 新版本首次启动时会自动导入旧版 `data/sessions/` 数据。
 
-- **Claude** — 使用 `--output-format stream-json` 流式路径，首轮提取 `session_id`，后续用 `--resume` 继续对话
-- **Codex** — 优先通过 `codex app-server` 获取 `item/agentMessage/delta` 流式增量；不可用时回退到 `codex exec --json`。Bridge 把 `thread_id` 持久化到 `codex_session_id`。续接已存在线程时使用最小 `thread/resume` 参数（不覆盖原线程策略），并在运行中同步 `threadId` 变化，确保持续续写同一线程。`turn/completed` 后若紧跟 EOF/`close 1006`，按正常收尾处理
-- **Hermes** — 主链路使用 `hermes acp` 交互式形态，通过 newline-delimited JSON-RPC 调用 `initialize`、`session/new|resume`、`session/prompt`，从 `session/update` 接收增量、工具和审批事件。Bridge 把 ACP `sessionId` 持久化到 `hermes_session_id`；当当前 turn 仍在运行时，`/btw` 会转成 Hermes ACP `/steer` 注入当前 turn。`hermes chat --quiet --source tool --query` 仅作为 CLI fallback 保留
-- **Gemini** — 使用 `gemini --output-format stream-json --prompt` 流式路径，首轮从 `init.session_id` 提取 native session ID，后续用 `--resume` 继续对话。Bridge 把 Gemini session ID 持久化到 `gemini_session_id`。Gemini 默认追加 `--include-directories /`，允许读取当前项目外的目录；当前会话开启 `Allow All` 后会额外追加 `-y` 自动批准工具调用
-- **ID 收敛策略** — bridge 只在首轮创建 pending 锚点；一旦收到 Agent `session/thread` 事件，会将会话 ID 收敛为 native ID，避免长期保留 bridge 自增 ID
-- **交互式 stale 保护** — 若新 turn 首个事件是 `done`，并在 `interactiveLeadingDoneWait` 窗口内没有 delta/message/approval/error，有且仅有一次自动重建会话后重试，避免“发了消息但无回复”
-- **Hermes 续接恢复** — 若 Hermes 续接旧 ACP session 后返回 `API call failed after 3 retries: HTTP 404: Resource not found`，Bridge 会清空旧 `hermes_session_id`、新建 Hermes ACP session，并把当前消息自动重试一次
+### Agent 会话实现
 
-Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 配置一致，核心是通过 stdio 启动 `hermes acp`：
+- **Claude** — 使用 `--output-format stream-json` 流式路径，首轮提取 `session_id`，后续用 `--resume` 继续对话。
+- **Codex** — 优先通过 `codex app-server` 获取流式增量；不可用时回退到 `codex exec --json`。bridge 会把 `thread_id` 持久化到 `codex_session_id`。
+- **Hermes** — 主链路使用 `hermes acp` 交互式形态，并把 ACP `sessionId` 持久化到 `hermes_session_id`。当前 turn 仍在运行时，`/btw` 会转成 Hermes ACP `/steer` 注入。
+- **Gemini** — 使用 `gemini --output-format stream-json --prompt` 流式路径，首轮从 `init.session_id` 提取 native session ID，后续用 `--resume` 继续对话。Gemini 默认追加 `--include-directories /`，允许读取当前项目外目录；当前会话开启 `Allow All` 后会额外追加 `-y` 自动批准工具调用。
+
+Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 配置一致，通过 stdio 启动 `hermes acp`：
 
 ```toml
 [projects.agent]
@@ -225,12 +252,14 @@ Bot: <随后流式返回真实回复>
 
 ```
 用户: /list
-Bot: Sessions:
-     【1】帮我看看这个 Go 项目怎么拆模块 (id=1639733600-1, agent=codex, active)
-     【2】未命名会话 (id=1639733600-2, agent=codex)
+Bot:
+| 编号 | 标题 | 目录 | 时间 |
+| --- | --- | --- | --- |
+| 1 | 帮我看看这个 Go 项目怎么拆模块（当前） | weibo-ai-bridge | 2026-05-14 10:20 |
+| 2 | 未命名会话 | other-project | 2026-05-13 22:41 |
 
 用户: /switch 1
-Bot: Switched to session 1: 帮我看看这个 Go 项目怎么拆模块
+Bot: Switched to native session: 帮我看看这个 Go 项目怎么拆模块 (codex, native=abc123...)
 ```
 
 ```
@@ -391,7 +420,16 @@ scripts/self-update.sh
 scripts/self-update.sh --ref main
 ```
 
-### 重装/修复内置微博 Skills（`install.sh` 已自动安装）
+### 安装/修复内置微博 Skills
+
+内置 `weibo-skill-api` 是 bridge 联通微博能力的主要入口。安装后，Claude/Codex/Hermes/Gemini 可以在对话中调用同一套微博能力，包括：
+
+- 热搜榜与微博智搜
+- 微博状态查询
+- 超话发帖、评论、点赞等互动
+- 图片/视频上传
+- 定时任务
+- 创作者数据摘要
 
 ```bash
 bash scripts/install-skills.sh
@@ -403,7 +441,7 @@ bash scripts/install-skills.sh
 - `~/.hermes/skills/weibo-skill-api`
 - `~/.gemini/skills/weibo-skill-api`
 
-上面的命令用于手动重装/修复，仍会自动复用 bridge 的微博配置与 token 缓存。内置 skill 提供热搜/智搜、微博状态查询、超话发帖评论与点赞、图片/视频上传、定时任务和创作者数据摘要等能力。
+如果只是本地 `make build`，可以用上面的 `scripts/install-skills.sh` 手动安装或修复。安装后的 skill 会自动复用 bridge 的微博配置与 token 缓存，不需要在各 Agent 侧重新配置微博 App ID、App secret 或单独的 token 文件。
 
 ## 微博凭证获取
 

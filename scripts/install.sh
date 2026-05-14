@@ -186,6 +186,19 @@ install_binary() {
 
     cp "${BUILT_BINARY_PATH}" "${INSTALL_DIR}/"
     chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+    if [[ "${OS_NAME}" == "Darwin" && -x "${PROJECT_DIR}/scripts/codesign-macos.sh" ]]; then
+        if ! "${PROJECT_DIR}/scripts/codesign-macos.sh" "${INSTALL_DIR}/${BINARY_NAME}"; then
+            case "${WEIBO_AI_BRIDGE_CODESIGN:-auto}" in
+                auto|"")
+                    log_warning "macOS codesign 失败，继续安装二进制"
+                    ;;
+                *)
+                    log_error "macOS codesign 失败"
+                    exit 1
+                    ;;
+            esac
+        fi
+    fi
 
     # 创建软链接（可选）
     if [[ ! -L "/usr/local/bin/${BINARY_NAME}" ]]; then

@@ -161,6 +161,9 @@ bash scripts/install.sh
 | `SESSION_TIMEOUT` | 会话超时（秒） | 3600 |
 | `SESSION_MAX_SIZE` | 最大会话数 | 1000 |
 | `SESSION_STORAGE_PATH` | 会话存储路径 | `~/.config/weibo-ai-bridge/sessions` |
+| `WEIBO_AI_BRIDGE_CODESIGN` | macOS 构建/安装时是否尝试 codesign（`auto`/`1`/`0`） | auto |
+| `WEIBO_AI_BRIDGE_CODESIGN_IDENTITY` | macOS codesign identity；留空时自动选择第一个可用 identity | 空 |
+| `WEIBO_AI_BRIDGE_CODESIGN_IDENTIFIER` | macOS codesign bundle identifier | `com.weibo-ai-bridge` |
 | `LOG_LEVEL` | 日志级别（debug/info/warn/error） | info |
 | `LOG_FORMAT` | 日志格式（json/text） | json |
 | `LOG_OUTPUT` | 日志输出（stdout/stderr/文件路径） | stdout |
@@ -382,12 +385,20 @@ scripts/service.sh status
 scripts/service.sh logs
 ```
 
+macOS 权限提示说明：
+- `make build`、`scripts/install.sh`、`scripts/self-update.sh` 和 `scripts/service.sh install|restart` 会自动尝试给二进制添加稳定代码签名，避免每次重建后被系统当成新程序。
+- 如果机器上有多个签名 identity，建议固定一个：`export WEIBO_AI_BRIDGE_CODESIGN_IDENTITY="Apple Development: your@example.com (TEAMID)"`。
+- 如果弹窗是“允许接收传入网络连接”，还可以在系统防火墙中允许当前二进制一次：`sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /path/to/weibo-ai-bridge && sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /path/to/weibo-ai-bridge`。
+
 可选环境变量（覆盖自动探测）：
 - `WEIBO_AI_BRIDGE_BIN`
 - `WEIBO_AI_BRIDGE_CONFIG_PATH`
 - `WEIBO_AI_BRIDGE_ENV_FILE`
 - `WEIBO_AI_BRIDGE_SCOPE`（Linux）
 - `WEIBO_AI_BRIDGE_SERVICE_USER`（Linux system scope）
+- `WEIBO_AI_BRIDGE_CODESIGN`（macOS）
+- `WEIBO_AI_BRIDGE_CODESIGN_IDENTITY`（macOS）
+- `WEIBO_AI_BRIDGE_CODESIGN_IDENTIFIER`（macOS）
 
 说明：
 - 统一入口脚本会根据系统自动选择 Linux `systemd` 或 macOS `launchd`

@@ -43,6 +43,7 @@ build:
 	@echo "Building..."
 	@mkdir -p $(BUILD_DIR)
 	$(BUILD_ENV) $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
+	@if [ "$$(uname -s)" = "Darwin" ]; then bash ./scripts/codesign-macos.sh $(BUILD_DIR)/$(BINARY_NAME); fi
 
 test:
 	@echo "Running tests..."

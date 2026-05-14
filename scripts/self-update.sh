@@ -219,6 +219,35 @@ build_source() {
         -o "${out}" ./cmd/server)
 }
 
+codesign_macos_binary() {
+    local binary="$1"
+
+    if [[ "${OS_NAME}" != "Darwin" ]]; then
+        return
+    fi
+
+    local signer="${REPO_ROOT}/scripts/codesign-macos.sh"
+    if [[ ! -x "${signer}" ]]; then
+        signer="${SCRIPT_DIR}/codesign-macos.sh"
+    fi
+    if [[ ! -x "${signer}" ]]; then
+        log_warn "未找到 macOS codesign 脚本，跳过签名"
+        return
+    fi
+
+    if ! "${signer}" "${binary}"; then
+        case "${WEIBO_AI_BRIDGE_CODESIGN:-auto}" in
+            auto|"")
+                log_warn "macOS codesign 失败，继续安装二进制: ${binary}"
+                return
+                ;;
+            *)
+                die "macOS codesign 失败: ${binary}"
+                ;;
+        esac
+    fi
+}
+
 install_binary() {
     local built="$1"
     local target="$2"
@@ -231,6 +260,7 @@ install_binary() {
     log_info "安装二进制: ${target}"
     cp "${built}" "${tmp_target}"
     chmod +x "${tmp_target}"
+    codesign_macos_binary "${tmp_target}"
     mv "${tmp_target}" "${target}"
 }
 

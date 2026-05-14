@@ -180,6 +180,32 @@ escape_sed() {
     printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
 }
 
+maybe_codesign_macos() {
+    local binary="$1"
+
+    if [[ "${OS_NAME}" != "Darwin" ]]; then
+        return
+    fi
+
+    local signer="${REPO_ROOT}/scripts/codesign-macos.sh"
+    if [[ ! -x "${signer}" ]]; then
+        log_warn "未找到 macOS codesign 脚本，跳过签名: ${signer}"
+        return
+    fi
+
+    if ! "${signer}" "${binary}"; then
+        case "${WEIBO_AI_BRIDGE_CODESIGN:-auto}" in
+            auto|"")
+                log_warn "macOS codesign 失败，继续安装服务: ${binary}"
+                return
+                ;;
+            *)
+                die "macOS codesign 失败: ${binary}"
+                ;;
+        esac
+    fi
+}
+
 resolve_linux_scope() {
     local selected="${SCOPE}"
     if [[ "${selected}" == "auto" ]]; then
@@ -360,6 +386,7 @@ install_macos_launchd() {
     [[ -f "${execstart}" ]] || die "未找到可执行文件: ${execstart}（可通过 WEIBO_AI_BRIDGE_BIN 指定）"
     [[ -f "${config_path}" ]] || log_warn "配置文件不存在: ${config_path}（服务仍会尝试启动）"
     [[ -f "${env_file}" ]] || log_warn "环境变量文件不存在: ${env_file}（可按需创建）"
+    maybe_codesign_macos "${execstart}"
 
     sed \
         -e "s/__LABEL__/$(escape_sed "${LAUNCHD_LABEL}")/g" \

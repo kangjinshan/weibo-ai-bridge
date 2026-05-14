@@ -402,7 +402,7 @@ scripts/service.sh logs
 /upgrade
 ```
 
-服务会先读取本地二进制的 commit，再查询 GitHub 目标 ref 的 commit；两边一致时直接回复“已经是最新版本”，不下载、不编译、不重启。只有版本不一致时，才会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由后台任务延迟重启服务。
+服务会先读取本地二进制的 commit，再查询 GitHub 目标 ref 的 commit；两边一致时直接回复“已经是最新版本”，不下载、不编译、不重启。只有版本不一致时，才会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由延迟任务重启服务。Linux 下优先使用 `systemd-run` 创建 transient timer/service，避免重启任务随旧 bridge 进程一起被 systemd 清理。
 
 不要在 Agent 普通对话里直接执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，这些命令会先杀掉承载当前回复的 bridge 进程，导致升级流程和对话中断。
 

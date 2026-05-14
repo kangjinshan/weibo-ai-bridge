@@ -93,7 +93,7 @@
 
 - `install.sh` — 完整安装（含 skills）。
 - `install-skills.sh` — 仅安装 skills。
-- `self-update.sh` — 安全自升级脚本：先比对本地二进制与 GitHub 指定 ref 的 commit；不一致时下载、编译、原子替换二进制，并通过后台延迟任务重启服务。
+- `self-update.sh` — 安全自升级脚本：先比对本地二进制与 GitHub 指定 ref 的 commit；不一致时下载、编译、原子替换二进制，并通过延迟任务重启服务。Linux 下优先用 `systemd-run` 创建 transient timer/service，避免重启任务随旧 bridge service cgroup 一起被清理。
 - `setup.sh` — 初始设置。
 - `service.sh` — 跨平台服务管理入口（Linux systemd / macOS launchd）。
 

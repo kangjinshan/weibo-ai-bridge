@@ -286,9 +286,50 @@ schedule_restart() {
 
     local restart_log="${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.log"
     local restart_command
+    : > "${restart_log}"
     if [[ "${OS_NAME}" == "Linux" ]]; then
         restart_command="${service_script} restart --scope ${SCOPE}"
         log_info "将在 ${RESTART_DELAY}s 后重启服务: ${restart_command}"
+
+        if command -v systemd-run >/dev/null 2>&1; then
+            local systemd_scope="${SCOPE}"
+            if [[ "${systemd_scope}" == "auto" ]]; then
+                if [[ "${EUID}" -eq 0 ]]; then
+                    systemd_scope="system"
+                else
+                    systemd_scope="user"
+                fi
+            fi
+
+            local -a systemd_run_cmd
+            systemd_run_cmd=(systemd-run)
+            if [[ "${systemd_scope}" == "user" ]]; then
+                systemd_run_cmd+=(--user)
+            fi
+            systemd_run_cmd+=(
+                "--unit=${PROJECT_NAME}-self-update-restart"
+                --collect
+                "--on-active=${RESTART_DELAY}s"
+                --timer-property=AccuracySec=1s
+                "--description=${PROJECT_NAME} self-update restart"
+                bash -c 'log="$1"; shift; exec "$@" >"${log}" 2>&1'
+                _
+                "${restart_log}"
+                bash
+                "${service_script}"
+                restart
+                --scope
+                "${SCOPE}"
+            )
+
+            if "${systemd_run_cmd[@]}" >>"${restart_log}" 2>&1; then
+                echo "WEIBO_AI_BRIDGE_RESTART_SCHEDULED=1"
+                log_success "延迟重启已安排，日志: ${restart_log}"
+                return
+            fi
+            log_warn "systemd-run 安排延迟重启失败，退回到后台进程方式；若当前脚本运行在服务 cgroup 内，可能只完成停止"
+        fi
+
         nohup bash -c 'delay="$1"; shift; sleep "${delay}"; exec "$@"' _ "${RESTART_DELAY}" bash "${service_script}" restart --scope "${SCOPE}" >"${restart_log}" 2>&1 &
     else
         restart_command="${service_script} install && ${service_script} start"

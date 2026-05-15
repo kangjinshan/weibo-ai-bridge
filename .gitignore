@@ -50,3 +50,6 @@ config/config.toml
 tmp/
 temp/
 test-weibo
+
+# Codex marker
+.codex

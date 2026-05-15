@@ -141,9 +141,6 @@ func (s *streamReplySender) finalize(ctx context.Context) error {
 	if s.hasEmittedDone {
 		return nil
 	}
-	if !s.hasEmittedChunks {
-		return nil
-	}
 	if err := s.writer.SendChunk(ctx, "", true); err != nil {
 		return err
 	}

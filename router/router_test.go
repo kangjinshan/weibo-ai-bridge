@@ -1323,6 +1323,29 @@ func TestStreamReplySender_FinalDeliverAfterPartialSnapshotSendsDoneOnly(t *test
 	assert.Equal(t, true, writer.chunks[1]["done"])
 }
 
+func TestStreamReplySender_SettleAlwaysEmitsDoneEvenWithoutChunks(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-empty", messageID: "stream-msg-user-empty"}
+	sender := newStreamReplySender(writer)
+
+	assert.NoError(t, sender.Settle(context.Background()))
+
+	assert.Len(t, writer.chunks, 1)
+	assert.Equal(t, "", writer.chunks[0]["content"])
+	assert.Equal(t, true, writer.chunks[0]["done"])
+}
+
+func TestStreamReplySender_SettleIsIdempotent(t *testing.T) {
+	platform := &MockPlatform{}
+	writer := &MockReplyStream{platform: platform, userID: "user-idempotent", messageID: "stream-msg-user-idempotent"}
+	sender := newStreamReplySender(writer)
+
+	assert.NoError(t, sender.Settle(context.Background()))
+	assert.NoError(t, sender.Settle(context.Background()))
+
+	assert.Len(t, writer.chunks, 1)
+}
+
 func TestStreamReplySender_InformationalTextFlushesBufferedDeltaFirst(t *testing.T) {
 	platform := &MockPlatform{}
 	writer := &MockReplyStream{platform: platform, userID: "user-info", messageID: "stream-msg-user-info"}
@@ -1536,7 +1559,10 @@ func TestForwardStreamToPlatform_IgnoresContextCanceledErrorEvent(t *testing.T) 
 	err := router.forwardStreamToPlatform(context.Background(), "user-cancel-error", stream)
 
 	assert.NoError(t, err)
-	assert.Len(t, platform.replies, 0)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 1)
+	assert.Equal(t, "", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[0]["done"])
 }
 
 func TestForwardStreamToPlatform_IgnoresLateMessageAfterDone(t *testing.T) {

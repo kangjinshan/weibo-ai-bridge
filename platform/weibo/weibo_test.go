@@ -321,7 +321,7 @@ func TestBuildSendMessageFrame_RejectsEmptyNonFinalChunk(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestPlatformReply_SendsPlainMessageWithoutStreamingFields(t *testing.T) {
+func TestPlatformReply_SendsStreamingFrameWithDone(t *testing.T) {
 	received := make(chan map[string]any, 4)
 	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
 		defer conn.Close()
@@ -371,12 +371,11 @@ drain:
 	payload := frames[0]["payload"].(map[string]any)
 	assert.Equal(t, "已收到消息，正在处理中，请稍候。", payload["text"])
 	assert.Equal(t, "user-1", payload["toUserId"])
-	_, hasMessageID := payload["messageId"]
-	_, hasChunkID := payload["chunkId"]
-	_, hasDone := payload["done"]
-	assert.False(t, hasMessageID)
-	assert.False(t, hasChunkID)
-	assert.False(t, hasDone)
+	messageID, hasMessageID := payload["messageId"].(string)
+	assert.True(t, hasMessageID)
+	assert.NotEmpty(t, messageID)
+	assert.EqualValues(t, 0, payload["chunkId"])
+	assert.Equal(t, true, payload["done"])
 }
 
 func TestSplitContent_KeepsUTF8RunesIntact(t *testing.T) {

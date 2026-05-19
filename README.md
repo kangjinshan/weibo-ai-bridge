@@ -2,14 +2,14 @@
 
 微博私信与本地 AI Agent CLI 的桥接服务。它通过微博开放平台 WebSocket API 接收私信，把消息路由到 Claude Code、Codex CLI、Hermes CLI 或 Gemini CLI，再把 Agent 输出流式回传到微博。
 
-它不只是把微博当成聊天入口，也把微博能力接到 Agent 工作流里：Agent 可以复用 bridge 的微博配置与 token 缓存，使用内置 skill 查询热搜和智搜、检查微博状态、参与超话互动、上传图片/视频，并生成创作者数据摘要。
+它不只是把微博当成聊天入口，也把微博能力接到 Agent 工作流里：Agent 可以复用 bridge 的微博配置与 token 缓存，使用内置 skill 查询热搜和智搜、检查微博状态、参与超话互动、上传图片/视频、管理定时任务，并生成创作者数据摘要与 V 榜/粉丝群/视频数据分析。
 
 适合用来把一台本地机器上的编码 Agent、安全审批、项目会话、微博私信入口和微博内容能力连在一起。
 
 ## 核心特性
 
 - **微博私信桥接** — 通过 WebSocket API 实时收发微博私信，长回复按自然边界分片回传。
-- **微博能力接入** — 内置 `weibo-skill-api` 让 Agent 可使用热搜/智搜、微博状态查询、超话发帖评论点赞、图片/视频上传和创作者数据摘要等能力。
+- **微博能力接入** — 内置 `weibo-skill-api` 让 Agent 可使用热搜/智搜、微博状态查询、超话发帖评论点赞、图片/视频上传、定时任务和创作者数据分析等能力。
 - **多 Agent 支持** — 支持 Claude Code、Codex CLI、Hermes CLI 和 Gemini CLI，并可在会话中切换。
 - **原生会话续接** — 优先使用各 Agent 自己的 session/thread ID，bridge 只维护索引、活动会话和少量上下文。
 - **流式交互与审批** — Agent 请求授权时可直接回复 `允许`、`允许所有` 或 `取消`；`/btw` 可向正在运行的交互式 turn 注入补充说明。
@@ -133,6 +133,33 @@ bash scripts/install.sh
 - `/super off`：
   - 关闭 Super 模式
   - 清空待注入的对侧复盘结论
+
+## 微博能力
+
+内置 `skills/weibo-skill-api/` 是 Agent 使用微博开放能力的入口。安装后，Claude/Codex/Hermes/Gemini 会拿到同一套 skill 文档和脚本；业务命令统一通过 bridge 的微博 App ID / App Secret 和 token 缓存取 token，不需要在各 Agent 侧单独执行 `login` 或维护 `~/.weibo-skill/config.json`。
+
+Agent 可以按需调用这些能力：
+
+| 能力 | 说明 | 入口命令 |
+|------|------|----------|
+| 热搜与智搜 | 查询主榜/文娱/社会/生活/ACG/科技/体育热搜；按关键词获取微博智搜摘要 | `hot-search`、`search` |
+| 微博状态 | 获取自己发布的微博列表；按 MID 或 URL 查询单条微博详情 | `status`、`status-show` |
+| 超话互动 | 查询可互动超话和帖子流；发帖、评论、回复、点赞；查询评论、置顶帖和互动消息 | `topic-details`、`timeline`、`post`、`comment`、`reply`、`comments`、`like-post` 等 |
+| 媒体上传 | 上传本地图片或视频，返回发帖可用的图片 ID / 视频媒体 ID | `pic-upload`、`video-upload` |
+| 定时任务 | 配置微博定时心跳任务，定期执行超话互动流程 | 见 `references/weibo-cron.md` |
+| 创作者数据 | 获取近 30 天阅读/发博/互动趋势、近 7 天粉丝与铁粉数据、铁粉画像、热门博文、最近 4 周 V 榜周榜得分排名，以及粉丝群和视频数据 | `creator-summary` |
+
+超话互动有两类安全约束需要特别注意：
+
+- 本地测试优先使用 `skills/weibo-skill-api/scripts/crowd_request.sh --mode dry-run` 预览请求体；真实调用时不要覆盖真实模型身份。
+- 周末酒馆板块拥有独立的每日发帖限额；其它板块触发 `42900` 频率限制时，不代表周末酒馆也不可发帖。
+
+创作者数据除了原始摘要，也包含面向 Agent 的分析规则：
+
+- 金橙 V 升级分析：按粉丝量、铁粉数和近 30 天排水阅读量计算达标情况与差距。
+- V 榜数据分析：对最近 4 周总分、排名和 9 项明细评分做趋势与同领域均值对比。
+- 粉丝群数据分析：分析群成员总数、发言人数占比、铁粉在群率和各群活跃趋势。
+- 内容效率分析：计算千阅互动数、条均阅读量、高阅读/高互动/高千阅互动博文排行。
 
 ## 配置
 
@@ -437,10 +464,10 @@ scripts/self-update.sh --ref main
 
 - 热搜榜与微博智搜
 - 微博状态查询
-- 超话发帖、评论、点赞等互动
+- 超话发帖、评论、回复、点赞、评论查询和置顶帖查询
 - 图片/视频上传
 - 定时任务
-- 创作者数据摘要
+- 创作者数据摘要、金橙 V 升级分析、V 榜分析、粉丝群分析和内容效率分析
 
 ```bash
 bash scripts/install-skills.sh

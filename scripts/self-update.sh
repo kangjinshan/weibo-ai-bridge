@@ -302,6 +302,21 @@ resolve_service_script() {
     echo ""
 }
 
+write_restart_runner() {
+    local runner="$1"
+    local restart_log="$2"
+    local service_script="$3"
+    local scope="$4"
+
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        echo 'trap '\''rm -f "$0"'\'' EXIT'
+        printf 'exec bash %q restart --scope %q >>%q 2>&1\n' "${service_script}" "${scope}" "${restart_log}"
+    } > "${runner}"
+    chmod +x "${runner}"
+}
+
 schedule_restart() {
     local service_script="$1"
 
@@ -315,11 +330,13 @@ schedule_restart() {
     fi
 
     local restart_log="${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.log"
+    local restart_runner="${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.$$.sh"
     local restart_command
     : > "${restart_log}"
     if [[ "${OS_NAME}" == "Linux" ]]; then
         restart_command="${service_script} restart --scope ${SCOPE}"
         log_info "将在 ${RESTART_DELAY}s 后重启服务: ${restart_command}"
+        write_restart_runner "${restart_runner}" "${restart_log}" "${service_script}" "${SCOPE}"
 
         if command -v systemd-run >/dev/null 2>&1; then
             local systemd_scope="${SCOPE}"
@@ -342,14 +359,8 @@ schedule_restart() {
                 "--on-active=${RESTART_DELAY}s"
                 --timer-property=AccuracySec=1s
                 "--description=${PROJECT_NAME} self-update restart"
-                bash -c 'log="$1"; shift; exec "$@" >"${log}" 2>&1'
-                _
-                "${restart_log}"
                 bash
-                "${service_script}"
-                restart
-                --scope
-                "${SCOPE}"
+                "${restart_runner}"
             )
 
             if "${systemd_run_cmd[@]}" >>"${restart_log}" 2>&1; then
@@ -360,7 +371,7 @@ schedule_restart() {
             log_warn "systemd-run 安排延迟重启失败，退回到后台进程方式；若当前脚本运行在服务 cgroup 内，可能只完成停止"
         fi
 
-        nohup bash -c 'delay="$1"; shift; sleep "${delay}"; exec "$@"' _ "${RESTART_DELAY}" bash "${service_script}" restart --scope "${SCOPE}" >"${restart_log}" 2>&1 &
+        nohup bash -c 'delay="$1"; runner="$2"; sleep "${delay}"; exec bash "${runner}"' _ "${RESTART_DELAY}" "${restart_runner}" >>"${restart_log}" 2>&1 &
     else
         restart_command="${service_script} install && ${service_script} start"
         log_info "将在 ${RESTART_DELAY}s 后刷新并启动服务: ${restart_command}"

@@ -373,16 +373,40 @@ printf '%s\n' "$@" > "${SYSTEMD_RUN_ARGS}"
 		t.Fatalf("systemd-run was not used to schedule restart: %v\n%s", err, output)
 	}
 	args := string(argsBytes)
+	if strings.Contains(args, `log="$1"; shift; exec "$@"`) {
+		t.Fatalf("systemd-run restart command must not depend on bash -c positional args:\n%s\noutput:\n%s", args, output)
+	}
 	for _, want := range []string{
 		"--user",
 		"--unit=weibo-ai-bridge-self-update-restart",
 		"bash",
-		"restart",
-		"--scope",
-		"auto",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("systemd-run args missing %q:\n%s\noutput:\n%s", want, args, output)
+		}
+	}
+
+	var runnerPath string
+	for _, line := range strings.Split(args, "\n") {
+		if strings.Contains(line, "weibo-ai-bridge-self-update-restart.") && strings.HasSuffix(line, ".sh") {
+			runnerPath = line
+			break
+		}
+	}
+	if runnerPath == "" {
+		t.Fatalf("systemd-run args missing restart runner path:\n%s\noutput:\n%s", args, output)
+	}
+	runnerBytes, err := os.ReadFile(runnerPath)
+	if err != nil {
+		t.Fatalf("read restart runner: %v\nargs:\n%s\noutput:\n%s", err, args, output)
+	}
+	runner := string(runnerBytes)
+	for _, want := range []string{
+		"service.sh restart --scope auto",
+		"weibo-ai-bridge-self-update-restart.log",
+	} {
+		if !strings.Contains(runner, want) {
+			t.Fatalf("restart runner missing %q:\n%s\nargs:\n%s\noutput:\n%s", want, runner, args, output)
 		}
 	}
 }

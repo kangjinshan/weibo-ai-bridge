@@ -401,6 +401,61 @@ func TestParseCodexAppServerMessage_FinalMessageWithoutDelta(t *testing.T) {
 	}
 }
 
+func TestParseCodexAppServerMessage_ErrorNotification(t *testing.T) {
+	session := &codexSession{}
+	session.threadID.Store("thread-1")
+	deltaSeen := make(map[string]bool)
+
+	events := parseCodexAppServerMessage(session, map[string]any{
+		"method": "error",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"error": map[string]any{
+				"message": "{\"detail\":\"The 'gpt-4' model is not supported when using Codex with a ChatGPT account.\"}",
+			},
+			"willRetry": false,
+		},
+	}, deltaSeen)
+
+	if len(events) != 1 || events[0].Type != EventTypeError {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if events[0].Error != "The 'gpt-4' model is not supported when using Codex with a ChatGPT account." {
+		t.Fatalf("unexpected error: %q", events[0].Error)
+	}
+}
+
+func TestParseCodexAppServerMessage_FailedTurnCompletedEmitsErrorBeforeDone(t *testing.T) {
+	session := &codexSession{}
+	session.threadID.Store("thread-1")
+	deltaSeen := make(map[string]bool)
+
+	events := parseCodexAppServerMessage(session, map[string]any{
+		"method": "turn/completed",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"turn": map[string]any{
+				"id":     "turn-1",
+				"status": "failed",
+				"error": map[string]any{
+					"message": "plain failure",
+				},
+			},
+		},
+	}, deltaSeen)
+
+	if len(events) != 2 {
+		t.Fatalf("expected error and done, got %+v", events)
+	}
+	if events[0].Type != EventTypeError || events[0].Error != "plain failure" {
+		t.Fatalf("unexpected error event: %+v", events[0])
+	}
+	if events[1].Type != EventTypeDone {
+		t.Fatalf("unexpected done event: %+v", events[1])
+	}
+}
+
 func TestShouldIgnoreCodexAppServerReadError(t *testing.T) {
 	err := &websocket.CloseError{Code: websocket.CloseAbnormalClosure, Text: "unexpected EOF"}
 

@@ -259,7 +259,7 @@ Bridge 采用 native-first 会话模型：真正的对话历史保存在 Claude/
 ### Agent 会话实现
 
 - **Claude** — 使用 `--output-format stream-json` 流式路径，首轮提取 `session_id`，后续用 `--resume` 继续对话。
-- **Codex** — 优先通过 `codex app-server` 获取流式增量；不可用时回退到 `codex exec --json`。bridge 会把 `thread_id` 持久化到 `codex_session_id`。
+- **Codex** — 优先通过 `codex app-server --listen stdio://` 获取流式增量；旧版 CLI 不支持 stdio 时会回退到 WebSocket app-server，不可用时再回退到 `codex exec --json`。bridge 会把 `thread_id` 持久化到 `codex_session_id`，并会把 app-server 的失败 turn / error notification 透传为可见错误事件。
 - **Hermes** — 主链路使用 `hermes acp` 交互式形态，并把 ACP `sessionId` 持久化到 `hermes_session_id`。当前 turn 仍在运行时，`/btw` 会转成 Hermes ACP `/steer` 注入。
 - **Gemini** — 使用 `gemini --output-format stream-json --prompt` 流式路径，首轮从 `init.session_id` 提取 native session ID，后续用 `--resume` 继续对话。Gemini 默认追加 `--include-directories /`，允许读取当前项目外目录；当前会话开启 `Allow All` 后会额外追加 `-y` 自动批准工具调用。
 
@@ -271,6 +271,8 @@ type = "acp"
 command = "hermes"
 args = ["acp"]
 ```
+
+交互式会话会对常见的 stale native session 做一次自动恢复：Hermes ACP 续接返回 404 resource not found 时，会清空旧 `hermes_session_id` 并新建 ACP session；Codex 续接旧线程返回 “model is not supported when using Codex with a ChatGPT account” 时，会清空旧 `codex_session_id` 并新建 Codex thread 后重试当前消息。Codex 发送阶段遇到 closed pipe、broken pipe 或 file already closed 等断管错误时，也会重建交互式 app-server 会话后重发当前输入。
 
 ### 使用示例
 
@@ -495,7 +497,7 @@ bash scripts/install-skills.sh
 |------|---------|
 | 配置验证失败 | 检查 `WEIBO_APP_ID` 和 `WEIBO_APP_SECRET`（兼容 `WEIBO_APP_Secret`） |
 | Claude 不可用 | 确认 `claude --version` 可用，API Key 已在 CLI 中配置 |
-| Codex 404 deployment | `CODEX_MODEL` 留空，让 Bridge 沿用本机 CLI 默认配置 |
+| Codex 模型不匹配 | `CODEX_MODEL` 留空，让 Bridge 沿用本机 CLI 默认配置；如果旧线程绑定了不再支持的模型，Bridge 会自动清空旧 `codex_session_id` 并用新 thread 重试一次 |
 | Hermes 不可用 | 确认 `hermes --version` 和 `hermes acp` 可用；若新 Hermes ACP 会话仍返回 404，优先检查 Hermes 当前 provider/model/deployment 配置 |
 | Gemini 不可用 | 确认 `gemini --version` 可用；若提示缺少凭证，检查本机 Gemini CLI 登录状态或 `GEMINI_API_KEY` |
 | WebSocket 断连 | 检查网络、Token 是否过期、心跳配置 |
@@ -530,7 +532,7 @@ weibo-ai-bridge/
 │   ├── claude_session.go     # Claude 交互式会话 + 审批
 │   ├── codex.go              # Codex 流式执行（app-server 优先）
 │   ├── codex_interactive_session.go  # Codex 交互式会话 + 审批
-│   ├── codex_appserver.go    # Codex app-server 客户端
+│   ├── codex_appserver.go    # Codex app-server stdio/WebSocket 客户端
 │   ├── hermes.go             # Hermes ACP 交互式会话与 CLI fallback
 │   ├── gemini.go             # Gemini stream-json 流式执行
 │   └── prompt.go             # 用户提示包装

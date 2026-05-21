@@ -463,13 +463,25 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 }
 
 func shouldRetryWithFreshNativeSession(sess *session.Session, sessionKey, errorText string) bool {
-	if sess == nil || strings.TrimSpace(sess.AgentType) != "hermes" || strings.TrimSpace(sessionKey) != "hermes_session_id" {
+	if sess == nil {
 		return false
 	}
+
 	normalized := strings.ToLower(strings.TrimSpace(errorText))
-	return strings.Contains(normalized, "api call failed after 3 retries") &&
-		strings.Contains(normalized, "http 404") &&
-		strings.Contains(normalized, "resource not found")
+
+	switch strings.TrimSpace(sess.AgentType) {
+	case "hermes":
+		return strings.TrimSpace(sessionKey) == "hermes_session_id" &&
+			strings.Contains(normalized, "api call failed after 3 retries") &&
+			strings.Contains(normalized, "http 404") &&
+			strings.Contains(normalized, "resource not found")
+	case "codex":
+		return strings.TrimSpace(sessionKey) == "codex_session_id" &&
+			strings.Contains(normalized, "model is not supported") &&
+			strings.Contains(normalized, "using codex with a chatgpt account")
+	default:
+		return false
+	}
 }
 
 func (r *Router) waitForInteractiveEventAfterLeadingDone(
@@ -561,6 +573,7 @@ func isSessionNotRunningError(err error) bool {
 	return strings.Contains(msg, "session is not running") ||
 		strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "file already closed") ||
 		strings.Contains(msg, "connection reset by peer") ||
 		strings.Contains(msg, "websocket: close sent")
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -17,7 +16,7 @@ import (
 )
 
 type codexInteractiveSession struct {
-	conn   *websocket.Conn
+	conn   codexAppServerConn
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 	ctx    context.Context
@@ -51,43 +50,30 @@ type codexPendingApproval struct {
 }
 
 func (a *CodeXAgent) StartSession(ctx context.Context, sessionID string) (InteractiveSession, error) {
-	wsURL, httpURL, err := reserveCodexAppServerURL()
-	if err != nil {
+	session, err := a.startCodexInteractiveSessionTransport(ctx, sessionID, codexAppServerTransportStdio)
+	if err == nil {
+		return session, nil
+	}
+
+	wsSession, wsErr := a.startCodexInteractiveSessionTransport(ctx, sessionID, codexAppServerTransportWebSocket)
+	if wsErr == nil {
+		return wsSession, nil
+	}
+
+	return nil, fmt.Errorf("codex app-server stdio failed: %v; websocket fallback failed: %w", err, wsErr)
+}
+
+func (a *CodeXAgent) startCodexInteractiveSessionTransport(ctx context.Context, sessionID string, transport codexAppServerTransport) (InteractiveSession, error) {
+	childCtx, cancel := context.WithCancel(ctx)
+	client := &codexAppServerClient{cancel: cancel}
+	if err := client.start(childCtx, WorkDirFromContext(ctx), transport); err != nil {
+		cancel()
 		return nil, err
 	}
 
-	childCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(childCtx, "codex", "app-server", "--listen", wsURL)
-	if workDir := WorkDirFromContext(ctx); workDir != "" {
-		cmd.Dir = workDir
-	}
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to start codex app-server: %w", err)
-	}
-
-	if err := waitForCodexAppServerReady(childCtx, httpURL+"/readyz"); err != nil {
-		cancel()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		}
-		return nil, fmt.Errorf("codex app-server not ready: %w", err)
-	}
-
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{})
-	if err != nil {
-		cancel()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		}
-		return nil, fmt.Errorf("failed to connect codex app-server websocket: %w", err)
-	}
-
 	session := &codexInteractiveSession{
-		conn:        conn,
-		cmd:         cmd,
+		conn:        client.conn,
+		cmd:         client.cmd,
 		cancel:      cancel,
 		ctx:         childCtx,
 		events:      make(chan Event, 128),
@@ -104,11 +90,11 @@ func (a *CodeXAgent) StartSession(ctx context.Context, sessionID string) (Intera
 
 	if err := session.initialize(); err != nil {
 		_ = session.Close()
-		return nil, err
+		return nil, appendCodexAppServerStderr(err, client.stderr.String())
 	}
 	if err := session.ensureThread(a.model); err != nil {
 		_ = session.Close()
-		return nil, err
+		return nil, appendCodexAppServerStderr(err, client.stderr.String())
 	}
 
 	return session, nil

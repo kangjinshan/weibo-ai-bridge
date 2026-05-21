@@ -58,8 +58,8 @@
 - `claude.go` — Claude 流式执行（`--output-format stream-json`）、`resolveTextDelta`（rune 安全增量对比）、`parseClaudeStreamEvent`/`parseClaudeStructuredStreamEvent`。
 - `claude_session.go` — Claude 交互式会话（stdin/stdout stream-json 协议）、审批（`control_request`/`control_response`）、`claudePendingApproval`。
 - `codex.go` — Codex 流式执行。`ExecuteStream` 优先走 `executeViaAppServer`，失败时回退到 `executeViaJSONCLI`。`parseCodexEvent`/`parseCodexItemCompleted`。
-- `codex_interactive_session.go` — Codex WebSocket 交互式会话。审批（`requestApproval` 系列）、`Interrupt`（turn/interrupt）、`shouldIgnoreCodexAppServerReadError`（EOF/close 1006 容错）。
-- `codex_appserver.go` — Codex app-server 客户端。自动分配端口、`waitForCodexAppServerReady`、initialize/ensureThread/startTurn、5 分钟读超时、`parseCodexAppServerMessage`（delta/completed）。
+- `codex_interactive_session.go` — Codex app-server 交互式会话，优先 stdio，兼容回退 WebSocket。审批（`requestApproval` 系列）、`Interrupt`（turn/interrupt）、`shouldIgnoreCodexAppServerReadError`（EOF/closed pipe/close 1006 容错）。
+- `codex_appserver.go` — Codex app-server 客户端。优先 `--listen stdio://`，失败时回退旧版 `ws://127.0.0.1:port` + `/readyz`；通过 JSON-RPC 执行 initialize/ensureThread/startTurn，保留 5 分钟读超时，`parseCodexAppServerMessage`（delta/completed）。
 - `hermes.go` — Hermes CLI 执行与 ACP 交互式会话。流式 fallback 仍可走 `hermes chat --quiet --source tool --query`，主链路优先启动 `hermes acp`，通过 newline-delimited JSON-RPC 的 `initialize` / `session/new|resume` / `session/prompt` 接收 `session/update` 增量、审批请求和 `done`。
 - `gemini.go` — Gemini CLI 流式执行（`--output-format stream-json --prompt`）、默认追加 `--include-directories /`、`Allow All` 时追加 `-y`、`init.session_id` 会话 ID 提取、`message/tool_use/tool_result/error/result` 事件翻译，以及 Gemini preview API 不支持 tool `id` 时的请求 payload / resume history 清理。
 - `prompt.go` — `wrapUserPrompt`。
@@ -135,9 +135,9 @@
 - Gemini preview API 当前不接受 `functionCall.id` / `functionResponse.id`，保留请求 payload sanitizer 和 resume history sanitizer；不要通过禁用工具调用来规避这个 400
 - 长回复需要保持中文安全切分，并尽量在自然边界 flush
 - 流式增量对比（delta resolution）必须按 UTF-8 rune 比较而不是按字节比较，避免在多字节中文字符中间截断
-- WebSocket 连接需要设置合理的读超时：微博平台 60 秒，Codex app-server 5 分钟
+- 连接需要设置合理的读超时：微博 WebSocket 平台 60 秒，Codex app-server stdio/WebSocket 5 分钟
 - 如果流式正文连续 5 秒没有实际输出，下一次恢复输出前应补一个换行，避免微博侧长段回复缺少视觉分隔
-- 对 Codex interactive session，`turn/completed` 之后紧跟着出现的 EOF 或 `websocket close 1006` 应按正常收尾处理，不应回给用户 `AI execution failed`
+- 对 Codex interactive session，`turn/completed` 之后紧跟着出现的 EOF、closed pipe（以及旧 WebSocket 路径的 close 1006）应按正常收尾处理，不应回给用户 `AI execution failed`
 - 对交互式会话，若新 turn 首个事件是 `done` 且在 `interactiveLeadingDoneWait` 窗口内没有任何有效信号（delta/message/approval/error），应视为 stale 会话空结束并自动重建会话后重试一次，避免用户看到“发了消息但无回复”
 - Codex `thread/resume` 续接已存在本地线程时，应避免覆盖原线程策略参数（如 approval/sandbox/model）；优先使用最小续接参数并同步事件里的 `threadId` 变化，避免“看似续接但实际分叉新线程”
 - `skills/weibo-skill-api` 默认应复用 `weibo-ai-bridge` 的微博配置与 token 缓存，不要重新引入单独的 `~/.weibo-skill/config.json`

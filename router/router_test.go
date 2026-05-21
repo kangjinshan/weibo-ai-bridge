@@ -2447,6 +2447,126 @@ func TestHandleMessage_RestartsInteractiveSessionWhenLeadingDoneHasNoFollowingSi
 	assert.Equal(t, true, platform.replies[1]["done"])
 }
 
+func TestHandleMessage_RestartsInteractiveSessionWhenSendPipeAlreadyClosed(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sendErrFn = func(input string) error {
+		return errors.New("write |1: file already closed")
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sendFn = func(input string) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "重连后恢复输出"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+	}
+	interactiveAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		return secondSession, nil
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	active := sessionMgr.Create("user-pipe-closed-1", "user-pipe-closed", "codex")
+	assert.NotNil(t, active)
+	active.SetContext("codex_session_id", "codex-existing-thread")
+	sessionMgr.SetActiveSession("user-pipe-closed", active.ID)
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	router.liveSessions[active.ID] = &interactiveSessionState{
+		agentType: "codex",
+		session:   firstSession,
+	}
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-pipe-closed",
+		Type:      weibo.MessageTypeText,
+		Content:   "继续处理这个请求",
+		UserID:    "user-pipe-closed",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"继续处理这个请求"}, firstSession.sentInputs)
+	assert.Equal(t, []string{"继续处理这个请求"}, secondSession.sentInputs)
+	assert.Equal(t, []string{"codex-existing-thread"}, interactiveAgent.startSessionIDs)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "重连后恢复输出", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
+}
+
+func TestHandleMessage_RetriesCodexWithFreshNativeSessionWhenModelUnsupported(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{
+			Type:  agent.EventTypeError,
+			Error: "The 'gpt-4' model is not supported when using Codex with a ChatGPT account.",
+		}
+		firstSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sendFn = func(input string) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "新会话已恢复"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	interactiveAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+	}
+	interactiveAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		if sessionID == "" {
+			return secondSession, nil
+		}
+		return firstSession, nil
+	}
+	agentMgr.Register(interactiveAgent)
+	agentMgr.SetDefault("codex")
+
+	active := sessionMgr.Create("user-codex-unsupported-1", "user-codex-unsupported", "codex")
+	assert.NotNil(t, active)
+	active.SetContext("codex_session_id", "codex-gpt4-thread")
+	sessionMgr.SetActiveSession("user-codex-unsupported", active.ID)
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-codex-unsupported",
+		Type:      weibo.MessageTypeText,
+		Content:   "继续处理这个请求",
+		UserID:    "user-codex-unsupported",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"codex-gpt4-thread", ""}, interactiveAgent.startSessionIDs)
+	assert.Equal(t, []string{"继续处理这个请求"}, firstSession.sentInputs)
+	assert.Equal(t, []string{"继续处理这个请求"}, secondSession.sentInputs)
+	reloaded, ok := sessionMgr.Get(active.ID)
+	assert.True(t, ok)
+	codexSID, hasCodexSID := reloaded.ContextString("codex_session_id")
+	assert.True(t, hasCodexSID)
+	assert.Equal(t, "", codexSID)
+	assert.Len(t, platform.replies, 2)
+	assert.Equal(t, "新会话已恢复", platform.replies[0]["content"])
+	assert.Equal(t, "", platform.replies[1]["content"])
+	assert.Equal(t, true, platform.replies[1]["done"])
+}
+
 func TestHandleMessage_InteractiveSessionCloseAfterDoneDoesNotFail(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})

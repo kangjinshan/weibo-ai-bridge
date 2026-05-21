@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,12 +21,39 @@ const (
 	codexAppServerReadTimeout  = 5 * time.Minute
 )
 
+type codexAppServerTransport string
+
+const (
+	codexAppServerTransportStdio     codexAppServerTransport = "stdio"
+	codexAppServerTransportWebSocket codexAppServerTransport = "websocket"
+)
+
+type codexAppServerConn interface {
+	WriteJSON(map[string]any) error
+	ReadJSON(*map[string]any) error
+	SetReadDeadline(time.Time) error
+	Close() error
+}
+
+type codexAppServerStdioConn struct {
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+
+	encoder *json.Encoder
+	decoder *json.Decoder
+
+	writeMu sync.Mutex
+}
+
+type codexAppServerWebSocketConn struct {
+	conn *websocket.Conn
+}
+
 type codexAppServerClient struct {
-	conn   *websocket.Conn
+	conn   codexAppServerConn
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 
-	stdout bytes.Buffer
 	stderr bytes.Buffer
 
 	messages chan map[string]any
@@ -33,11 +61,20 @@ type codexAppServerClient struct {
 }
 
 func (a *CodeXAgent) executeViaAppServer(ctx context.Context, session *codexSession, input string) (<-chan Event, error) {
-	wsURL, httpURL, err := reserveCodexAppServerURL()
-	if err != nil {
-		return nil, err
+	events, err := a.executeViaAppServerTransport(ctx, session, input, codexAppServerTransportStdio)
+	if err == nil {
+		return events, nil
 	}
 
+	wsEvents, wsErr := a.executeViaAppServerTransport(ctx, session, input, codexAppServerTransportWebSocket)
+	if wsErr == nil {
+		return wsEvents, nil
+	}
+
+	return nil, fmt.Errorf("codex app-server stdio failed: %v; websocket fallback failed: %w", err, wsErr)
+}
+
+func (a *CodeXAgent) executeViaAppServerTransport(ctx context.Context, session *codexSession, input string, transport codexAppServerTransport) (<-chan Event, error) {
 	childCtx, cancel := context.WithCancel(ctx)
 	client := &codexAppServerClient{
 		cancel:   cancel,
@@ -45,31 +82,11 @@ func (a *CodeXAgent) executeViaAppServer(ctx context.Context, session *codexSess
 		readErr:  make(chan error, 1),
 	}
 
-	args := []string{"app-server", "--listen", wsURL}
-	client.cmd = exec.CommandContext(childCtx, "codex", args...)
-	if workDir := WorkDirFromContext(ctx); workDir != "" {
-		client.cmd.Dir = workDir
-	}
-	client.cmd.Stdout = &client.stdout
-	client.cmd.Stderr = &client.stderr
-
-	if err := client.cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to start codex app-server: %w", err)
-	}
-
-	if err := waitForCodexAppServerReady(childCtx, httpURL+"/readyz"); err != nil {
-		client.shutdown()
-		return nil, fmt.Errorf("codex app-server not ready: %w; stderr: %s", err, strings.TrimSpace(client.stderr.String()))
-	}
-
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	err := client.start(childCtx, WorkDirFromContext(ctx), transport)
 	if err != nil {
-		client.shutdown()
-		return nil, fmt.Errorf("failed to connect codex app-server websocket: %w", err)
+		cancel()
+		return nil, err
 	}
-	client.conn = conn
-	client.conn.SetReadLimit(10 << 20)
 
 	go client.readLoop()
 
@@ -77,18 +94,18 @@ func (a *CodeXAgent) executeViaAppServer(ctx context.Context, session *codexSess
 
 	if err := client.initialize(&pending); err != nil {
 		client.shutdown()
-		return nil, err
+		return nil, appendCodexAppServerStderr(err, client.stderr.String())
 	}
 
 	threadID, err := client.startOrResumeThread(session, &pending, a.model)
 	if err != nil {
 		client.shutdown()
-		return nil, err
+		return nil, appendCodexAppServerStderr(err, client.stderr.String())
 	}
 
 	if err := client.startTurn(threadID, wrapUserPrompt(input), &pending, a.model); err != nil {
 		client.shutdown()
-		return nil, err
+		return nil, appendCodexAppServerStderr(err, client.stderr.String())
 	}
 
 	events := make(chan Event, 256)
@@ -97,6 +114,89 @@ func (a *CodeXAgent) executeViaAppServer(ctx context.Context, session *codexSess
 	go client.streamEvents(ctx, session, pending, events)
 
 	return events, nil
+}
+
+func (c *codexAppServerClient) start(ctx context.Context, workDir string, transport codexAppServerTransport) error {
+	switch transport {
+	case codexAppServerTransportStdio:
+		return c.startStdio(ctx, workDir)
+	case codexAppServerTransportWebSocket:
+		return c.startWebSocket(ctx, workDir)
+	default:
+		return fmt.Errorf("unsupported codex app-server transport: %s", transport)
+	}
+}
+
+func (c *codexAppServerClient) startStdio(ctx context.Context, workDir string) error {
+	c.cmd = exec.CommandContext(ctx, "codex", "app-server", "--listen", "stdio://")
+	if workDir != "" {
+		c.cmd.Dir = workDir
+	}
+	c.cmd.Stderr = &c.stderr
+
+	conn, err := newCodexAppServerStdioConn(c.cmd)
+	if err != nil {
+		return fmt.Errorf("failed to prepare codex app-server stdio: %w", err)
+	}
+	c.conn = conn
+
+	if err := c.cmd.Start(); err != nil {
+		c.shutdown()
+		return fmt.Errorf("failed to start codex app-server stdio: %w", err)
+	}
+
+	return nil
+}
+
+func (c *codexAppServerClient) startWebSocket(ctx context.Context, workDir string) error {
+	wsURL, httpURL, err := reserveCodexAppServerURL()
+	if err != nil {
+		return err
+	}
+
+	c.cmd = exec.CommandContext(ctx, "codex", "app-server", "--listen", wsURL)
+	if workDir != "" {
+		c.cmd.Dir = workDir
+	}
+	c.cmd.Stderr = &c.stderr
+
+	if err := c.cmd.Start(); err != nil {
+		c.shutdown()
+		return fmt.Errorf("failed to start codex app-server websocket: %w", err)
+	}
+
+	if err := waitForCodexAppServerReady(ctx, httpURL+"/readyz"); err != nil {
+		c.shutdown()
+		return appendCodexAppServerStderr(fmt.Errorf("codex app-server websocket not ready: %w", err), c.stderr.String())
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		c.shutdown()
+		return fmt.Errorf("failed to connect codex app-server websocket: %w", err)
+	}
+	conn.SetReadLimit(10 << 20)
+	c.conn = &codexAppServerWebSocketConn{conn: conn}
+
+	return nil
+}
+
+func newCodexAppServerStdioConn(cmd *exec.Cmd) (*codexAppServerStdioConn, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	return &codexAppServerStdioConn{
+		stdin:   stdin,
+		stdout:  stdout,
+		encoder: json.NewEncoder(stdin),
+		decoder: json.NewDecoder(stdout),
+	}, nil
 }
 
 func reserveCodexAppServerURL() (string, string, error) {
@@ -142,6 +242,66 @@ func waitForCodexAppServerReady(ctx context.Context, readyURL string) error {
 
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (c *codexAppServerStdioConn) WriteJSON(payload map[string]any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.encoder.Encode(payload)
+}
+
+func (c *codexAppServerStdioConn) ReadJSON(target *map[string]any) error {
+	return c.decoder.Decode(target)
+}
+
+func (c *codexAppServerStdioConn) SetReadDeadline(deadline time.Time) error {
+	deadlineWriter, ok := c.stdout.(interface {
+		SetReadDeadline(time.Time) error
+	})
+	if !ok {
+		return nil
+	}
+	return deadlineWriter.SetReadDeadline(deadline)
+}
+
+func (c *codexAppServerStdioConn) Close() error {
+	var err error
+	if c.stdin != nil {
+		err = c.stdin.Close()
+	}
+	if c.stdout != nil {
+		if closeErr := c.stdout.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	return err
+}
+
+func (c *codexAppServerWebSocketConn) WriteJSON(payload map[string]any) error {
+	return c.conn.WriteJSON(payload)
+}
+
+func (c *codexAppServerWebSocketConn) ReadJSON(target *map[string]any) error {
+	return c.conn.ReadJSON(target)
+}
+
+func (c *codexAppServerWebSocketConn) SetReadDeadline(deadline time.Time) error {
+	return c.conn.SetReadDeadline(deadline)
+}
+
+func (c *codexAppServerWebSocketConn) Close() error {
+	return c.conn.Close()
+}
+
+func appendCodexAppServerStderr(err error, stderr string) error {
+	if err == nil {
+		return nil
+	}
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return err
+	}
+	return fmt.Errorf("%w; stderr: %s", err, stderr)
 }
 
 func (c *codexAppServerClient) initialize(pending *[]map[string]any) error {
@@ -260,16 +420,12 @@ func (c *codexAppServerClient) readLoop() {
 
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(codexAppServerReadTimeout))
-		_, data, err := c.conn.ReadMessage()
-		if err != nil {
+		var msg map[string]any
+		if err := c.conn.ReadJSON(&msg); err != nil {
 			c.readErr <- err
 			return
 		}
 
-		var msg map[string]any
-		if err := json.Unmarshal(data, &msg); err != nil {
-			continue
-		}
 		c.messages <- msg
 	}
 }
@@ -365,11 +521,68 @@ func parseCodexAppServerMessage(session codexThreadSession, msg map[string]any, 
 		return events
 
 	case "turn/completed":
+		if errorText := extractCodexAppServerEventError(params); errorText != "" {
+			events = append(events, Event{Type: EventTypeError, Error: errorText})
+		}
 		events = append(events, Event{Type: EventTypeDone})
 		return events
+
+	case "error":
+		if errorText := extractCodexAppServerEventError(params); errorText != "" {
+			events = append(events, Event{Type: EventTypeError, Error: errorText})
+			return events
+		}
 	}
 
 	return events
+}
+
+func extractCodexAppServerEventError(params map[string]any) string {
+	if params == nil {
+		return ""
+	}
+
+	if errObj, _ := params["error"].(map[string]any); errObj != nil {
+		if message := normalizeCodexAppServerErrorMessage(errObj["message"]); message != "" {
+			return message
+		}
+		if details := normalizeCodexAppServerErrorMessage(errObj["additionalDetails"]); details != "" {
+			return details
+		}
+	}
+
+	if turn, _ := params["turn"].(map[string]any); turn != nil {
+		if errObj, _ := turn["error"].(map[string]any); errObj != nil {
+			if message := normalizeCodexAppServerErrorMessage(errObj["message"]); message != "" {
+				return message
+			}
+			if details := normalizeCodexAppServerErrorMessage(errObj["additionalDetails"]); details != "" {
+				return details
+			}
+		}
+	}
+
+	return ""
+}
+
+func normalizeCodexAppServerErrorMessage(value any) string {
+	message, _ := value.(string)
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(message), &payload); err == nil {
+		if detail, _ := payload["detail"].(string); strings.TrimSpace(detail) != "" {
+			return strings.TrimSpace(detail)
+		}
+		if nestedMessage, _ := payload["message"].(string); strings.TrimSpace(nestedMessage) != "" {
+			return strings.TrimSpace(nestedMessage)
+		}
+	}
+
+	return message
 }
 
 func extractRPCError(errObj map[string]any) string {

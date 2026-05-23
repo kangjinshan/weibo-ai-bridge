@@ -212,6 +212,115 @@ func TestParseMessage(t *testing.T) {
 	})
 }
 
+func TestParseMessageWS(t *testing.T) {
+	t.Run("parse WS text message", func(t *testing.T) {
+		raw := map[string]interface{}{
+			"type": "message",
+			"payload": map[string]interface{}{
+				"messageId":  "ws-msg-1",
+				"fromUserId": "1234567890",
+				"text":       "你好 hello",
+				"timestamp":  float64(1714000000),
+			},
+		}
+
+		msg, err := ParseMessage(raw)
+		assert.NoError(t, err)
+		assert.NotNil(t, msg)
+		assert.Equal(t, "ws-msg-1", msg.ID)
+		assert.Equal(t, MessageTypeText, msg.Type)
+		assert.Equal(t, "1234567890", msg.UserID)
+		assert.Equal(t, "1234567890", msg.UserName)
+		assert.Equal(t, "你好 hello", msg.Content)
+		assert.Equal(t, int64(1714000000), msg.Timestamp)
+	})
+
+	t.Run("WS user name is truncated for long ids", func(t *testing.T) {
+		longID := "12345678901234567890123456789012345"
+		raw := map[string]interface{}{
+			"type": "message",
+			"payload": map[string]interface{}{
+				"messageId":  "id",
+				"fromUserId": longID,
+				"text":       "",
+				"timestamp":  float64(1),
+			},
+		}
+
+		msg, err := ParseMessage(raw)
+		assert.NoError(t, err)
+		assert.Equal(t, longID[:32]+"…", msg.UserName)
+	})
+
+	t.Run("WS text field is optional", func(t *testing.T) {
+		raw := map[string]interface{}{
+			"type": "message",
+			"payload": map[string]interface{}{
+				"messageId":  "id",
+				"fromUserId": "u",
+				"timestamp":  float64(1),
+			},
+		}
+
+		msg, err := ParseMessage(raw)
+		assert.NoError(t, err)
+		assert.Empty(t, msg.Content)
+	})
+
+	t.Run("WS payload missing", func(t *testing.T) {
+		raw := map[string]interface{}{"type": "message"}
+		_, err := ParseMessage(raw)
+		assert.ErrorContains(t, err, "payload")
+	})
+
+	t.Run("WS payload wrong type", func(t *testing.T) {
+		raw := map[string]interface{}{"type": "message", "payload": "not-a-map"}
+		_, err := ParseMessage(raw)
+		assert.ErrorContains(t, err, "payload")
+	})
+
+	t.Run("WS missing messageId", func(t *testing.T) {
+		raw := map[string]interface{}{
+			"type": "message",
+			"payload": map[string]interface{}{
+				"fromUserId": "u",
+				"timestamp":  float64(1),
+			},
+		}
+		_, err := ParseMessage(raw)
+		assert.ErrorContains(t, err, "message id")
+	})
+
+	t.Run("WS missing fromUserId", func(t *testing.T) {
+		raw := map[string]interface{}{
+			"type": "message",
+			"payload": map[string]interface{}{
+				"messageId": "id",
+				"timestamp": float64(1),
+			},
+		}
+		_, err := ParseMessage(raw)
+		assert.ErrorContains(t, err, "from_user_id")
+	})
+
+	t.Run("WS missing timestamp", func(t *testing.T) {
+		raw := map[string]interface{}{
+			"type": "message",
+			"payload": map[string]interface{}{
+				"messageId":  "id",
+				"fromUserId": "u",
+			},
+		}
+		_, err := ParseMessage(raw)
+		assert.ErrorContains(t, err, "timestamp")
+	})
+
+	t.Run("missing type field", func(t *testing.T) {
+		_, err := ParseMessage(map[string]interface{}{})
+		assert.ErrorContains(t, err, "message type")
+	})
+}
+
 func TestMessageToJSON(t *testing.T) {
 	t.Run("convert to JSON", func(t *testing.T) {
 		msg := &Message{

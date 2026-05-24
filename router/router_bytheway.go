@@ -129,7 +129,7 @@ func (r *Router) resolveByTheWayTarget(msg *Message) (*session.Session, *interac
 		return nil, nil, "", errors.New("No live interactive session is running for the current session yet.")
 	}
 
-	if liveState.awaitingApproval {
+	if liveState.AwaitingApproval() {
 		return nil, nil, "", errors.New("Current session is waiting for approval. Reply with 允许 / 取消 / 允许所有 first.")
 	}
 

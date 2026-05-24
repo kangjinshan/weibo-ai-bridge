@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
@@ -11,10 +12,36 @@ import (
 )
 
 type interactiveSessionState struct {
-	agentType        string
-	session          agent.InteractiveSession
+	agentType string
+	session   agent.InteractiveSession
+
+	mu               sync.Mutex
 	awaitingApproval bool
 	allowAll         bool
+}
+
+func (s *interactiveSessionState) AwaitingApproval() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.awaitingApproval
+}
+
+func (s *interactiveSessionState) SetAwaitingApproval(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.awaitingApproval = v
+}
+
+func (s *interactiveSessionState) AllowAll() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.allowAll
+}
+
+func (s *interactiveSessionState) SetAllowAll(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowAll = v
 }
 
 const interactiveDoneGracePeriod = 200 * time.Millisecond
@@ -92,12 +119,12 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 		return err
 	}
 	if isSuperAutoApproveEnabled(sess) {
-		liveState.allowAll = true
+		liveState.SetAllowAll(true)
 	}
 
-	if liveState.awaitingApproval {
+	if liveState.AwaitingApproval() {
 		if isSuperAutoApproveEnabled(sess) {
-			liveState.awaitingApproval = false
+			liveState.SetAwaitingApproval(false)
 			liveState, err = r.respondInteractiveApproval(ctx, sess, sessionKey, agentSessionID, agent.ApprovalActionAllow, interactiveAgent, liveState)
 			if err != nil {
 				return err
@@ -134,9 +161,9 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 
 		allowAllRequested := action == agent.ApprovalActionAllowAll
 		if allowAllRequested {
-			liveState.allowAll = true
+			liveState.SetAllowAll(true)
 		}
-		liveState.awaitingApproval = false
+		liveState.SetAwaitingApproval(false)
 
 		liveState, err = r.respondInteractiveApproval(ctx, sess, sessionKey, agentSessionID, action, interactiveAgent, liveState)
 		if err != nil {
@@ -194,8 +221,8 @@ func (r *Router) sendAndDrainInteractiveTurn(
 	if restartErr != nil {
 		return restartErr
 	}
-	restartedState.allowAll = state.allowAll
-	restartedState.awaitingApproval = false
+	restartedState.SetAllowAll(state.AllowAll())
+	restartedState.SetAwaitingApproval(false)
 	r.discardBufferedInteractiveEvents(sess, sessionKey, restartedState)
 
 	restartedState, restartErr = r.sendInteractiveInput(ctx, sess, sessionKey, agentSessionID, input, interactiveAgent, restartedState)
@@ -226,8 +253,8 @@ func (r *Router) retryInteractiveTurnWithFreshNativeSession(
 	if restartErr != nil {
 		return restartErr
 	}
-	restartedState.allowAll = previousState.allowAll
-	restartedState.awaitingApproval = false
+	restartedState.SetAllowAll(previousState.AllowAll())
+	restartedState.SetAwaitingApproval(false)
 	r.discardBufferedInteractiveEvents(sess, sessionKey, restartedState)
 
 	restartedState, restartErr = r.sendInteractiveInput(ctx, sess, sessionKey, "", input, interactiveAgent, restartedState)
@@ -259,8 +286,8 @@ func (r *Router) respondInteractiveApproval(ctx context.Context, sess *session.S
 		if restartErr != nil {
 			return nil, restartErr
 		}
-		restartedState.allowAll = liveState.allowAll
-		restartedState.awaitingApproval = false
+		restartedState.SetAllowAll(liveState.AllowAll())
+		restartedState.SetAwaitingApproval(false)
 		if err := restartedState.session.RespondApproval(action); err != nil {
 			r.removeInteractiveSession(sess.ID)
 			return nil, err
@@ -366,7 +393,7 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 					}
 					continue
 				}
-				if liveState.allowAll {
+				if liveState.AllowAll() {
 					if err := liveState.session.RespondApproval(agent.ApprovalActionAllow); err != nil {
 						r.removeInteractiveSession(sess.ID)
 						return err
@@ -374,7 +401,7 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 					continue
 				}
 
-				liveState.awaitingApproval = true
+				liveState.SetAwaitingApproval(true)
 				emit(agent.Event{
 					Type:    agent.EventTypeApproval,
 					Content: formatApprovalPrompt(event.ToolName, event.ToolInput),
@@ -408,14 +435,14 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 							}
 							continue
 						}
-						if liveState.allowAll {
+						if liveState.AllowAll() {
 							if err := liveState.session.RespondApproval(agent.ApprovalActionAllow); err != nil {
 								r.removeInteractiveSession(sess.ID)
 								return err
 							}
 							continue
 						}
-						liveState.awaitingApproval = true
+						liveState.SetAwaitingApproval(true)
 						emit(agent.Event{
 							Type:    agent.EventTypeApproval,
 							Content: formatApprovalPrompt(event.ToolName, event.ToolInput),

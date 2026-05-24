@@ -49,6 +49,12 @@ type SessionSnapshot struct {
 }
 
 // Manager 会话管理器
+//
+// 锁顺序（从上至下）：Manager.mu  →  Session.mu
+// 持有 Manager.mu 的代码路径（Create/Delete/AdoptSessionID 等）可以再去拿
+// Session.mu，但反过来不行。先拿 Session.mu 的方法（Update、UpdateContextAtomically）
+// 必须在重入 Manager.mu 之前先释放 Session.mu —— 现有 UpdateSession /
+// UpdateSessionContextAtomically 就是这么写的，后续维护者必须保持这个约束。
 type Manager struct {
 	sessions     map[string]*Session
 	activeByUser map[string]string

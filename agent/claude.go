@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -18,9 +19,22 @@ type ClaudeCodeAgent struct {
 }
 
 type claudeStreamState struct {
+	sessionIDMu     sync.RWMutex
 	sessionID       string
 	messageSnapshot map[string]string
 	lastMessageID   string
+}
+
+func (s *claudeStreamState) storeSessionID(v string) {
+	s.sessionIDMu.Lock()
+	s.sessionID = v
+	s.sessionIDMu.Unlock()
+}
+
+func (s *claudeStreamState) loadSessionID() string {
+	s.sessionIDMu.RLock()
+	defer s.sessionIDMu.RUnlock()
+	return s.sessionID
 }
 
 // NewClaudeCodeAgent 创建新的 Claude Code Agent
@@ -190,15 +204,15 @@ func parseClaudeStreamEvent(state *claudeStreamState, raw map[string]any) []Even
 		return parseClaudeStructuredStreamEvent(state, raw)
 
 	case "system":
-		if sid, _ := raw["session_id"].(string); sid != "" && state.sessionID != sid {
-			state.sessionID = sid
+		if sid, _ := raw["session_id"].(string); sid != "" && state.loadSessionID() != sid {
+			state.storeSessionID(sid)
 			return []Event{{Type: EventTypeSession, SessionID: sid}}
 		}
 		return nil
 
 	case "assistant":
-		if sid, _ := raw["session_id"].(string); sid != "" && state.sessionID != sid {
-			state.sessionID = sid
+		if sid, _ := raw["session_id"].(string); sid != "" && state.loadSessionID() != sid {
+			state.storeSessionID(sid)
 		}
 		message, _ := raw["message"].(map[string]any)
 		messageID, _ := message["id"].(string)
@@ -224,8 +238,8 @@ func parseClaudeStreamEvent(state *claudeStreamState, raw map[string]any) []Even
 		isError, _ := raw["is_error"].(bool)
 
 		var events []Event
-		if sid != "" && state.sessionID != sid {
-			state.sessionID = sid
+		if sid != "" && state.loadSessionID() != sid {
+			state.storeSessionID(sid)
 			events = append(events, Event{Type: EventTypeSession, SessionID: sid})
 		}
 		if isError {
@@ -259,8 +273,8 @@ func parseClaudeStreamEvent(state *claudeStreamState, raw map[string]any) []Even
 func parseClaudeStructuredStreamEvent(state *claudeStreamState, raw map[string]any) []Event {
 	var events []Event
 
-	if sid, _ := raw["session_id"].(string); sid != "" && state.sessionID != sid {
-		state.sessionID = sid
+	if sid, _ := raw["session_id"].(string); sid != "" && state.loadSessionID() != sid {
+		state.storeSessionID(sid)
 		events = append(events, Event{Type: EventTypeSession, SessionID: sid})
 	}
 

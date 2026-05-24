@@ -170,7 +170,14 @@ func (s *claudeInteractiveSession) CurrentSessionID() string {
 	if s == nil || s.state == nil {
 		return ""
 	}
-	return s.state.sessionID
+	return s.state.loadSessionID()
+}
+
+func (s *claudeInteractiveSession) setSessionID(v string) {
+	if s == nil || s.state == nil {
+		return
+	}
+	s.state.storeSessionID(v)
 }
 
 func (s *claudeInteractiveSession) Close() error {

@@ -46,6 +46,7 @@ type Handler interface {
 
 // Router 消息路由器
 type Router struct {
+	handlersMu     sync.RWMutex
 	handlers       map[MessageType]Handler
 	defaultHandler Handler
 	platform       PlatformInterface
@@ -102,11 +103,15 @@ func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr
 
 // Register 注册处理器
 func (r *Router) Register(msgType MessageType, handler Handler) {
+	r.handlersMu.Lock()
+	defer r.handlersMu.Unlock()
 	r.handlers[msgType] = handler
 }
 
 // SetDefault 设置默认处理器
 func (r *Router) SetDefault(handler Handler) {
+	r.handlersMu.Lock()
+	defer r.handlersMu.Unlock()
 	r.defaultHandler = handler
 }
 
@@ -161,7 +166,9 @@ func (r *Router) Route(msg *Message) (*Response, error) {
 		return nil, errors.New("message cannot be nil")
 	}
 
+	r.handlersMu.RLock()
 	handler, exists := r.handlers[msg.Type]
+	r.handlersMu.RUnlock()
 	if !exists {
 		return nil, errors.New("no handler for message type: " + string(msg.Type))
 	}
@@ -171,6 +178,8 @@ func (r *Router) Route(msg *Message) (*Response, error) {
 
 // GetHandler 获取处理器
 func (r *Router) GetHandler(msgType MessageType) (Handler, bool) {
+	r.handlersMu.RLock()
+	defer r.handlersMu.RUnlock()
 	handler, exists := r.handlers[msgType]
 	return handler, exists
 }

@@ -79,6 +79,9 @@ type messageProcessor struct {
 	queuedMessages  map[string][]*weibo.Message
 	lastQueueNotice map[string]time.Time
 	nextRunID       int64
+
+	busySlashMu       sync.Mutex
+	busySlashInFlight map[string]bool
 }
 
 type activeRun struct {
@@ -106,6 +109,7 @@ func newMessageProcessor(platform replyPlatform, router messageHandler, logger *
 		activeRuns:          make(map[string]activeRun),
 		queuedMessages:      make(map[string][]*weibo.Message),
 		lastQueueNotice:     make(map[string]time.Time),
+		busySlashInFlight:   make(map[string]bool),
 	}
 }
 
@@ -509,7 +513,21 @@ func (p *messageProcessor) tryHandleBusySlashCommand(ctx context.Context, msg *w
 		return false
 	}
 
+	p.busySlashMu.Lock()
+	if p.busySlashInFlight[msg.UserID] {
+		p.busySlashMu.Unlock()
+		// 已有同用户的旁路 slash 命令在执行，丢弃这条避免 goroutine 堆叠。
+		return true
+	}
+	p.busySlashInFlight[msg.UserID] = true
+	p.busySlashMu.Unlock()
+
 	go func() {
+		defer func() {
+			p.busySlashMu.Lock()
+			delete(p.busySlashInFlight, msg.UserID)
+			p.busySlashMu.Unlock()
+		}()
 		if err := p.router.HandleMessage(ctx, msg); err != nil && !router.IsBenignCancellation(err) {
 			p.logger.Printf("Failed to handle slash command immediately: id=%s, error=%v", msg.ID, err)
 		}

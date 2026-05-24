@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1019,4 +1020,57 @@ func TestChatStreamHandler_RejectsMissingContent(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "content is required")
+}
+
+type concurrencyCountingRouter struct {
+	concurrent atomic.Int32
+	peak       atomic.Int32
+	work       time.Duration
+}
+
+func (r *concurrencyCountingRouter) HandleMessage(ctx context.Context, msg *weibo.Message) error {
+	n := r.concurrent.Add(1)
+	for {
+		cur := r.peak.Load()
+		if n <= cur || r.peak.CompareAndSwap(cur, n) {
+			break
+		}
+	}
+	time.Sleep(r.work)
+	r.concurrent.Add(-1)
+	return nil
+}
+
+func (r *concurrencyCountingRouter) InjectByTheWay(ctx context.Context, msg *weibo.Message) (bool, error) {
+	return false, nil
+}
+
+func TestTryHandleBusySlashCommandSerializesPerUser(t *testing.T) {
+	r := &concurrencyCountingRouter{work: 50 * time.Millisecond}
+	p := newMessageProcessor(nil, r, log.New(os.Stdout, "", 0))
+
+	p.mu.Lock()
+	p.inFlightUsers["u1"] = struct{}{}
+	p.mu.Unlock()
+
+	const N = 20
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.tryHandleBusySlashCommand(context.Background(), &weibo.Message{
+				ID:      "m",
+				UserID:  "u1",
+				Content: "/help",
+			})
+		}()
+	}
+	wg.Wait()
+
+	time.Sleep(2 * time.Second)
+
+	if r.peak.Load() > 1 {
+		t.Fatalf("expected at most 1 concurrent slash handler per user, peak was %d", r.peak.Load())
+	}
 }

@@ -48,8 +48,9 @@ type Platform struct {
 	messageChan chan *Message
 	logger      *log.Logger
 
-	dedupMu sync.Mutex
-	dedup   map[string]time.Time
+	dedupMu     sync.Mutex
+	dedup       map[string]time.Time
+	lastDedupGC time.Time
 
 	wg sync.WaitGroup
 }
@@ -584,11 +585,15 @@ func (p *Platform) isDuplicate(msg *Message) bool {
 
 	p.dedup[key] = time.Now()
 
-	// 清理旧记录
-	for k, t := range p.dedup {
-		if time.Since(t) > 5*time.Minute {
-			delete(p.dedup, k)
+	// 仅在距上次清理超过 1 分钟时做一次全量 GC，避免每条消息都 O(N) 扫描。
+	now := time.Now()
+	if now.Sub(p.lastDedupGC) > time.Minute {
+		for k, t := range p.dedup {
+			if now.Sub(t) > 5*time.Minute {
+				delete(p.dedup, k)
+			}
 		}
+		p.lastDedupGC = now
 	}
 
 	return false

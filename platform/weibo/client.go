@@ -126,7 +126,13 @@ func (p *Platform) refreshToken(ctx context.Context) error {
 	}
 
 	// POST 请求获取 token
-	resp, err := p.httpClient.Post(p.tokenURL, "application/json", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.tokenURL, strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("build token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch token: %w", err)
 	}
@@ -159,6 +165,7 @@ func (p *Platform) refreshToken(ctx context.Context) error {
 	p.tokenMutex.Lock()
 	p.token = tokenResp.Data.Token
 	p.tokenExpire = time.Now().Add(time.Duration(tokenResp.Data.ExpireIn-60) * time.Second)
+	loggedToken := p.token
 	p.tokenMutex.Unlock()
 
 	p.uidOnce.Do(func() {
@@ -166,10 +173,10 @@ func (p *Platform) refreshToken(ctx context.Context) error {
 	})
 
 	p.logger.Printf("✅ Token refreshed successfully")
-	if len(p.token) > 20 {
-		p.logger.Printf("   Token: %s...", p.token[:20])
+	if len(loggedToken) > 20 {
+		p.logger.Printf("   Token: %s...", loggedToken[:20])
 	} else {
-		p.logger.Printf("   Token: %s", p.token)
+		p.logger.Printf("   Token: %s", loggedToken)
 	}
 	p.logger.Printf("   Expires in: %d seconds", tokenResp.Data.ExpireIn)
 	return nil
@@ -588,12 +595,18 @@ func (p *Platform) isDuplicate(msg *Message) bool {
 
 // reconnect 重新连接
 func (p *Platform) reconnect(ctx context.Context) error {
-	// 刷新 token
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if err := p.refreshToken(ctx); err != nil {
 		return err
 	}
 
-	// 重新连接
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	return p.connect()
 }
 

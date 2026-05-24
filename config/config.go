@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -108,8 +109,8 @@ func Load() *Config {
 	configPath := preloadEnvFiles()
 
 	// 从配置文件加载
-	if _, err := toml.DecodeFile(configPath, cfg); err == nil {
-		// 配置文件加载成功，继续使用
+	if _, err := toml.DecodeFile(configPath, cfg); err != nil && !os.IsNotExist(err) {
+		log.Printf("config: failed to decode %s: %v", configPath, err)
 	}
 
 	// 环境变量覆盖
@@ -167,12 +168,18 @@ func Load() *Config {
 		cfg.Log.Output = val
 	}
 	if val := os.Getenv("SESSION_TIMEOUT"); val != "" {
-		timeout, _ := strconv.Atoi(val)
-		cfg.Session.Timeout = timeout
+		if timeout, err := strconv.Atoi(val); err != nil {
+			log.Printf("config: SESSION_TIMEOUT is not an integer (%q), keeping default", val)
+		} else {
+			cfg.Session.Timeout = timeout
+		}
 	}
 	if val := os.Getenv("SESSION_MAX_SIZE"); val != "" {
-		maxSize, _ := strconv.Atoi(val)
-		cfg.Session.MaxSize = maxSize
+		if maxSize, err := strconv.Atoi(val); err != nil {
+			log.Printf("config: SESSION_MAX_SIZE is not an integer (%q), keeping default", val)
+		} else {
+			cfg.Session.MaxSize = maxSize
+		}
 	}
 	if val := os.Getenv("SESSION_STORAGE_PATH"); val != "" {
 		cfg.Session.StoragePath = val

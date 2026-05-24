@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -198,4 +201,37 @@ output = "stdout"
 	assert.True(t, cfg.Agent.Codex.Enabled)
 	assert.True(t, cfg.Agent.Hermes.Enabled)
 	assert.True(t, cfg.Agent.Gemini.Enabled)
+}
+
+func TestLoadLogsTOMLDecodeError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("this is = not valid = toml ====\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_PATH", path)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	_ = Load()
+
+	if !strings.Contains(buf.String(), "config.toml") {
+		t.Fatalf("expected config.toml mention in log, got: %s", buf.String())
+	}
+}
+
+func TestLoadLogsBadSessionTimeoutEnv(t *testing.T) {
+	t.Setenv("SESSION_TIMEOUT", "not-a-number")
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	_ = Load()
+
+	if !strings.Contains(buf.String(), "SESSION_TIMEOUT") {
+		t.Fatalf("expected SESSION_TIMEOUT mention in log, got: %s", buf.String())
+	}
 }

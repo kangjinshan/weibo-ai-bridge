@@ -236,7 +236,7 @@ func (p *Platform) Start(ctx context.Context) error {
 	p.logger.Printf("✅ Platform started successfully")
 
 	// 启动心跳
-	p.wg.Add(2)
+	p.wg.Add(3)
 	go func() {
 		defer p.wg.Done()
 		p.heartbeatLoop(childCtx)
@@ -249,6 +249,7 @@ func (p *Platform) Start(ctx context.Context) error {
 	}()
 
 	go func() {
+		defer p.wg.Done()
 		<-childCtx.Done()
 		p.closeConnection()
 	}()

@@ -225,10 +225,27 @@ func (s *codexInteractiveSession) Close() error {
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
-		_, _ = s.cmd.Process.Wait()
+		waitDone := make(chan struct{})
+		go func() {
+			_, _ = s.cmd.Process.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-time.After(2 * time.Second):
+		}
 	}
-	<-s.readDone
+	select {
+	case <-s.readDone:
+	case <-time.After(2 * time.Second):
+	}
 	return nil
+}
+
+func (s *codexInteractiveSession) cleanupPendingRespOnCancel(id string) {
+	s.pendingRespMu.Lock()
+	defer s.pendingRespMu.Unlock()
+	delete(s.pendingResp, id)
 }
 
 func (s *codexInteractiveSession) initialize() error {
@@ -300,6 +317,7 @@ func (s *codexInteractiveSession) requestWithID(id, method string, params map[st
 
 	select {
 	case <-s.ctx.Done():
+		s.cleanupPendingRespOnCancel(id)
 		return nil, s.ctx.Err()
 	case resp, ok := <-respCh:
 		if !ok {

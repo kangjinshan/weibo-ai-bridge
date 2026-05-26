@@ -129,6 +129,8 @@ func (h *CommandHandler) handleHelp() (*Response, error) {
 /hermes - 等价于 /switch hermes（大小写不敏感）
 /gemini - 等价于 /switch gemini（大小写不敏感）
 /btw [content] - 向当前正在进行的交互会话插入一条补充消息
+/listen [number] - 监听当前或 /list 编号对应的原生会话日志
+/unlisten - 停止当前监听
 /model - 显示当前使用的模型
 /dir [path] - 显示或设置当前工作目录
 /status - 显示当前会话状态

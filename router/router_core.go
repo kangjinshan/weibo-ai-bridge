@@ -58,11 +58,20 @@ type Router struct {
 	superReviewMu  sync.Mutex
 	superReviews   map[string]superReviewRun
 	nextReviewID   int64
+	listenMu       sync.Mutex
+	listenRuns     map[string]listenRun
+	nextListenID   int64
 }
 
 type superReviewRun struct {
 	id     int64
 	cancel context.CancelFunc
+}
+
+type listenRun struct {
+	id     int64
+	cancel context.CancelFunc
+	target NativeSession
 }
 
 // PlatformInterface 平台接口
@@ -87,6 +96,7 @@ func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr
 		agentMgr:     agentMgr,
 		liveSessions: make(map[string]*interactiveSessionState),
 		superReviews: make(map[string]superReviewRun),
+		listenRuns:   make(map[string]listenRun),
 	}
 
 	if sessionMgr != nil && agentMgr != nil {
@@ -124,7 +134,7 @@ func (r *Router) Handle(msg *Message) (*Response, error) {
 	content := strings.TrimSpace(msg.Content)
 
 	if strings.HasPrefix(content, "/") && r.commandHandler != nil {
-		if isByTheWayCommand(content) {
+		if isSpecialRouterCommand(content) {
 			return r.handleByTheWaySync(context.Background(), msg)
 		}
 		return r.commandHandler.Handle(msg)

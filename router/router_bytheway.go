@@ -16,6 +16,10 @@ func isByTheWayCommand(content string) bool {
 	return len(parts) > 0 && parts[0] == "/btw"
 }
 
+func isSpecialRouterCommand(content string) bool {
+	return isByTheWayCommand(content) || isListenCommand(content) || isUnlistenCommand(content)
+}
+
 func (r *Router) handleByTheWaySync(ctx context.Context, msg *Message) (*Response, error) {
 	stream, err := r.streamRouterMessage(ctx, msg)
 	if err != nil {
@@ -51,6 +55,12 @@ func (r *Router) handleByTheWaySync(ctx context.Context, msg *Message) (*Respons
 }
 
 func (r *Router) emitSpecialCommandEvents(ctx context.Context, events chan<- agent.Event, msg *Message) (bool, error) {
+	if isListenCommand(msg.Content) {
+		return true, r.handleListenCommand(ctx, msg, events)
+	}
+	if isUnlistenCommand(msg.Content) {
+		return true, r.handleUnlistenCommand(msg, events)
+	}
 	if !isByTheWayCommand(msg.Content) {
 		return false, nil
 	}

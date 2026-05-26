@@ -38,7 +38,7 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 
 	routerMsg := r.toRouterMessage(msg)
 	content := strings.TrimSpace(routerMsg.Content)
-	if strings.HasPrefix(content, "/") && !isByTheWayCommand(content) && r.commandHandler != nil {
+	if strings.HasPrefix(content, "/") && !isSpecialRouterCommand(content) && r.commandHandler != nil {
 		return r.handleSlashCommandDirect(ctx, routerMsg)
 	}
 

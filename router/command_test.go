@@ -59,6 +59,8 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.Contains(t, resp.Content, "/codex")
 	assert.Contains(t, resp.Content, "/hermes")
 	assert.Contains(t, resp.Content, "/btw")
+	assert.Contains(t, resp.Content, "/listen")
+	assert.Contains(t, resp.Content, "/unlisten")
 	assert.Contains(t, resp.Content, "/model")
 	assert.Contains(t, resp.Content, "/dir")
 	assert.Contains(t, resp.Content, "/status")

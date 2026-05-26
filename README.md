@@ -13,7 +13,8 @@
 - **多 Agent 支持** — 支持 Claude Code、Codex CLI、Hermes CLI 和 Gemini CLI，并可在会话中切换。
 - **原生会话续接** — 优先使用各 Agent 自己的 session/thread ID，bridge 只维护索引、活动会话和少量上下文。
 - **流式交互与审批** — Agent 请求授权时可直接回复 `允许`、`允许所有` 或 `取消`；`/btw` 可向正在运行的交互式 turn 注入补充说明。
-- **命令即时响应** — `/help`、`/status`、`/super` 等 slash 命令会旁路普通消息队列，避免被长任务堵住。
+- **命令即时响应** — `/help`、`/status`、`/super`、`/listen` 等 slash 命令会旁路普通消息队列，避免被长任务堵住。
+- **原生会话监听** — `/listen` 可按 `/list` 编号监听 Claude/Codex/Hermes/Gemini 的本地原生日志，实时把新增对话内容回传到微博，`/unlisten` 停止监听。
 - **Super 协作模式** — `/super on` 会开启当前会话的 `Allow All`，并在主 Agent 回复后异步调用对侧 Agent 复盘，把结论注入下一轮。
 - **安全自升级** — `/upgrade` 会先比较本地和目标 Git commit；确实有新版本时才构建替换，并在当前回复发出后延迟重启。
 - **统一微博凭证** — 内置微博 Skills 复用 bridge 的微博配置与 token 缓存，不需要为每个 Agent 单独维护一套微博凭证。
@@ -104,6 +105,8 @@ bash scripts/install.sh
 | `/hermes` | 等价于 `/switch hermes`（大小写不敏感） |
 | `/gemini` | 等价于 `/switch gemini`（大小写不敏感） |
 | `/btw <内容>` | 向当前交互式会话注入补充信息（若当前在审批等待态，需先回复 `允许` / `取消` / `允许所有`） |
+| `/listen [编号]` | 监听当前活跃原生会话，或监听 `/list` 中指定编号的原生会话日志；不会向 Agent 发送输入 |
+| `/unlisten` | 停止当前用户正在进行的监听 |
 | `/model` | 显示当前使用的模型 |
 | `/dir [path]` | 显示当前工作目录；传 `path` 时设置当前会话工作目录 |
 | `/status` | 显示当前会话状态（`session_id` 缺失时自动回退到当前活跃会话） |
@@ -253,6 +256,7 @@ Bridge 采用 native-first 会话模型：真正的对话历史保存在 Claude/
 - `/new [agent]` 用于准备下一条消息的新原生会话，不会提前创建 bridge 自增会话。
 - `/list` 会扫描本机 Agent 的原生会话，并显示可切换编号、标题、目录和时间。
 - `/switch <编号>` 切换到 `/list` 中的原生会话；`/switch <agent>` 或 `/claude`、`/codex`、`/hermes`、`/gemini` 切换当前会话的 Agent 类型。
+- `/listen` 会监听当前活跃原生会话；`/listen <编号>` 使用 `/list` 的当前编号监听对应原生会话。监听只 tail 本地日志，不会 resume、不会注入输入，也不会打断正在运行的对话。发送 `/unlisten` 停止监听。
 - 会话索引默认持久化到 `~/.config/weibo-ai-bridge/sessions/`，服务重启后可恢复。
 - 新版本首次启动时会自动导入旧版 `data/sessions/` 数据。
 
@@ -520,6 +524,7 @@ weibo-ai-bridge/
 │   ├── router_interactive.go # 交互式会话管理、liveSessions
 │   ├── router_approval.go    # 审批提示与同义词解析
 │   ├── router_bytheway.go    # /btw 插话
+│   ├── listen.go             # /listen 原生日志监听
 │   ├── stream_sender.go      # 流式分片发送器、边界感知 flush
 │   ├── agent_repair.go       # Agent 可用性自动修复
 │   ├── native_sessions.go    # 原生会话扫描（.jsonl、sessions-index、history.jsonl）

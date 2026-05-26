@@ -113,6 +113,24 @@ bash scripts/install.sh
 | `/super [on\|off\|status]` | 管理 Super 模式；`on` 等价于对当前会话开启 `Allow All` |
 | `/upgrade [--ref branch\|tag]` | 先比对本地与 GitHub 目标版本；不一致时下载、编译安装，并在当前回复发出后延迟重启服务 |
 
+### 监听原生会话
+
+`/listen` 用来旁听本机已有的 Claude/Codex/Hermes/Gemini 原生会话。它只读取本地会话日志的新内容并转发到微博，不会向 Agent 发送输入，不会 resume 会话，也不会打断正在运行的对话。
+
+常见用法：
+
+```text
+/listen
+/listen 3
+/unlisten
+```
+
+- `/listen`：监听当前用户的活跃原生会话。
+- `/listen <编号>`：监听 `/list` 当前显示顺序中对应编号的原生会话。
+- `/unlisten`：停止当前用户正在进行的监听。
+- 同一用户再次发送 `/listen` 会替换旧监听。
+- 监听输出只保留用户与 AI 的对话正文；工具调用、工具输出、推理块和 Codex 重复写入的 `event_msg.agent_message` 会被过滤，避免微博侧看到工具噪音或重复消息。
+
 ### 授权回复
 
 当 Agent 请求授权时，直接回复以下任意词汇：

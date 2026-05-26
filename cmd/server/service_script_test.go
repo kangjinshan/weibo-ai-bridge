@@ -9,6 +9,82 @@ import (
 	"testing"
 )
 
+func TestServiceScriptTemplatesPersistLinuxScope(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+
+	templateBytes, err := os.ReadFile(filepath.Join(repoRoot, "deploy", "weibo-ai-bridge.service.tmpl"))
+	if err != nil {
+		t.Fatalf("read systemd template: %v", err)
+	}
+	if !strings.Contains(string(templateBytes), "Environment=WEIBO_AI_BRIDGE_SCOPE=__SCOPE__") {
+		t.Fatalf("systemd template must persist the resolved Linux service scope:\n%s", templateBytes)
+	}
+
+	scriptBytes, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "service.sh"))
+	if err != nil {
+		t.Fatalf("read service script: %v", err)
+	}
+	if !strings.Contains(string(scriptBytes), "__SCOPE__") {
+		t.Fatalf("service script must render the Linux service scope into the unit")
+	}
+}
+
+func TestServiceScriptLinuxUserInstallPersistsUserScope(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	scriptPath, err := filepath.Abs(filepath.Join(repoRoot, "scripts", "service.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tmp := t.TempDir()
+	fakeBin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	writeExecutable(t, filepath.Join(fakeBin, "uname"), `#!/usr/bin/env bash
+echo Linux
+`)
+	writeExecutable(t, filepath.Join(fakeBin, "systemctl"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$SYSTEMCTL_CALLS"
+`)
+
+	targetBin := filepath.Join(tmp, "weibo-ai-bridge")
+	if err := os.WriteFile(targetBin, []byte("fake binary"), 0o755); err != nil {
+		t.Fatalf("write target binary: %v", err)
+	}
+
+	systemctlCalls := filepath.Join(tmp, "systemctl-calls.txt")
+	cmd := exec.Command("bash", scriptPath, "install", "--scope", "user")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"HOME="+tmp,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SYSTEMCTL_CALLS="+systemctlCalls,
+		"WEIBO_AI_BRIDGE_BIN="+targetBin,
+		"WEIBO_AI_BRIDGE_CONFIG_PATH="+filepath.Join(repoRoot, "config", "config.toml"),
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("service install failed: %v\n%s", err, output)
+	}
+
+	unitPath := filepath.Join(tmp, ".config", "systemd", "user", "weibo-ai-bridge.service")
+	unitBytes, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read generated unit: %v\n%s", err, output)
+	}
+	unit := string(unitBytes)
+	if !strings.Contains(unit, "Environment=WEIBO_AI_BRIDGE_SCOPE=user") {
+		t.Fatalf("generated user unit should persist user scope:\n%s", unit)
+	}
+	if strings.Contains(unit, "__SCOPE__") {
+		t.Fatalf("generated user unit still contains scope placeholder:\n%s", unit)
+	}
+}
+
 func TestServiceScriptMacOSRestartInstallsBeforeStart(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS launchd script behavior")

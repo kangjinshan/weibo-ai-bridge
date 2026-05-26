@@ -454,6 +454,7 @@ macOS 权限提示说明：
 说明：
 - 统一入口脚本会根据系统自动选择 Linux `systemd` 或 macOS `launchd`
 - 服务进程通过 `CONFIG_PATH` 读取 TOML，并按现有逻辑自动尝试加载 `.env`
+- Linux systemd unit 会写入 `WEIBO_AI_BRIDGE_SCOPE=system|user`，避免 `/upgrade` 从非 root 的 system service 里误判成 `systemctl --user`
 - 模板文件位于 `deploy/weibo-ai-bridge.service.tmpl` 与 `deploy/com.weibo-ai-bridge.plist.tmpl`
 
 ### 安全自升级
@@ -465,6 +466,8 @@ macOS 权限提示说明：
 ```
 
 服务会先读取本地二进制的 commit，再查询 GitHub 目标 ref 的 commit；两边一致时直接回复“已经是最新版本”，不下载、不编译、不重启。只有版本不一致时，才会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由延迟任务重启服务。Linux 下优先使用 `systemd-run` 创建 transient timer/service，避免重启任务随旧 bridge 进程一起被 systemd 清理。
+
+如果 bridge 安装为 Linux 系统级 systemd 服务，unit 里应包含 `Environment=WEIBO_AI_BRIDGE_SCOPE=system`。通过当前 `scripts/service.sh install --scope system` 重新安装 unit 会自动写入该环境变量。若服务进程使用非 root 用户运行，系统级重启仍需要该用户具备非交互式 systemd 管理权限；脚本会优先尝试 `sudo -n systemd-run` 安排延迟重启。没有权限时升级可能只完成二进制替换，需要用 root 执行一次 `systemctl restart weibo-ai-bridge.service` 来加载新版本。
 
 不要在 Agent 普通对话里直接执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，这些命令会先杀掉承载当前回复的 bridge 进程，导致升级流程和对话中断。
 

@@ -164,7 +164,7 @@ func (h *CommandHandler) handleUpgrade(args []string) (*Response, error) {
 	} else if result.RestartScheduled {
 		content += " 已安排服务延迟重启，当前回复发出后再切换到新版本。"
 	} else {
-		content += " 未检测到可用的服务管理脚本，请手动重启服务以运行新版本。"
+		content += " 未能安排自动重启，请手动重启服务以运行新版本。"
 	}
 	if output != "" {
 		content += "\n\n输出:\n" + output

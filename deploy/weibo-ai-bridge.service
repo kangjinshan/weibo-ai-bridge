@@ -12,6 +12,7 @@ Restart=on-failure
 RestartSec=5
 Environment=PATH=/home/weibo/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=CONFIG_PATH=/etc/weibo-ai-bridge/config.toml
+Environment=WEIBO_AI_BRIDGE_SCOPE=system
 EnvironmentFile=-/etc/weibo-ai-bridge/.env
 
 [Install]

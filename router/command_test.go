@@ -166,6 +166,32 @@ func TestCommandHandler_Handle_UpgradeAlreadyCurrent(t *testing.T) {
 	assert.NotContains(t, resp.Content, "延迟重启")
 }
 
+func TestCommandHandler_Handle_UpgradeCompletedWithoutRestartSchedule(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+	updater := &stubSelfUpdater{
+		result: selfUpdateResult{
+			Output: "无法以非 root 用户安排 system scope 重启",
+		},
+	}
+	handler.SetSelfUpdater(updater)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-upgrade-manual-restart",
+		Type:    TypeText,
+		Content: "/upgrade",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "请手动重启服务")
+	assert.NotContains(t, resp.Content, "未检测到可用的服务管理脚本")
+	assert.Contains(t, resp.Content, "无法以非 root 用户安排 system scope 重启")
+}
+
 func TestCommandHandler_Handle_List(t *testing.T) {
 	isolateNativeSessionSources(t)
 

@@ -350,6 +350,9 @@ schedule_restart() {
 
             local -a systemd_run_cmd
             systemd_run_cmd=(systemd-run)
+            if [[ "${systemd_scope}" == "system" && "${EUID}" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+                systemd_run_cmd=(sudo -n systemd-run)
+            fi
             if [[ "${systemd_scope}" == "user" ]]; then
                 systemd_run_cmd+=(--user)
             fi
@@ -366,6 +369,10 @@ schedule_restart() {
             if "${systemd_run_cmd[@]}" >>"${restart_log}" 2>&1; then
                 echo "WEIBO_AI_BRIDGE_RESTART_SCHEDULED=1"
                 log_success "延迟重启已安排，日志: ${restart_log}"
+                return
+            fi
+            if [[ "${systemd_scope}" == "system" && "${EUID}" -ne 0 ]]; then
+                log_warn "无法以非 root 用户安排 system scope 重启；请用 root 执行: systemctl restart ${PROJECT_NAME}.service"
                 return
             fi
             log_warn "systemd-run 安排延迟重启失败，退回到后台进程方式；若当前脚本运行在服务 cgroup 内，可能只完成停止"

@@ -127,6 +127,7 @@
 - 当用户已有普通消息在处理中时，其它 slash 指令应旁路消息队列并立即执行；不要把 `/help`、`/status` 之类命令排到当前回复之后
 - 从微博对话里升级 bridge 时优先使用 `/upgrade` 或 `scripts/self-update.sh`；不要在普通 Agent turn 中直接同步执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，否则会先终止承载当前回复的 bridge 进程
 - `/upgrade` 必须先比较本地二进制 commit 与 GitHub 目标 ref commit；一致时直接回复已是最新，不应下载、编译或重启
+- Linux systemd unit 必须持久化 `WEIBO_AI_BRIDGE_SCOPE=system|user`，避免 system service 中的非 root 进程把 `/upgrade` 延迟重启误判为 `systemctl --user`；system scope 的非 root 延迟重启只能使用非交互式 `sudo -n systemd-run`，无权限时不要回报已安排重启
 - Codex 优先走 `codex app-server` 流式路径，失败时才回退到 JSON CLI 路径
 - Hermes 主链路走 `hermes acp` 交互式形态，按 ACP `sessionId` 持久化到 `hermes_session_id`；`/btw` 在 Hermes turn 运行中会转成 ACP `/steer` 注入当前 turn；一次性 `hermes chat --quiet --source tool --query` 仅作为流式 fallback 保留
 - Hermes 的 ACP 接入方式与 `cc-connect` 的通用 ACP agent 一致：`type = "acp"`、`command = "hermes"`、`args = ["acp"]`，协议为 stdin/stdout 上的 newline-delimited JSON-RPC

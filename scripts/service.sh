@@ -239,6 +239,10 @@ systemctl_cmd() {
         echo "systemctl --user"
         return
     fi
+    if [[ "${EUID}" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+        echo "sudo -n systemctl"
+        return
+    fi
     echo "systemctl"
 }
 
@@ -283,6 +287,7 @@ install_linux_systemd() {
         -e "s/__EXECSTART__/$(escape_sed "${execstart}")/g" \
         -e "s/__PATH__/$(escape_sed "${path_value}")/g" \
         -e "s/__CONFIG_PATH__/$(escape_sed "${config_path}")/g" \
+        -e "s/__SCOPE__/$(escape_sed "${scope}")/g" \
         -e "s/__ENV_FILE__/$(escape_sed "${env_file}")/g" \
         -e "s/__WANTED_BY__/$(escape_sed "${wanted_by}")/g" \
         "${template}" > "${unit_path}"

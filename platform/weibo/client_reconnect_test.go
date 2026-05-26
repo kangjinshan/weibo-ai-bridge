@@ -2,8 +2,10 @@ package weibo
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestReconnectRespectsCancelledContext(t *testing.T) {
@@ -44,3 +46,39 @@ func TestStopWaitsForCloseGoroutine(t *testing.T) {
 }
 
 var _ = sync.Mutex{}
+
+func TestNextReconnectDelayExponentialBackoffWithCap(t *testing.T) {
+	tests := []struct {
+		current time.Duration
+		want    time.Duration
+	}{
+		{current: 0, want: time.Second},
+		{current: time.Second, want: 2 * time.Second},
+		{current: 2 * time.Second, want: 4 * time.Second},
+		{current: 16 * time.Second, want: 30 * time.Second},
+		{current: 30 * time.Second, want: 30 * time.Second},
+	}
+
+	for _, tt := range tests {
+		if got := nextReconnectDelay(tt.current); got != tt.want {
+			t.Fatalf("nextReconnectDelay(%s) = %s, want %s", tt.current, got, tt.want)
+		}
+	}
+}
+
+func TestShouldStopReconnectAfterRepeatedAuthFailures(t *testing.T) {
+	authErr := errors.New("token error: invalid credentials (code: 40003)")
+	nonAuthErr := errors.New("dial tcp: connection refused")
+
+	for failures := 1; failures < maxReconnectAuthFailures; failures++ {
+		if shouldStopReconnectAfterFailure(authErr, failures) {
+			t.Fatalf("auth failure %d stopped reconnect before threshold", failures)
+		}
+	}
+	if !shouldStopReconnectAfterFailure(authErr, maxReconnectAuthFailures) {
+		t.Fatalf("auth failure %d did not stop reconnect", maxReconnectAuthFailures)
+	}
+	if shouldStopReconnectAfterFailure(nonAuthErr, maxReconnectAuthFailures) {
+		t.Fatalf("non-auth failures should not stop reconnect")
+	}
+}

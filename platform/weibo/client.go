@@ -16,10 +16,13 @@ import (
 )
 
 const (
-	defaultTokenURL = "http://open-im.api.weibo.com/open/auth/ws_token"
-	defaultWSURL    = "ws://open-im.api.weibo.com/ws/stream"
-	maxWeiboChunk   = 4000
-	sendChunkDelay  = 100 * time.Millisecond
+	defaultTokenURL          = "http://open-im.api.weibo.com/open/auth/ws_token"
+	defaultWSURL             = "ws://open-im.api.weibo.com/ws/stream"
+	maxWeiboChunk            = 4000
+	sendChunkDelay           = 100 * time.Millisecond
+	initialReconnectDelay    = time.Second
+	maxReconnectDelay        = 30 * time.Second
+	maxReconnectAuthFailures = 10
 )
 
 // Platform 微博平台适配器
@@ -475,6 +478,9 @@ func (p *Platform) heartbeatLoop(ctx context.Context) {
 
 // messageLoop 消息循环
 func (p *Platform) messageLoop(ctx context.Context) {
+	reconnectDelay := time.Duration(0)
+	authFailures := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -502,12 +508,29 @@ func (p *Platform) messageLoop(ctx context.Context) {
 				p.logger.Printf("❌ Read message error: %v", err)
 				// 尝试重连
 				if err := p.reconnect(ctx); err != nil {
+					if isReconnectAuthError(err) {
+						authFailures++
+					} else {
+						authFailures = 0
+					}
+					if shouldStopReconnectAfterFailure(err, authFailures) {
+						p.logger.Printf("❌ 鉴权连续失败 %d 次，停止重连", authFailures)
+						if p.cancel != nil {
+							p.cancel()
+						}
+						return
+					}
+
+					reconnectDelay = nextReconnectDelay(reconnectDelay)
 					p.logger.Printf("❌ Reconnect failed: %v", err)
 					select {
 					case <-ctx.Done():
 						return
-					case <-time.After(5 * time.Second):
+					case <-time.After(reconnectDelay):
 					}
+				} else {
+					reconnectDelay = 0
+					authFailures = 0
 				}
 				continue
 			}
@@ -558,6 +581,35 @@ func (p *Platform) messageLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func nextReconnectDelay(current time.Duration) time.Duration {
+	if current <= 0 {
+		return initialReconnectDelay
+	}
+	next := current * 2
+	if next > maxReconnectDelay {
+		return maxReconnectDelay
+	}
+	return next
+}
+
+func shouldStopReconnectAfterFailure(err error, authFailures int) bool {
+	return isReconnectAuthError(err) && authFailures >= maxReconnectAuthFailures
+}
+
+func isReconnectAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "token error:") ||
+		strings.Contains(text, "invalid credentials") ||
+		strings.Contains(text, "unauthorized") ||
+		strings.Contains(text, "forbidden") ||
+		strings.Contains(text, "code: 40003") ||
+		strings.Contains(text, "code: 401") ||
+		strings.Contains(text, "code: 403")
 }
 
 func (p *Platform) sendJSONPong() error {

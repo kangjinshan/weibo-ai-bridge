@@ -456,6 +456,20 @@ func TestRouterCloseCancelsLegacyHandle(t *testing.T) {
 	}
 }
 
+func TestRouterCloseCancelsSuperPeerReviewContext(t *testing.T) {
+	router := NewRouter(&MockPlatform{}, session.NewManager(session.ManagerConfig{Timeout: 300}), agent.NewManager())
+	ctx, _, cancel := router.beginSuperPeerReview("session-super-close")
+	defer cancel()
+
+	router.Close()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("super peer review context was not canceled after Router.Close")
+	}
+}
+
 func TestHandleMessage_RepliesToUserID(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{

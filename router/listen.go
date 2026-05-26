@@ -45,7 +45,11 @@ func (r *Router) handleListenCommand(ctx context.Context, msg *Message, events c
 
 	r.stopListen(msg.UserID)
 
-	runCtx, cancel := context.WithCancel(context.Background())
+	parent := r.rootCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(parent)
 	r.listenMu.Lock()
 	r.nextListenID++
 	runID := r.nextListenID
@@ -115,7 +119,11 @@ func (r *Router) followJSONLSessionFile(ctx context.Context, userID, agentType, 
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return err
+	}
 
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		return err
@@ -135,6 +143,16 @@ func (r *Router) followJSONLSessionFile(ctx context.Context, userID, agentType, 
 				if text := strings.TrimSpace(line); text != "" {
 					r.sendNativeListenTexts(ctx, userID, nativeLogLineTexts(agentType, text))
 				}
+				reopened, nextFile, nextInfo, err := reopenJSONLSessionFileIfRotated(f, path, fileInfo)
+				if err != nil {
+					return err
+				}
+				if reopened {
+					f = nextFile
+					fileInfo = nextInfo
+					reader = bufio.NewReader(f)
+					continue
+				}
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -146,6 +164,36 @@ func (r *Router) followJSONLSessionFile(ctx context.Context, userID, agentType, 
 		}
 		r.sendNativeListenTexts(ctx, userID, nativeLogLineTexts(agentType, line))
 	}
+}
+
+func reopenJSONLSessionFileIfRotated(current *os.File, path string, currentInfo os.FileInfo) (bool, *os.File, os.FileInfo, error) {
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil, nil, nil
+		}
+		return false, nil, nil, err
+	}
+
+	offset, err := current.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return false, nil, nil, err
+	}
+
+	changed := currentInfo == nil || !os.SameFile(currentInfo, pathInfo) || pathInfo.Size() < offset
+	if !changed {
+		return false, nil, nil, nil
+	}
+
+	nextFile, err := os.Open(path)
+	if err != nil {
+		return false, nil, nil, err
+	}
+	if err := current.Close(); err != nil {
+		_ = nextFile.Close()
+		return false, nil, nil, err
+	}
+	return true, nextFile, pathInfo, nil
 }
 
 func (r *Router) followHermesSessionFile(ctx context.Context, userID, path string) error {

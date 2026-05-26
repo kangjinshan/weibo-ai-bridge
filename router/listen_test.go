@@ -112,6 +112,87 @@ func TestHandleMessageListenStartsNativeLogListenerAndUnlistenStopsIt(t *testing
 	}
 }
 
+func TestHandleMessageListenStopsWhenRouterCloses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+
+	sessionPath := filepath.Join(home, ".codex", "sessions", "2026", "05", "26", "rollout-close-thread.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(sessionPath), 0o755))
+	require.NoError(t, os.WriteFile(sessionPath, []byte(`{"timestamp":"2026-05-26T00:00:00Z","type":"session_meta","payload":{"id":"thread-close","cwd":"/tmp/project"}}`+"\n"), 0o644))
+
+	platform := &listenTestPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 3600, MaxSize: 10})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{name: "codex", available: true})
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:      "listen-close",
+		Type:    weibo.MessageTypeText,
+		Content: "/listen 1",
+		UserID:  "user-close",
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		router.listenMu.Lock()
+		defer router.listenMu.Unlock()
+		_, ok := router.listenRuns["user-close"]
+		return ok
+	}, time.Second, 10*time.Millisecond)
+
+	router.Close()
+
+	require.Eventually(t, func() bool {
+		router.listenMu.Lock()
+		defer router.listenMu.Unlock()
+		_, ok := router.listenRuns["user-close"]
+		return !ok
+	}, time.Second, 10*time.Millisecond)
+
+	before := platform.Count()
+	appendLine(t, sessionPath, `{"timestamp":"2026-05-26T00:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"关闭后不应输出"}]}}`)
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, before, platform.Count())
+}
+
+func TestHandleMessageListenReopensRotatedJSONLFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+
+	sessionPath := filepath.Join(home, ".codex", "sessions", "2026", "05", "26", "rollout-rotate-thread.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(sessionPath), 0o755))
+	require.NoError(t, os.WriteFile(sessionPath, []byte(`{"timestamp":"2026-05-26T00:00:00Z","type":"session_meta","payload":{"id":"thread-rotate","cwd":"/tmp/project"}}`+"\n"), 0o644))
+
+	platform := &listenTestPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 3600, MaxSize: 10})
+	agentMgr := agent.NewManager()
+	agentMgr.Register(&MockAgent{name: "codex", available: true})
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:      "listen-rotate",
+		Type:    weibo.MessageTypeText,
+		Content: "/listen 1",
+		UserID:  "user-rotate",
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return mockPlatformContains(platform, "开始监听")
+	}, time.Second, 10*time.Millisecond)
+
+	require.NoError(t, os.Rename(sessionPath, sessionPath+".old"))
+	require.NoError(t, os.WriteFile(sessionPath, []byte(`{"timestamp":"2026-05-26T00:00:01Z","type":"session_meta","payload":{"id":"thread-rotate","cwd":"/tmp/project"}}`+"\n"), 0o644))
+	appendLine(t, sessionPath, `{"timestamp":"2026-05-26T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"rotate 后输出"}]}}`)
+
+	require.Eventually(t, func() bool {
+		return mockPlatformContains(platform, "rotate 后输出")
+	}, 2*time.Second, 20*time.Millisecond)
+
+	router.Close()
+}
+
 type listenTestPlatform struct {
 	mu      sync.Mutex
 	replies []string

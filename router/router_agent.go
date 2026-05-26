@@ -217,7 +217,11 @@ func (r *Router) beginSuperPeerReview(sessionID string) (context.Context, int64,
 
 	r.nextReviewID++
 	reviewID := r.nextReviewID
-	ctx, cancel := context.WithTimeout(context.Background(), superPeerReviewTimeout)
+	parent := r.rootCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, superPeerReviewTimeout)
 	r.superReviews[sessionID] = superReviewRun{
 		id:     reviewID,
 		cancel: cancel,

@@ -32,8 +32,13 @@
 | P0-6 | 已修复 | `fa889f6`：`/new` 使用一次 session 锁原子切换 AgentType 并清空 native session id。 |
 | P0-7 | 未修复 | 重连仍是固定 5s 等待，无退避/熔断。 |
 | P0-8 | 未修复 | 关停顺序仍待调整。 |
-| P0-9 | 未修复 | startup notification 仍使用 `context.Background()`。 |
-| P1-1 ~ P1-7 | 未修复 | 保留待下一轮处理。 |
+| P0-9 | 已修复 | `5f1d1b4`：startup notification 改为主 ctx 派生，取消后不再发送。 |
+| P1-1 | 已修复 | `5f1d1b4`：`GetOrCreateSession` 改为单个 `Manager.mu` 临界区内完成 get/create/active 更新。 |
+| P1-2 ~ P1-3 | 未修复 | 保留待后续处理。 |
+| P1-4 | 已修复 | `5f1d1b4`：`waitInteractiveEventsQuiesced` 增加 ctx 取消路径。 |
+| P1-5 | 未修复 | 保留待后续处理。 |
+| P1-6 | 已修复 | `5f1d1b4`：Codex state DB 的 `sqlite3` 调用增加 3s timeout。 |
+| P1-7 | 未修复 | 保留待后续处理。 |
 | P1-8 | 已修复 | `fa889f6`：token 日志只记录 redacted 长度，不再打印明文片段。 |
 | P1-9 ~ P1-12 | 未修复 | 保留待后续处理。 |
 | P2-1 ~ P2-8 | 未修复/按需 | 偏维护性或体验项。 |
@@ -329,7 +334,7 @@ for {
 
 ### P0-9. `cmd/server/main.go:222-239` startup notification 使用 `context.Background()`
 
-**状态**：未修复
+**状态**：已修复（`5f1d1b4`）
 
 **问题描述**
 启动后 2s 异步发送 "bridge 启动成功" 私信，goroutine ctx 是 `context.Background()`。
@@ -352,7 +357,7 @@ for {
 
 ### P1-1. `session/session.go:174-183` `GetOrCreateSession` TOCTOU
 
-**状态**：未修复
+**状态**：已修复（`5f1d1b4`）
 
 **问题描述**
 内部依次 `getInternal` → `SetActiveSession` → `Create`，中间释放过锁。
@@ -413,7 +418,7 @@ for _, a := range agents { if a.IsAvailable() { ... } }
 
 ### P1-4. `router/router_interactive.go:340-367` `waitInteractiveEventsQuiesced` 不监听 ctx
 
-**状态**：未修复
+**状态**：已修复（`5f1d1b4`）
 
 **问题描述**
 按 `quietPeriod` 200ms 轮转，无 ctx select。
@@ -449,7 +454,7 @@ remove 和 create 在同一锁段完成，或新增 `replaceInteractiveSession` 
 
 ### P1-6. `router/native_sessions.go:1015` `exec sqlite3` 无 ctx 超时
 
-**状态**：未修复
+**状态**：已修复（`5f1d1b4`）
 
 **问题描述**
 `exec.Command("sqlite3", ...)` 没有 ctx。
@@ -712,8 +717,8 @@ make test-report   # 生成 reports/test-report.md，对比 coverage 不下降
 
 ## 修复顺序建议
 
-1. **第一轮（必须）**：P0-1, P0-2, P0-4, P0-8 — 这四条互相耦合，应作为一个 PR 一起改并发收尾链路。
-2. **第二轮**：P0-3, P0-5, P0-9 — Agent 子进程 + 后台 goroutine 收尾。
-3. **第三轮**：P0-6, P0-7 — 状态原子化 + 重连退避。
-4. **第四轮**：P1 全部 — 可拆成 3-4 个小 PR。
-5. **第五轮**：P2 — 提示性改动，按需。
+1. **已完成**：P0-1, P0-2, P0-3, P0-6, P0-9, P1-1, P1-4, P1-6, P1-8, P2-9。
+2. **下一轮（必须）**：P0-4, P0-8 — Router lifecycle context 和关停顺序耦合，应一起处理。
+3. **后续 P0**：P0-5, P0-7 — 后台 goroutine 生命周期与 WebSocket 重连退避。
+4. **剩余 P1**：P1-2, P1-3, P1-5, P1-7, P1-9, P1-10, P1-11, P1-12 — 可拆成 3-4 个小 PR。
+5. **P2**：提示性改动，按需。

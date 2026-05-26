@@ -28,6 +28,31 @@ func TestDecodeProjectPath(t *testing.T) {
 	}
 }
 
+func TestListCodexSessionsFromStateDBTimesOutSlowSQLite(t *testing.T) {
+	binDir := t.TempDir()
+	sqlitePath := filepath.Join(binDir, "sqlite3")
+	if err := os.WriteFile(sqlitePath, []byte("#!/bin/sh\nexec /bin/sleep 5\n"), 0o755); err != nil {
+		t.Fatalf("write fake sqlite3: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	codexHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(codexHome, "state_5.sqlite"), []byte("fake"), 0o644); err != nil {
+		t.Fatalf("write fake db: %v", err)
+	}
+
+	start := time.Now()
+	_, err := listCodexSessionsFromStateDB(codexHome, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected sqlite timeout error")
+	}
+	if elapsed > 4*time.Second {
+		t.Fatalf("sqlite command did not time out quickly enough: %s", elapsed)
+	}
+}
+
 func TestIsValidUUID(t *testing.T) {
 	tests := []struct {
 		input    string

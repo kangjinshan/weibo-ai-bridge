@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,30 @@ type processorTestPlatform struct {
 
 	mu      sync.Mutex
 	replies []string
+}
+
+type startupNotificationTestPlatform struct {
+	uid int64
+
+	mu      sync.Mutex
+	replies int
+}
+
+func (p *startupNotificationTestPlatform) UID() int64 {
+	return p.uid
+}
+
+func (p *startupNotificationTestPlatform) Reply(ctx context.Context, userID string, content string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.replies++
+	return nil
+}
+
+func (p *startupNotificationTestPlatform) ReplyCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.replies
 }
 
 func newProcessorTestPlatform() *processorTestPlatform {
@@ -455,6 +480,22 @@ func TestJSONLogWriterWrapsLogLine(t *testing.T) {
 	assert.Equal(t, "hello", entry["msg"])
 	assert.Equal(t, "weibo-ai-bridge", entry["app"])
 	assert.NotEmpty(t, entry["ts"])
+}
+
+func TestStartupNotificationSkipsWhenContextCanceledBeforeDelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	platform := &startupNotificationTestPlatform{uid: 123}
+	done := sendStartupNotificationAfterDelay(ctx, platform, log.New(io.Discard, "", 0), time.Millisecond)
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("startup notification did not exit after context cancellation")
+	}
+
+	assert.Equal(t, 0, platform.ReplyCount())
 }
 
 func TestGracefulShutdown(t *testing.T) {

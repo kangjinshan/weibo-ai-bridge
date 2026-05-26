@@ -43,6 +43,11 @@ type replyPlatform interface {
 	Reply(ctx context.Context, userID string, content string) error
 }
 
+type startupNotificationPlatform interface {
+	replyPlatform
+	UID() int64
+}
+
 type messagePlatform interface {
 	messageSource
 	replyPlatform
@@ -219,24 +224,7 @@ func main() {
 	logger.Printf("Platform started successfully")
 
 	// 发送启动通知给 bot 自己
-	go func() {
-		time.Sleep(2 * time.Second)
-		botUID := platform.UID()
-		if botUID == 0 {
-			logger.Printf("Startup notification skipped: bot UID not available")
-			return
-		}
-		buildTimeDisplay := buildTime
-		if t, err := time.Parse(time.RFC3339, buildTime); err == nil {
-			buildTimeDisplay = t.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05 CST")
-		}
-		msg := fmt.Sprintf("✅ 服务启动成功\n编译时间: %s\n版本: %s (%s)", buildTimeDisplay, version, gitCommit)
-		if err := platform.Reply(context.Background(), fmt.Sprintf("%d", botUID), msg); err != nil {
-			logger.Printf("Failed to send startup notification: %v", err)
-		} else {
-			logger.Printf("Startup notification sent to bot self (uid=%d)", botUID)
-		}
-	}()
+	sendStartupNotificationAfterDelay(ctx, platform, logger, 2*time.Second)
 
 	// 启动消息处理循环
 	go processMessages(ctx, platform, msgRouter, logger)
@@ -326,6 +314,43 @@ func newHTTPServer(port string, handler http.Handler) *http.Server {
 		WriteTimeout: 0,
 		IdleTimeout:  60 * time.Second,
 	}
+}
+
+func sendStartupNotificationAfterDelay(ctx context.Context, platform startupNotificationPlatform, logger *log.Logger, delay time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	go func() {
+		defer close(done)
+
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+
+		botUID := platform.UID()
+		if botUID == 0 {
+			logger.Printf("Startup notification skipped: bot UID not available")
+			return
+		}
+		buildTimeDisplay := buildTime
+		if t, err := time.Parse(time.RFC3339, buildTime); err == nil {
+			buildTimeDisplay = t.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05 CST")
+		}
+		msg := fmt.Sprintf("✅ 服务启动成功\n编译时间: %s\n版本: %s (%s)", buildTimeDisplay, version, gitCommit)
+		if err := platform.Reply(ctx, fmt.Sprintf("%d", botUID), msg); err != nil {
+			logger.Printf("Failed to send startup notification: %v", err)
+		} else {
+			logger.Printf("Startup notification sent to bot self (uid=%d)", botUID)
+		}
+	}()
+
+	return done
 }
 
 // processMessages 处理消息循环

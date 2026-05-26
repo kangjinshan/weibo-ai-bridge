@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -385,6 +386,40 @@ func TestManager_GetOrCreateSession(t *testing.T) {
 	assert.Equal(t, session1, session2)
 	assert.Equal(t, "user-123", session2.UserID) // 应该保持原来的 user
 	assert.Equal(t, 1, mgr.Count())
+}
+
+func TestManager_GetOrCreateSessionConcurrentSameID(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 3600})
+
+	const goroutines = 64
+	start := make(chan struct{})
+	results := make(chan *Session, goroutines)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- mgr.GetOrCreateSession("shared-session", "user-123", "codex")
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var first *Session
+	for sess := range results {
+		assert.NotNil(t, sess)
+		if first == nil {
+			first = sess
+			continue
+		}
+		assert.Same(t, first, sess)
+	}
+	assert.Equal(t, 1, mgr.Count())
+	assert.Equal(t, "shared-session", mgr.GetActiveSessionID("user-123"))
 }
 
 func TestManager_ActiveSessionLifecycle(t *testing.T) {

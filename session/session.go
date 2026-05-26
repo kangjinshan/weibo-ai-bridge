@@ -172,14 +172,20 @@ func (m *Manager) nextSessionIDLocked(userID string) string {
 
 // GetOrCreateSession 获取或创建会话
 func (m *Manager) GetOrCreateSession(id, userID, agentType string) *Session {
-	// 先尝试获取
-	if session, exists := m.getInternal(id); exists {
-		m.SetActiveSession(userID, id)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if session, exists := m.sessions[id]; exists {
+		if session != nil && session.UserIDValue() == userID {
+			m.activeByUser[userID] = id
+			if m.storagePath != "" {
+				m.saveMetadataLocked()
+			}
+		}
 		return session
 	}
 
-	// 不存在则创建
-	return m.Create(id, userID, agentType)
+	return m.createLocked(id, userID, agentType)
 }
 
 // GetActiveSessionID 获取用户当前活跃会话 ID

@@ -2228,6 +2228,29 @@ func TestHandleMessage_ByTheWayDoesNotConsumeTrailingEventsFromPreviousTurn(t *t
 	assert.Equal(t, true, platform.replies[3]["done"])
 }
 
+func TestWaitInteractiveEventsQuiescedReturnsOnContextCancel(t *testing.T) {
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 3600})
+	router := NewRouter(&MockPlatform{}, sessionMgr, agent.NewManager())
+	sess := sessionMgr.Create("session-quiesce", "user-quiesce", "codex")
+	liveSession := NewMockInteractiveSession()
+	liveState := &interactiveSessionState{agentType: "codex", session: liveSession}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		router.waitInteractiveEventsQuiesced(ctx, sess, "codex_session_id", liveState, time.Second)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("waitInteractiveEventsQuiesced did not return after context cancellation")
+	}
+}
+
 func TestHandleMessage_ByTheWayIgnoresBufferedDoneBeforeSendingNewTurn(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})

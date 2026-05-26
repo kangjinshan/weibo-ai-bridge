@@ -144,7 +144,7 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 
 			// 自动审批收尾后，交互 channel 里可能仍有旧 turn 的延迟 done 尾事件。
 			// 若直接发送新输入，旧 done 可能被误当作新 turn 结束信号，造成“无回复”。
-			r.waitInteractiveEventsQuiesced(sess, sessionKey, liveState, interactiveDoneGracePeriod)
+			r.waitInteractiveEventsQuiesced(ctx, sess, sessionKey, liveState, interactiveDoneGracePeriod)
 			r.discardBufferedInteractiveEvents(sess, sessionKey, liveState)
 
 			return r.sendAndDrainInteractiveTurn(ctx, sess, sessionKey, agentSessionID, msg.Content, interactiveAgent, liveState, emit)
@@ -184,7 +184,7 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 	}
 
 	if !created {
-		r.waitInteractiveEventsQuiesced(sess, sessionKey, liveState, interactiveDoneGracePeriod)
+		r.waitInteractiveEventsQuiesced(ctx, sess, sessionKey, liveState, interactiveDoneGracePeriod)
 	}
 	r.discardBufferedInteractiveEvents(sess, sessionKey, liveState)
 
@@ -337,12 +337,17 @@ func (r *Router) discardBufferedInteractiveEvents(sess *session.Session, session
 	}
 }
 
-func (r *Router) waitInteractiveEventsQuiesced(sess *session.Session, sessionKey string, liveState *interactiveSessionState, quietPeriod time.Duration) {
+func (r *Router) waitInteractiveEventsQuiesced(ctx context.Context, sess *session.Session, sessionKey string, liveState *interactiveSessionState, quietPeriod time.Duration) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	timer := time.NewTimer(quietPeriod)
 	defer timer.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-timer.C:
 			return
 		case event, ok := <-liveState.session.Events():

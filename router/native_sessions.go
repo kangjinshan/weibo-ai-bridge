@@ -2,6 +2,7 @@ package router
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 )
+
+const codexStateDBQueryTimeout = 3 * time.Second
 
 // NativeSession 代表一个原生 Agent 会话
 type NativeSession struct {
@@ -1012,7 +1015,10 @@ WHERE archived = 0
 ORDER BY updated_at DESC
 LIMIT 500;`
 
-	out, err := exec.Command(sqlitePath, dbPath, query).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), codexStateDBQueryTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, sqlitePath, dbPath, query).Output()
 	if err != nil {
 		return nil, err
 	}

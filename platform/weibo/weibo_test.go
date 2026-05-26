@@ -1,8 +1,10 @@
 package weibo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,6 +187,27 @@ func TestPlatform_refreshToken(t *testing.T) {
 	// 在 mock 实现中，我们可能返回空或特定错误
 	// 这里主要验证方法能够被调用
 	t.Logf("refreshToken returned: err=%v", err)
+}
+
+func TestPlatformRefreshTokenDoesNotLogRawToken(t *testing.T) {
+	const token = "abcdefghijklmnopqrstuvwxyz1234567890"
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"uid":123,"token":"` + token + `","expire_in":3600}}`))
+	}))
+	defer tokenServer.Close()
+
+	platform, err := NewPlatform("test-app-id", "test-secret")
+	require.NoError(t, err)
+	platform.Configure(tokenServer.URL, "", 0)
+
+	var logs bytes.Buffer
+	platform.logger = log.New(&logs, "", 0)
+
+	require.NoError(t, platform.refreshToken(context.Background()))
+
+	assert.NotContains(t, logs.String(), token)
+	assert.NotContains(t, logs.String(), token[:20])
+	assert.Contains(t, logs.String(), "Token refreshed successfully")
 }
 
 // TestPlatform_ConcurrentAccess 测试并发访问
@@ -376,6 +399,51 @@ drain:
 	assert.NotEmpty(t, messageID)
 	assert.EqualValues(t, 0, payload["chunkId"])
 	assert.Equal(t, true, payload["done"])
+}
+
+func TestPlatformSendChunkReleasesConnectionLockBeforeDelay(t *testing.T) {
+	received := make(chan struct{}, 1)
+	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		var data string
+		if err := websocket.Message.Receive(conn, &data); err == nil {
+			received <- struct{}{}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, err := websocket.Dial(wsURL, "", "http://localhost/")
+	require.NoError(t, err)
+
+	platform, err := NewPlatform("test-app-id", "test-secret")
+	require.NoError(t, err)
+	platform.conn = conn
+	defer platform.conn.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- platform.sendChunk(context.Background(), "user-1", "msg-1", 0, "hello", true)
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive sendChunk frame")
+	}
+
+	if locked := platform.connMutex.TryLock(); !locked {
+		t.Fatal("connMutex remained locked after websocket send; throttle delay must run outside the lock")
+	} else {
+		platform.connMutex.Unlock()
+	}
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("sendChunk did not return")
+	}
 }
 
 func TestSplitContent_KeepsUTF8RunesIntact(t *testing.T) {

@@ -119,7 +119,7 @@ func TestCodeXAgent_streamCodexOutput_CurrentJSONL(t *testing.T) {
 	}, "\n")))
 
 	events := make(chan Event, 8)
-	errorParts, err := agent.streamCodexOutput(session, stdout, events)
+	errorParts, err := agent.streamCodexOutput(context.Background(), session, stdout, events)
 	close(events)
 	if err != nil {
 		t.Fatalf("streamCodexOutput returned error: %v", err)
@@ -155,7 +155,7 @@ func TestCodeXAgent_streamCodexOutput_CurrentJSONLContentArray(t *testing.T) {
 	}, "\n")))
 
 	events := make(chan Event, 8)
-	_, err := agent.streamCodexOutput(session, stdout, events)
+	_, err := agent.streamCodexOutput(context.Background(), session, stdout, events)
 	close(events)
 	if err != nil {
 		t.Fatalf("streamCodexOutput returned error: %v", err)
@@ -179,7 +179,7 @@ func TestCodeXAgent_streamCodexOutput_LegacyJSONL(t *testing.T) {
 	}, "\n")))
 
 	events := make(chan Event, 8)
-	_, err := agent.streamCodexOutput(session, stdout, events)
+	_, err := agent.streamCodexOutput(context.Background(), session, stdout, events)
 	close(events)
 	if err != nil {
 		t.Fatalf("streamCodexOutput returned error: %v", err)
@@ -207,7 +207,7 @@ func TestCodeXAgent_streamCodexOutput_CapturesCLIErrorEvents(t *testing.T) {
 	}, "\n")))
 
 	events := make(chan Event, 8)
-	errorParts, err := agent.streamCodexOutput(session, stdout, events)
+	errorParts, err := agent.streamCodexOutput(context.Background(), session, stdout, events)
 	close(events)
 	if err != nil {
 		t.Fatalf("streamCodexOutput returned error: %v", err)

@@ -114,9 +114,12 @@ func (a *CodeXAgent) executeViaJSONCLI(ctx context.Context, session *codexSessio
 	go func() {
 		defer close(events)
 
-		errorParts, readErr := a.streamCodexOutput(session, stdout, events)
+		errorParts, readErr := a.streamCodexOutput(ctx, session, stdout, events)
 		if readErr != nil {
-			sendEvent(events, Event{Type: EventTypeError, Error: readErr.Error()})
+			if ctx.Err() != nil {
+				return
+			}
+			emitOrCancel(ctx, events, Event{Type: EventTypeError, Error: readErr.Error()})
 			return
 		}
 
@@ -129,14 +132,14 @@ func (a *CodeXAgent) executeViaJSONCLI(ctx context.Context, session *codexSessio
 			if details == "" {
 				details = err.Error()
 			}
-			sendEvent(events, Event{
+			emitOrCancel(ctx, events, Event{
 				Type:  EventTypeError,
 				Error: fmt.Sprintf("codex CLI failed: %s", details),
 			})
 			return
 		}
 
-		sendEvent(events, Event{Type: EventTypeDone})
+		emitOrCancel(ctx, events, Event{Type: EventTypeDone})
 	}()
 
 	return events, nil
@@ -198,7 +201,7 @@ func (a *CodeXAgent) buildCommand(ctx context.Context, session *codexSession, in
 	return cmd
 }
 
-func (a *CodeXAgent) streamCodexOutput(session *codexSession, stdout io.ReadCloser, events chan<- Event) ([]string, error) {
+func (a *CodeXAgent) streamCodexOutput(ctx context.Context, session *codexSession, stdout io.ReadCloser, events chan<- Event) ([]string, error) {
 	reader := bufio.NewReader(stdout)
 	var errorParts []string
 
@@ -225,7 +228,9 @@ func (a *CodeXAgent) streamCodexOutput(session *codexSession, stdout io.ReadClos
 			if event.Type == EventTypeError && strings.TrimSpace(event.Error) != "" {
 				errorParts = append(errorParts, event.Error)
 			}
-			sendEvent(events, event)
+			if !emitOrCancel(ctx, events, event) {
+				return uniqueNonEmpty(errorParts), ctx.Err()
+			}
 		}
 	}
 
@@ -428,14 +433,6 @@ func uniqueNonEmpty(parts []string) []string {
 	}
 
 	return result
-}
-
-func sendEvent(events chan<- Event, event Event) {
-	if event.Type == "" {
-		return
-	}
-
-	events <- event
 }
 
 // IsAvailable 检查 codex CLI 是否可用

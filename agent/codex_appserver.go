@@ -109,7 +109,7 @@ func (a *CodeXAgent) executeViaAppServerTransport(ctx context.Context, session *
 	}
 
 	events := make(chan Event, 256)
-	sendEvent(events, Event{Type: EventTypeSession, SessionID: threadID})
+	emitOrCancel(ctx, events, Event{Type: EventTypeSession, SessionID: threadID})
 
 	go client.streamEvents(ctx, session, pending, events)
 
@@ -422,7 +422,10 @@ func (c *codexAppServerClient) readLoop() {
 		_ = c.conn.SetReadDeadline(time.Now().Add(codexAppServerReadTimeout))
 		var msg map[string]any
 		if err := c.conn.ReadJSON(&msg); err != nil {
-			c.readErr <- err
+			select {
+			case c.readErr <- err:
+			default:
+			}
 			return
 		}
 
@@ -439,7 +442,9 @@ func (c *codexAppServerClient) streamEvents(ctx context.Context, session *codexS
 	emitMessage := func(msg map[string]any) bool {
 		done := false
 		for _, event := range parseCodexAppServerMessage(session, msg, deltaSeen) {
-			sendEvent(events, event)
+			if !emitOrCancel(ctx, events, event) {
+				return true
+			}
 			if event.Type == EventTypeDone {
 				done = true
 			}
@@ -468,7 +473,7 @@ func (c *codexAppServerClient) streamEvents(ctx context.Context, session *codexS
 			if ctx.Err() != nil {
 				return
 			}
-			sendEvent(events, Event{Type: EventTypeError, Error: fmt.Sprintf("codex app-server stream error: %v", err)})
+			emitOrCancel(ctx, events, Event{Type: EventTypeError, Error: fmt.Sprintf("codex app-server stream error: %v", err)})
 			return
 		}
 	}

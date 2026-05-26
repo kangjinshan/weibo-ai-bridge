@@ -347,7 +347,7 @@ func (s *codexInteractiveSession) readLoop() {
 			if s.ctx.Err() == nil {
 				currentTurnID, _ := s.turnID.Load().(string)
 				if !shouldIgnoreCodexAppServerReadError(err, strings.TrimSpace(currentTurnID) != "") {
-					sendEvent(s.events, Event{
+					emitOrCancel(s.ctx, s.events, Event{
 						Type:  EventTypeError,
 						Error: fmt.Sprintf("codex app-server stream error: %v", err),
 					})
@@ -372,7 +372,7 @@ func (s *codexInteractiveSession) readLoop() {
 
 		if method, _ := msg["method"].(string); strings.Contains(method, "requestApproval") {
 			if event, ok := s.parseApprovalRequest(msg); ok {
-				sendEvent(s.events, event)
+				emitOrCancel(s.ctx, s.events, event)
 				continue
 			}
 		}
@@ -395,7 +395,7 @@ func (s *codexInteractiveSession) readLoop() {
 		s.deltaSeenMu.Unlock()
 
 		for _, event := range events {
-			sendEvent(s.events, event)
+			emitOrCancel(s.ctx, s.events, event)
 		}
 	}
 }

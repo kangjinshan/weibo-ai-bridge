@@ -11,6 +11,7 @@ import (
 	"github.com/kangjinshan/weibo-ai-bridge/agent"
 	"github.com/kangjinshan/weibo-ai-bridge/session"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewCommandHandler(t *testing.T) {
@@ -584,6 +585,44 @@ func TestCommandHandler_Handle_New_Gemini(t *testing.T) {
 	activeSession, ok := sessionManager.GetActiveSession("user-1")
 	assert.True(t, ok)
 	assert.Equal(t, "gemini", activeSession.AgentType)
+}
+
+func TestCommandHandler_Handle_NewClearsNativeSessionIDsAtomically(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	agentManager.Register(&MockAgent{name: "codex", available: true})
+	agentManager.SetDefault("codex")
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	pendingID := pendingNativeSessionID("user-1")
+	sess := sessionManager.Create(pendingID, "user-1", "claude")
+	sessionManager.UpdateSession(sess.ID, "claude_session_id", "claude-old")
+	sessionManager.UpdateSession(sess.ID, "codex_session_id", "codex-old")
+	sessionManager.UpdateSession(sess.ID, "hermes_session_id", "hermes-old")
+	sessionManager.UpdateSession(sess.ID, "gemini_session_id", "gemini-old")
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-1",
+		Type:    TypeText,
+		Content: "/new codex",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+
+	activeSession, ok := sessionManager.GetActiveSession("user-1")
+	require.True(t, ok)
+	assert.Equal(t, "codex", activeSession.AgentType)
+	for _, key := range []string{"claude_session_id", "codex_session_id", "hermes_session_id", "gemini_session_id"} {
+		value, exists := activeSession.ContextString(key)
+		assert.True(t, exists, "%s should be present for compatibility", key)
+		assert.Equal(t, "", value, "%s should be cleared", key)
+	}
 }
 
 func TestCommandHandler_Handle_New_RepairsUnavailableAgent(t *testing.T) {

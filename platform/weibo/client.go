@@ -174,13 +174,17 @@ func (p *Platform) refreshToken(ctx context.Context) error {
 	})
 
 	p.logger.Printf("✅ Token refreshed successfully")
-	if len(loggedToken) > 20 {
-		p.logger.Printf("   Token: %s...", loggedToken[:20])
-	} else {
-		p.logger.Printf("   Token: %s", loggedToken)
-	}
+	p.logger.Printf("   Token: %s", maskTokenForLog(loggedToken))
 	p.logger.Printf("   Expires in: %d seconds", tokenResp.Data.ExpireIn)
 	return nil
+}
+
+func maskTokenForLog(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "<empty>"
+	}
+	return fmt.Sprintf("<redacted len=%d>", len(token))
 }
 
 // connect 建立 WebSocket 连接
@@ -378,17 +382,19 @@ func (p *Platform) sendChunk(ctx context.Context, userID, messageID string, chun
 	}
 
 	p.connMutex.Lock()
-	defer p.connMutex.Unlock()
 
 	if p.conn == nil {
+		p.connMutex.Unlock()
 		return fmt.Errorf("connection not established")
 	}
 
 	p.logger.Printf("📤 Sending chunk: to=%s message_id=%s chunk_id=%d done=%t text=%q", userID, messageID, chunkID, done, summarizeChunk(content))
 
 	if err := websocket.Message.Send(p.conn, string(data)); err != nil {
+		p.connMutex.Unlock()
 		return err
 	}
+	p.connMutex.Unlock()
 
 	time.Sleep(sendChunkDelay)
 	return nil

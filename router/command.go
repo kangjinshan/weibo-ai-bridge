@@ -217,11 +217,21 @@ func (h *CommandHandler) handleNew(userID string, args []string) (*Response, err
 			Content: "Failed to create new session. Maximum sessions reached.",
 		}, nil
 	}
-	h.sessionManager.SetSessionAgentType(newSession.ID, agentType)
-	h.sessionManager.UpdateSession(newSession.ID, "claude_session_id", "")
-	h.sessionManager.UpdateSession(newSession.ID, "codex_session_id", "")
-	h.sessionManager.UpdateSession(newSession.ID, "hermes_session_id", "")
-	h.sessionManager.UpdateSession(newSession.ID, "gemini_session_id", "")
+	h.sessionManager.UpdateSessionAgentAndContextAtomically(newSession.ID, agentType, func(ctx map[string]interface{}) bool {
+		changed := false
+		for _, key := range []string{"claude_session_id", "codex_session_id", "hermes_session_id", "gemini_session_id"} {
+			if current, _ := ctx[key].(string); current != "" {
+				ctx[key] = ""
+				changed = true
+				continue
+			}
+			if _, ok := ctx[key]; !ok {
+				ctx[key] = ""
+				changed = true
+			}
+		}
+		return changed
+	})
 
 	return &Response{
 		Success: true,

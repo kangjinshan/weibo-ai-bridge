@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -221,6 +222,21 @@ func TestHermesACPProviderFailureIsError(t *testing.T) {
 	}
 	if !strings.Contains(event.Error, "HTTP 404") {
 		t.Fatalf("unexpected error text: %#v", event)
+	}
+}
+
+func TestHermesInteractiveSessionWaitProcessIsIdempotent(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+
+	session := &hermesInteractiveSession{cmd: cmd}
+	if err := session.waitProcess(); err != nil {
+		t.Fatalf("first waitProcess returned error: %v", err)
+	}
+	if err := session.waitProcess(); err != nil {
+		t.Fatalf("second waitProcess returned error: %v", err)
 	}
 }
 

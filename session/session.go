@@ -275,6 +275,30 @@ func (m *Manager) UpdateSessionContextAtomically(id string, mutator func(ctx map
 	return true
 }
 
+// UpdateSessionAgentAndContextAtomically updates AgentType and Context under one session lock.
+func (m *Manager) UpdateSessionAgentAndContextAtomically(id, agentType string, mutator func(ctx map[string]interface{}) bool) bool {
+	if mutator == nil {
+		return false
+	}
+
+	session, exists := m.getInternal(id)
+	if !exists || session == nil {
+		return false
+	}
+
+	changed := session.UpdateAgentAndContextAtomically(agentType, mutator)
+	if !changed {
+		return false
+	}
+
+	if m.storagePath != "" {
+		m.mu.Lock()
+		m.saveSessionLocked(session)
+		m.mu.Unlock()
+	}
+	return true
+}
+
 // Get 获取会话
 func (m *Manager) Get(id string) (*Session, bool) {
 	session, exists := m.getInternal(id)
@@ -331,6 +355,34 @@ func (s *Session) UpdateContextAtomically(mutator func(ctx map[string]interface{
 		s.Context = make(map[string]interface{})
 	}
 	if !mutator(s.Context) {
+		return false
+	}
+	s.UpdatedAt = time.Now()
+	return true
+}
+
+// UpdateAgentAndContextAtomically updates AgentType and Context while holding the session lock.
+func (s *Session) UpdateAgentAndContextAtomically(agentType string, mutator func(ctx map[string]interface{}) bool) bool {
+	if s == nil || mutator == nil {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.Context == nil {
+		s.Context = make(map[string]interface{})
+	}
+
+	changed := false
+	if strings.TrimSpace(s.AgentType) != strings.TrimSpace(agentType) {
+		s.AgentType = agentType
+		changed = true
+	}
+	if mutator(s.Context) {
+		changed = true
+	}
+	if !changed {
 		return false
 	}
 	s.UpdatedAt = time.Now()

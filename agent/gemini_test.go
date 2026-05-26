@@ -197,7 +197,7 @@ func TestGeminiAgent_streamGeminiOutput(t *testing.T) {
 	}, "\n")))
 
 	events := make(chan Event, 8)
-	errorParts, err := agent.streamGeminiOutput(session, stdout, events)
+	errorParts, err := agent.streamGeminiOutput(context.Background(), session, stdout, events)
 	close(events)
 	if err != nil {
 		t.Fatalf("streamGeminiOutput returned error: %v", err)
@@ -242,7 +242,7 @@ func TestGeminiAgent_streamGeminiOutput_ResultError(t *testing.T) {
 	}, "\n")))
 
 	events := make(chan Event, 4)
-	errorParts, err := agent.streamGeminiOutput(session, stdout, events)
+	errorParts, err := agent.streamGeminiOutput(context.Background(), session, stdout, events)
 	close(events)
 	if err != nil {
 		t.Fatalf("streamGeminiOutput returned error: %v", err)

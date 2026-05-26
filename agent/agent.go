@@ -83,3 +83,20 @@ type InterruptibleSession interface {
 	// Interrupt 中断当前正在执行的 turn；如果当前没有活动 turn，应静默成功返回。
 	Interrupt() error
 }
+
+// emitOrCancel emits an event unless the context is canceled first.
+func emitOrCancel(ctx context.Context, events chan<- Event, event Event) bool {
+	if event.Type == "" {
+		return true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case events <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}

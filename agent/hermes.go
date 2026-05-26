@@ -68,6 +68,10 @@ type hermesInteractiveSession struct {
 
 	approvalMu sync.Mutex
 	approval   *hermesPendingApproval
+
+	wg       sync.WaitGroup
+	waitOnce sync.Once
+	waitErr  error
 }
 
 type hermesACPResponse struct {
@@ -159,12 +163,14 @@ func (a *HermesAgent) ExecuteStream(ctx context.Context, sessionID string, input
 			if details == "" {
 				details = err.Error()
 			}
-			sendEvent(events, Event{Type: EventTypeError, Error: fmt.Sprintf("hermes CLI failed: %s", details)})
+			emitOrCancel(ctx, events, Event{Type: EventTypeError, Error: fmt.Sprintf("hermes CLI failed: %s", details)})
 			return
 		}
 
 		for _, event := range parseHermesOutput(session, string(output)) {
-			sendEvent(events, event)
+			if !emitOrCancel(ctx, events, event) {
+				return
+			}
 		}
 	}()
 
@@ -221,8 +227,16 @@ func (a *HermesAgent) StartSession(ctx context.Context, sessionID string) (Inter
 		session.suppressReplay.Store(true)
 	}
 
-	go session.readLoop(stdout)
-	go io.Copy(io.Discard, stderr)
+	session.wg.Add(1)
+	go func() {
+		defer session.wg.Done()
+		session.readLoop(stdout)
+	}()
+	session.wg.Add(1)
+	go func() {
+		defer session.wg.Done()
+		_, _ = io.Copy(io.Discard, stderr)
+	}()
 
 	if _, err := session.request(ctx, "initialize", hermesACPInitializeParams()); err != nil {
 		_ = session.Close()
@@ -450,10 +464,22 @@ func (s *hermesInteractiveSession) Close() error {
 	case <-s.done:
 	case <-time.After(3 * time.Second):
 		if s.cmd != nil && s.cmd.Process != nil {
-			_, _ = s.cmd.Process.Wait()
+			_ = s.waitProcess()
 		}
 	}
+	s.wg.Wait()
 	return nil
+}
+
+func (s *hermesInteractiveSession) waitProcess() error {
+	if s == nil || s.cmd == nil {
+		return nil
+	}
+
+	s.waitOnce.Do(func() {
+		s.waitErr = s.cmd.Wait()
+	})
+	return s.waitErr
 }
 
 func (s *hermesInteractiveSession) request(ctx context.Context, method string, params map[string]any) (hermesACPResponse, error) {
@@ -519,9 +545,7 @@ func (s *hermesInteractiveSession) readLoop(stdout io.Reader) {
 	defer close(s.events)
 	defer s.alive.Store(false)
 	defer func() {
-		if s.cmd != nil {
-			_, _ = s.cmd.Process.Wait()
-		}
+		_ = s.waitProcess()
 	}()
 
 	reader := bufio.NewReader(stdout)
@@ -532,7 +556,7 @@ func (s *hermesInteractiveSession) readLoop(stdout io.Reader) {
 		}
 		if err != nil {
 			if err != io.EOF && s.alive.Load() {
-				sendEvent(s.events, Event{Type: EventTypeError, Error: fmt.Sprintf("hermes ACP read failed: %v", err)})
+				emitOrCancel(s.ctx, s.events, Event{Type: EventTypeError, Error: fmt.Sprintf("hermes ACP read failed: %v", err)})
 			}
 			return
 		}
@@ -562,9 +586,9 @@ func (s *hermesInteractiveSession) handleACPLine(line string) {
 		}
 		if s.untrackPromptRequest(id) {
 			if resp.Error != "" {
-				sendEvent(s.events, Event{Type: EventTypeError, Error: resp.Error})
+				emitOrCancel(s.ctx, s.events, Event{Type: EventTypeError, Error: resp.Error})
 			}
-			sendEvent(s.events, Event{Type: EventTypeDone})
+			emitOrCancel(s.ctx, s.events, Event{Type: EventTypeDone})
 		}
 		return
 	}
@@ -597,7 +621,7 @@ func (s *hermesInteractiveSession) handleACPLine(line string) {
 func (s *hermesInteractiveSession) handleSessionUpdate(params map[string]any) {
 	if sid, _ := params["sessionId"].(string); strings.TrimSpace(sid) != "" {
 		if s.SetCurrentSessionID(sid) {
-			sendEvent(s.events, Event{Type: EventTypeSession, SessionID: strings.TrimSpace(sid)})
+			emitOrCancel(s.ctx, s.events, Event{Type: EventTypeSession, SessionID: strings.TrimSpace(sid)})
 		}
 	}
 
@@ -613,21 +637,21 @@ func (s *hermesInteractiveSession) handleSessionUpdate(params map[string]any) {
 	case "agent_message_chunk":
 		if text := acpContentText(update["content"]); text != "" {
 			if isHermesACPProviderFailure(text) {
-				sendEvent(s.events, Event{Type: EventTypeError, Error: text})
+				emitOrCancel(s.ctx, s.events, Event{Type: EventTypeError, Error: text})
 				return
 			}
-			sendEvent(s.events, Event{Type: EventTypeDelta, Content: text})
+			emitOrCancel(s.ctx, s.events, Event{Type: EventTypeDelta, Content: text})
 		}
 	case "agent_thought_chunk":
 		return
 	case "tool_call":
 		toolID, _ := update["toolCallId"].(string)
 		title, _ := update["title"].(string)
-		sendEvent(s.events, Event{Type: EventTypeToolStart, ToolName: firstNonEmpty(title, toolID), ToolInput: acpRawText(update)})
+		emitOrCancel(s.ctx, s.events, Event{Type: EventTypeToolStart, ToolName: firstNonEmpty(title, toolID), ToolInput: acpRawText(update)})
 	case "tool_call_update":
 		toolID, _ := update["toolCallId"].(string)
 		title, _ := update["title"].(string)
-		sendEvent(s.events, Event{Type: EventTypeToolEnd, ToolName: firstNonEmpty(title, toolID), ToolInput: acpRawText(update)})
+		emitOrCancel(s.ctx, s.events, Event{Type: EventTypeToolEnd, ToolName: firstNonEmpty(title, toolID), ToolInput: acpRawText(update)})
 	}
 }
 
@@ -724,7 +748,7 @@ func (s *hermesInteractiveSession) handlePermissionRequest(id int64, params map[
 	s.approvalMu.Unlock()
 
 	title, _ := pending.tool["title"].(string)
-	sendEvent(s.events, Event{
+	emitOrCancel(s.ctx, s.events, Event{
 		Type:      EventTypeApproval,
 		ToolName:  firstNonEmpty(title, "hermes"),
 		ToolInput: acpRawText(pending.tool),

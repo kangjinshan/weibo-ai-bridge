@@ -252,17 +252,21 @@ func (s *claudeInteractiveSession) readLoop(stdout io.ReadCloser, stderr *bytes.
 		}
 
 		if approvalEvent, ok := s.parseControlRequest(raw); ok {
-			sendEvent(s.events, approvalEvent)
+			if !emitOrCancel(s.ctx, s.events, approvalEvent) {
+				return
+			}
 			continue
 		}
 
 		for _, event := range parseClaudeStreamEvent(s.state, raw) {
-			sendEvent(s.events, event)
+			if !emitOrCancel(s.ctx, s.events, event) {
+				return
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil && s.ctx.Err() == nil {
-		sendEvent(s.events, Event{
+		emitOrCancel(s.ctx, s.events, Event{
 			Type:  EventTypeError,
 			Error: fmt.Sprintf("failed to read claude session output: %v", err),
 		})
@@ -273,7 +277,7 @@ func (s *claudeInteractiveSession) readLoop(stdout io.ReadCloser, stderr *bytes.
 		if details == "" {
 			details = err.Error()
 		}
-		sendEvent(s.events, Event{
+		emitOrCancel(s.ctx, s.events, Event{
 			Type:  EventTypeError,
 			Error: fmt.Sprintf("failed to execute claude CLI: %s", details),
 		})

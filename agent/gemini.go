@@ -112,9 +112,12 @@ func (a *GeminiAgent) ExecuteStream(ctx context.Context, sessionID string, input
 	go func() {
 		defer close(events)
 
-		errorParts, readErr := a.streamGeminiOutput(session, stdout, events)
+		errorParts, readErr := a.streamGeminiOutput(ctx, session, stdout, events)
 		if readErr != nil {
-			sendEvent(events, Event{Type: EventTypeError, Error: readErr.Error()})
+			if ctx.Err() != nil {
+				return
+			}
+			emitOrCancel(ctx, events, Event{Type: EventTypeError, Error: readErr.Error()})
 			return
 		}
 
@@ -130,7 +133,7 @@ func (a *GeminiAgent) ExecuteStream(ctx context.Context, sessionID string, input
 			if details == "" {
 				details = err.Error()
 			}
-			sendEvent(events, Event{
+			emitOrCancel(ctx, events, Event{
 				Type:  EventTypeError,
 				Error: fmt.Sprintf("gemini CLI failed: %s", details),
 			})
@@ -526,7 +529,7 @@ func isGeminiToolPartKey(key string) bool {
 	}
 }
 
-func (a *GeminiAgent) streamGeminiOutput(session *geminiSession, stdout io.ReadCloser, events chan<- Event) ([]string, error) {
+func (a *GeminiAgent) streamGeminiOutput(ctx context.Context, session *geminiSession, stdout io.ReadCloser, events chan<- Event) ([]string, error) {
 	reader := bufio.NewReader(stdout)
 	var errorParts []string
 
@@ -553,7 +556,9 @@ func (a *GeminiAgent) streamGeminiOutput(session *geminiSession, stdout io.ReadC
 			if event.Type == EventTypeError && strings.TrimSpace(event.Error) != "" {
 				errorParts = append(errorParts, event.Error)
 			}
-			sendEvent(events, event)
+			if !emitOrCancel(ctx, events, event) {
+				return uniqueNonEmpty(errorParts), ctx.Err()
+			}
 		}
 	}
 

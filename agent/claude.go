@@ -115,7 +115,7 @@ func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, i
 		defer close(events)
 
 		if err := cmd.Start(); err != nil {
-			sendEvent(events, Event{
+			emitOrCancel(ctx, events, Event{
 				Type:  EventTypeError,
 				Error: fmt.Sprintf("failed to start claude CLI: %v", err),
 			})
@@ -126,11 +126,14 @@ func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, i
 			messageSnapshot: make(map[string]string),
 		}
 
-		parseErr := a.streamClaudeOutput(stdout, state, events)
+		parseErr := a.streamClaudeOutput(ctx, stdout, state, events)
 
 		runErr := cmd.Wait()
 		if parseErr != nil {
-			sendEvent(events, Event{
+			if ctx.Err() != nil {
+				return
+			}
+			emitOrCancel(ctx, events, Event{
 				Type:  EventTypeError,
 				Error: parseErr.Error(),
 			})
@@ -142,7 +145,7 @@ func (a *ClaudeCodeAgent) ExecuteStream(ctx context.Context, sessionID string, i
 			if details == "" {
 				details = runErr.Error()
 			}
-			sendEvent(events, Event{Type: EventTypeError, Error: fmt.Sprintf("failed to execute claude CLI: %s", details)})
+			emitOrCancel(ctx, events, Event{Type: EventTypeError, Error: fmt.Sprintf("failed to execute claude CLI: %s", details)})
 			return
 		}
 	}()
@@ -166,7 +169,7 @@ func (a *ClaudeCodeAgent) buildStreamArgs(sessionID string, input string) []stri
 	return args
 }
 
-func (a *ClaudeCodeAgent) streamClaudeOutput(stdout io.ReadCloser, state *claudeStreamState, events chan<- Event) error {
+func (a *ClaudeCodeAgent) streamClaudeOutput(ctx context.Context, stdout io.ReadCloser, state *claudeStreamState, events chan<- Event) error {
 	reader := bufio.NewReader(stdout)
 
 	for {
@@ -189,7 +192,9 @@ func (a *ClaudeCodeAgent) streamClaudeOutput(stdout io.ReadCloser, state *claude
 		}
 
 		for _, event := range parseClaudeStreamEvent(state, raw) {
-			sendEvent(events, event)
+			if !emitOrCancel(ctx, events, event) {
+				return ctx.Err()
+			}
 		}
 	}
 

@@ -192,6 +192,39 @@ func TestCommandHandler_Handle_UpgradeCompletedWithoutRestartSchedule(t *testing
 	assert.Contains(t, resp.Content, "无法以非 root 用户安排 system scope 重启")
 }
 
+func TestCommandHandler_Handle_UpgradeWarnsBeforeUnreliableRestartOutput(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+	updater := &stubSelfUpdater{
+		result: selfUpdateResult{
+			Output: strings.Join([]string{
+				"[INFO] 安装二进制: /home/azureuser/weibo-ai-bridge/build/weibo-ai-bridge",
+				"[INFO] 将在 8s 后重启服务: /home/azureuser/weibo-ai-bridge/scripts/service.sh restart --scope auto",
+				"[WARN] systemd-run 安排延迟重启失败，退回到后台进程方式；若当前脚本运行在服务 cgroup 内，可能只完成停止",
+				"[OK] 延迟重启已安排，日志: /tmp/weibo-ai-bridge-self-update-restart.log",
+			}, "\n"),
+			RestartScheduled: true,
+		},
+	}
+	handler.SetSelfUpdater(updater)
+
+	resp, err := handler.Handle(&Message{
+		ID:      "msg-upgrade-unreliable-restart",
+		Type:    TypeText,
+		Content: "/upgrade",
+		UserID:  "user-1",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.True(t, strings.HasPrefix(resp.Content, "已更新二进制，但未确认自动重启已可靠安排。"), resp.Content)
+	assert.Contains(t, resp.Content, "请手动重启服务")
+	assert.NotContains(t, resp.Content, "升级已完成。 已安排服务延迟重启")
+	assert.Contains(t, resp.Content, "systemd-run 安排延迟重启失败")
+}
+
 func TestCommandHandler_Handle_List(t *testing.T) {
 	isolateNativeSessionSources(t)
 

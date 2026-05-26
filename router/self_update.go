@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	selfUpdateTimeout       = 15 * time.Minute
-	selfUpdateOutputLimit   = 4000
-	selfUpdateRestartMarker = "WEIBO_AI_BRIDGE_RESTART_SCHEDULED=1"
-	selfUpdateCurrentMarker = "WEIBO_AI_BRIDGE_ALREADY_UP_TO_DATE=1"
+	selfUpdateTimeout         = 15 * time.Minute
+	selfUpdateOutputLimit     = 4000
+	selfUpdateRestartMarker   = "WEIBO_AI_BRIDGE_RESTART_SCHEDULED=1"
+	selfUpdateUncertainMarker = "WEIBO_AI_BRIDGE_RESTART_UNCERTAIN=1"
+	selfUpdateCurrentMarker   = "WEIBO_AI_BRIDGE_ALREADY_UP_TO_DATE=1"
 )
 
 type shellSelfUpdater struct {
@@ -105,7 +106,7 @@ func cleanSelfUpdateOutput(output string) string {
 	kept := lines[:0]
 	for _, line := range lines {
 		switch strings.TrimSpace(line) {
-		case selfUpdateRestartMarker, selfUpdateCurrentMarker:
+		case selfUpdateRestartMarker, selfUpdateUncertainMarker, selfUpdateCurrentMarker:
 			continue
 		}
 		kept = append(kept, line)

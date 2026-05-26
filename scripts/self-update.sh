@@ -379,6 +379,9 @@ schedule_restart() {
         fi
 
         nohup bash -c 'delay="$1"; runner="$2"; sleep "${delay}"; exec bash "${runner}"' _ "${RESTART_DELAY}" "${restart_runner}" >>"${restart_log}" 2>&1 &
+        echo "WEIBO_AI_BRIDGE_RESTART_UNCERTAIN=1"
+        log_warn "已尝试后台延迟重启，但未确认该方式在当前服务环境中可靠；日志: ${restart_log}"
+        return
     else
         restart_command="${service_script} install && ${service_script} start"
         log_info "将在 ${RESTART_DELAY}s 后刷新并启动服务: ${restart_command}"

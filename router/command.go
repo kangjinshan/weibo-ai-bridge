@@ -158,9 +158,12 @@ func (h *CommandHandler) handleUpgrade(args []string) (*Response, error) {
 		return &Response{Success: false, Content: content}, nil
 	}
 
+	restartUncertain := isSelfUpdateRestartUncertain(output)
 	content := "升级已完成。"
 	if result.AlreadyUpToDate {
 		content = "已经是最新版本，无需升级。"
+	} else if restartUncertain {
+		content = "已更新二进制，但未确认自动重启已可靠安排。请手动重启服务以加载新版本。"
 	} else if result.RestartScheduled {
 		content += " 已安排服务延迟重启，当前回复发出后再切换到新版本。"
 	} else {
@@ -171,6 +174,22 @@ func (h *CommandHandler) handleUpgrade(args []string) (*Response, error) {
 	}
 
 	return &Response{Success: true, Content: content}, nil
+}
+
+func isSelfUpdateRestartUncertain(output string) bool {
+	output = strings.ToLower(output)
+	uncertainSignals := []string{
+		"systemd-run 安排延迟重启失败",
+		"退回到后台进程方式",
+		"可能只完成停止",
+		"无法以非 root 用户安排 system scope 重启",
+	}
+	for _, signal := range uncertainSignals {
+		if strings.Contains(output, strings.ToLower(signal)) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleNew 处理创建新会话命令

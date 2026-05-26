@@ -681,6 +681,13 @@ printf '%s\n' "$@" > "${SYSTEMD_RUN_ARGS}"
 	if !strings.Contains(string(runnerBytes), "service.sh restart --scope system") {
 		t.Fatalf("system restart runner should use system scope:\n%s\nargs:\n%s\noutput:\n%s", runnerBytes, args, output)
 	}
+	wantLog := filepath.Join(tmp, "install", "tmp", "weibo-ai-bridge-self-update-restart.log")
+	if !strings.Contains(string(runnerBytes), wantLog) {
+		t.Fatalf("system restart runner should log outside sticky /tmp, want %s:\n%s\nargs:\n%s\noutput:\n%s", wantLog, runnerBytes, args, output)
+	}
+	if strings.Contains(string(runnerBytes), ">>/tmp/weibo-ai-bridge-self-update-restart.log") {
+		t.Fatalf("system restart runner must not append to sticky /tmp log:\n%s\nargs:\n%s\noutput:\n%s", runnerBytes, args, output)
+	}
 }
 
 func TestSelfUpdateScriptMarksNohupFallbackRestartUncertain(t *testing.T) {

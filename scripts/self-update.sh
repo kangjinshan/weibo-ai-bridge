@@ -351,6 +351,25 @@ write_restart_runner() {
     chmod +x "${runner}"
 }
 
+resolve_restart_log_path() {
+    local service_script="$1"
+    local scope="$2"
+
+    if [[ "${OS_NAME}" == "Linux" && "${scope}" == "system" && "${EUID}" -ne 0 ]]; then
+        local service_root=""
+        service_root="$(cd "$(dirname "${service_script}")/.." 2>/dev/null && pwd -P || true)"
+        if [[ -n "${service_root}" && -w "${service_root}" ]]; then
+            local log_dir="${service_root}/tmp"
+            if mkdir -p "${log_dir}" 2>/dev/null; then
+                echo "${log_dir}/${PROJECT_NAME}-self-update-restart.log"
+                return
+            fi
+        fi
+    fi
+
+    echo "${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.log"
+}
+
 schedule_restart() {
     local service_script="$1"
 
@@ -363,13 +382,14 @@ schedule_restart() {
         return
     fi
 
-    local restart_log="${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.log"
     local restart_runner="${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.$$.sh"
     local restart_command
-    : > "${restart_log}"
     if [[ "${OS_NAME}" == "Linux" ]]; then
         local restart_scope
         restart_scope="$(resolve_linux_restart_scope)"
+        local restart_log
+        restart_log="$(resolve_restart_log_path "${service_script}" "${restart_scope}")"
+        : > "${restart_log}"
         restart_command="${service_script} restart --scope ${restart_scope}"
         log_info "将在 ${RESTART_DELAY}s 后重启服务: ${restart_command}"
         write_restart_runner "${restart_runner}" "${restart_log}" "${service_script}" "${restart_scope}"
@@ -416,6 +436,8 @@ schedule_restart() {
         log_warn "已尝试后台延迟重启，但未确认该方式在当前服务环境中可靠；日志: ${restart_log}"
         return
     else
+        local restart_log="${TMPDIR:-/tmp}/${PROJECT_NAME}-self-update-restart.log"
+        : > "${restart_log}"
         restart_command="${service_script} install && ${service_script} start"
         log_info "将在 ${RESTART_DELAY}s 后刷新并启动服务: ${restart_command}"
         nohup bash -c 'delay="$1"; service_script="$2"; sleep "${delay}"; bash "${service_script}" install && bash "${service_script}" start' _ "${RESTART_DELAY}" "${service_script}" >"${restart_log}" 2>&1 &

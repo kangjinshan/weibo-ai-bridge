@@ -49,7 +49,10 @@
 - `agent_repair.go` — Agent 可用性自动修复：`configBackedAgentAvailabilityRepairer` 会写入 TOML 配置文件并重新注册 Agent。
 - `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/claude`、`/codex`、`/hermes`、`/gemini`、`/model`、`/dir`、`/status`、`/super`、`/upgrade`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。`/listen`、`/unlisten` 是 Router 层特殊命令，不在 command.go 里执行监听。
 - `self_update.go` — `/upgrade` 的 shell 自更新适配器，调用 `scripts/self-update.sh`，收集输出并识别“已是最新”与延迟重启标记。
-- `native_sessions.go` — 原生会话扫描与元数据提取。Claude 数据源：① `sessions-index.json` ② `.jsonl` 文件解析 ③ `~/.claude/history.jsonl` 补充；Codex 数据源：`state_5.sqlite` / `session_index.jsonl` / `.jsonl`；Hermes 数据源：`~/.hermes/sessions/session_*.json`；Gemini 数据源：`~/.gemini/tmp|history/*/chats/session-*.jsonl`。
+- `native_sessions.go` — 原生会话扫描与元数据提取。Claude 数据源：① `sessions-index.json` ② `.jsonl` 文件解析 ③ `~/.claude/history.jsonl` 补充；Codex 数据源：`state_5.sqlite` / `session_index.jsonl` / `.jsonl`；Hermes 数据源：`~/.hermes/sessions/session_*.json`；Gemini 数据源：`~/.gemini/tmp|history/*/chats/session-*.jsonl`。`decodeProjectPath` 把 Claude 项目目录中的 `-` 还原成 `/`，无法保留原路径中本身包含 `-` 的目录名，这是与 Claude Code 同步的已知不可逆限制。
+- `router_session_binding.go` — `bindAgentNativeSessionID` 把 Agent 返回的 native session ID 收敛到 bridge 会话；adopt 后可能返回新的 `*session.Session`，调用方需要使用返回值而不是旧指针。
+- `stream_sender.go` — 流式分片发送器 `streamReplySender`，delta 缓冲与边界感知 flush，`idleLineBreakAfter`（5s 静默补换行）、`maxBufferDelay`。
+- `super_mode.go` — `/super` 模式状态管理与 Super Peer Review 后台流程（向其它 Agent 请求 review 并把结果作为 feedback 写回当前 turn）。
 - `router_utils.go` — rune 安全切分等辅助函数。
 
 ### `agent/`
@@ -145,6 +148,8 @@
 - Codex `thread/resume` 续接已存在本地线程时，应避免覆盖原线程策略参数（如 approval/sandbox/model）；优先使用最小续接参数并同步事件里的 `threadId` 变化，避免“看似续接但实际分叉新线程”
 - `skills/weibo-skill-api` 默认应复用 `weibo-ai-bridge` 的微博配置与 token 缓存，不要重新引入单独的 `~/.weibo-skill/config.json`
 - Router 的 `Handle` 主入口（`Handler` 接口）和生产入口 `HandleMessage` 都走流式路径（`streamRouterMessage`）。`handleAIMessage` 作为私有方法仍保留，仅供单元测试调用；生产流程不再经过它。Agent 接口仍保留 `Execute`（非流式）方法，但主流程只走 `ExecuteStream` 和 `InteractiveSession`
+- `cmd/server/main.go` 启动后会通过微博平台发出一条 startup notification（约启动 2s 后），用的是 `context.Background()`；若与即时 SIGTERM 关停叠加，可能在 `Stop` 期间仍然尝试发送，需要注意这条 goroutine 不受主 ctx 管控
+- `/listen` / `/unlisten` 的后台 goroutine（`listenRuns`）和 `/super` 的 peer review 后台 goroutine（`superReviews`）目前都使用独立 ctx，进程退出时依赖 cancel 链路收尾；后续如果加入 Router-level shutdown，需要把这两类后台任务一起取消
 
 ## 命令与接口
 
@@ -311,6 +316,7 @@ go test ./...
 - `LOG_LEVEL` — 日志级别
 - `LOG_FORMAT` — 日志格式
 - `LOG_OUTPUT` — 日志输出位置
+- `HTTP_API_KEY` — `/chat/stream` 等 HTTP 接口的访问密钥（在 `config.go:190` 读取）
 
 Claude 的认证主要由本地 CLI 环境负责。Codex、Hermes 和 Gemini 也可能依赖本地 CLI 或 provider 的现有配置；Gemini 会从 `~/.gemini/.env` 补齐当前进程缺失的 Gemini API 环境变量。
 

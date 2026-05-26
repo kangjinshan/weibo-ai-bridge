@@ -53,6 +53,9 @@ type Router struct {
 	sessionMgr     *session.Manager
 	agentMgr       *agent.Manager
 	commandHandler *CommandHandler
+	rootCtx        context.Context
+	rootCancel     context.CancelFunc
+	closeOnce      sync.Once
 	liveMu         sync.Mutex
 	liveSessions   map[string]*interactiveSessionState
 	superReviewMu  sync.Mutex
@@ -89,11 +92,14 @@ type streamingPlatformInterface interface {
 
 // NewRouter 创建路由器
 func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr *agent.Manager) *Router {
+	rootCtx, rootCancel := context.WithCancel(context.Background())
 	router := &Router{
 		handlers:     make(map[MessageType]Handler),
 		platform:     platform,
 		sessionMgr:   sessionMgr,
 		agentMgr:     agentMgr,
+		rootCtx:      rootCtx,
+		rootCancel:   rootCancel,
 		liveSessions: make(map[string]*interactiveSessionState),
 		superReviews: make(map[string]superReviewRun),
 		listenRuns:   make(map[string]listenRun),
@@ -109,6 +115,48 @@ func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr
 	}
 
 	return router
+}
+
+// Close cancels in-flight router work and closes live interactive sessions.
+func (r *Router) Close() {
+	if r == nil {
+		return
+	}
+	r.closeOnce.Do(func() {
+		if r.rootCancel != nil {
+			r.rootCancel()
+		}
+
+		r.liveMu.Lock()
+		liveSessions := make([]*interactiveSessionState, 0, len(r.liveSessions))
+		for _, state := range r.liveSessions {
+			liveSessions = append(liveSessions, state)
+		}
+		r.liveSessions = make(map[string]*interactiveSessionState)
+		r.liveMu.Unlock()
+
+		for _, state := range liveSessions {
+			if state != nil && state.session != nil {
+				_ = state.session.Close()
+			}
+		}
+	})
+}
+
+func (r *Router) lifecycleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil || r.rootCtx == nil {
+		return context.WithCancel(ctx)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	stopRootCancel := context.AfterFunc(r.rootCtx, cancel)
+	return runCtx, func() {
+		stopRootCancel()
+		cancel()
+	}
 }
 
 // Register 注册处理器
@@ -135,12 +183,17 @@ func (r *Router) Handle(msg *Message) (*Response, error) {
 
 	if strings.HasPrefix(content, "/") && r.commandHandler != nil {
 		if isSpecialRouterCommand(content) {
-			return r.handleByTheWaySync(context.Background(), msg)
+			ctx, cancel := r.lifecycleContext(context.Background())
+			defer cancel()
+			return r.handleByTheWaySync(ctx, msg)
 		}
 		return r.commandHandler.Handle(msg)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	baseCtx, baseCancel := r.lifecycleContext(context.Background())
+	defer baseCancel()
+
+	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Minute)
 	defer cancel()
 
 	stream, err := r.streamRouterMessage(ctx, msg)

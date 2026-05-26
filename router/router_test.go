@@ -410,6 +410,52 @@ func TestHandleMessage(t *testing.T) {
 	}
 }
 
+func TestRouterCloseCancelsLegacyHandle(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+	blockingAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			events := make(chan agent.Event)
+			go func() {
+				defer close(events)
+				<-ctx.Done()
+			}()
+			return events, nil
+		},
+	}
+	agentMgr.Register(blockingAgent)
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+	done := make(chan struct{})
+	go func() {
+		_, _ = router.Handle(&Message{
+			ID:      "msg-close",
+			Type:    TypeText,
+			Content: "hello",
+			UserID:  "user-close",
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("legacy Handle returned before router was closed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	router.Close()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("legacy Handle did not return after Router.Close")
+	}
+}
+
 func TestHandleMessage_RepliesToUserID(t *testing.T) {
 	platform := &MockPlatform{}
 	sessionMgr := session.NewManager(session.ManagerConfig{

@@ -48,6 +48,14 @@ type startupNotificationPlatform interface {
 	UID() int64
 }
 
+type stoppablePlatform interface {
+	Stop() error
+}
+
+type shutdownHTTPServer interface {
+	Shutdown(ctx context.Context) error
+}
+
 type messagePlatform interface {
 	messageSource
 	replyPlatform
@@ -239,7 +247,7 @@ func main() {
 	port := cfg.HTTP.Port
 
 	// 创建 HTTP 服务器
-	server := newHTTPServer(port, mux)
+	server := newHTTPServer(port, rejectWhenContextDone(ctx, mux))
 	if strings.TrimSpace(cfg.HTTP.APIKey) == "" {
 		logger.Printf("HTTP API key is not configured; /stats and /chat/stream are unauthenticated on %s", server.Addr)
 	}
@@ -258,24 +266,10 @@ func main() {
 	<-quit
 
 	logger.Println("Shutdown signal received, shutting down gracefully...")
-
-	// 创建超时上下文用于优雅关闭
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
-	// 停止平台
-	platform.Stop()
-	logger.Println("Platform stopped")
-
-	// 关闭 HTTP 服务器
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Printf("HTTP server shutdown error: %v", err)
-	} else {
-		logger.Println("HTTP server shutdown completed")
-	}
-
-	// 取消主上下文
-	cancel()
+	shutdownGracefully(logger, func() {
+		cancel()
+		msgRouter.Close()
+	}, server, platform, 30*time.Second)
 
 	logger.Println("Server shutdown completed")
 }
@@ -313,6 +307,46 @@ func newHTTPServer(port string, handler http.Handler) *http.Server {
 		// /chat/stream 是长连接 SSE，不能用短写超时截断慢回复。
 		WriteTimeout: 0,
 		IdleTimeout:  60 * time.Second,
+	}
+}
+
+func rejectWhenContextDone(ctx context.Context, next http.Handler) http.Handler {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-ctx.Done():
+			http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+			return
+		default:
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func shutdownGracefully(logger *log.Logger, cancel func(), server shutdownHTTPServer, platform stoppablePlatform, timeout time.Duration) {
+	if cancel != nil {
+		cancel()
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), timeout)
+	defer shutdownCancel()
+
+	if server != nil {
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("HTTP server shutdown error: %v", err)
+		} else {
+			logger.Println("HTTP server shutdown completed")
+		}
+	}
+
+	if platform != nil {
+		if err := platform.Stop(); err != nil {
+			logger.Printf("Platform stop error: %v", err)
+		} else {
+			logger.Println("Platform stopped")
+		}
 	}
 }
 

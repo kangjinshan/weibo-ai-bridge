@@ -55,6 +55,24 @@ func (p *startupNotificationTestPlatform) ReplyCount() int {
 	return p.replies
 }
 
+type shutdownTestPlatform struct {
+	record func(string)
+}
+
+func (p shutdownTestPlatform) Stop() error {
+	p.record("platform.stop")
+	return nil
+}
+
+type shutdownTestServer struct {
+	record func(string)
+}
+
+func (s shutdownTestServer) Shutdown(ctx context.Context) error {
+	s.record("http.shutdown")
+	return nil
+}
+
 func newProcessorTestPlatform() *processorTestPlatform {
 	return &processorTestPlatform{
 		messages: make(chan *weibo.Message, 10),
@@ -496,6 +514,48 @@ func TestStartupNotificationSkipsWhenContextCanceledBeforeDelay(t *testing.T) {
 	}
 
 	assert.Equal(t, 0, platform.ReplyCount())
+}
+
+func TestRejectWhenContextDoneReturnsServiceUnavailable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := 0
+	handler := rejectWhenContextDone(ctx, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/stream", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusNoContent, rr.Code)
+	assert.Equal(t, 1, called)
+
+	cancel()
+
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Equal(t, 1, called)
+}
+
+func TestShutdownGracefullyCancelsBeforeHTTPShutdownAndStopsPlatformLast(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	record := func(event string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, event)
+	}
+
+	shutdownGracefully(
+		log.New(io.Discard, "", 0),
+		func() { record("cancel") },
+		shutdownTestServer{record: record},
+		shutdownTestPlatform{record: record},
+		time.Second,
+	)
+
+	assert.Equal(t, []string{"cancel", "http.shutdown", "platform.stop"}, order)
 }
 
 func TestGracefulShutdown(t *testing.T) {

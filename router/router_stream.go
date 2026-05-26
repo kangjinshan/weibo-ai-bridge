@@ -36,18 +36,21 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 		return errors.New("message cannot be nil")
 	}
 
+	runCtx, cancel := r.lifecycleContext(ctx)
+	defer cancel()
+
 	routerMsg := r.toRouterMessage(msg)
 	content := strings.TrimSpace(routerMsg.Content)
 	if strings.HasPrefix(content, "/") && !isSpecialRouterCommand(content) && r.commandHandler != nil {
-		return r.handleSlashCommandDirect(ctx, routerMsg)
+		return r.handleSlashCommandDirect(runCtx, routerMsg)
 	}
 
-	stream, err := r.streamRouterMessage(ctx, routerMsg)
+	stream, err := r.streamRouterMessage(runCtx, routerMsg)
 	if err != nil {
 		return err
 	}
 
-	return r.forwardStreamToPlatform(ctx, msg.UserID, stream)
+	return r.forwardStreamToPlatform(runCtx, msg.UserID, stream)
 }
 
 func (r *Router) handleSlashCommandDirect(ctx context.Context, msg *Message) error {
@@ -87,32 +90,50 @@ func (r *Router) streamRouterMessage(ctx context.Context, msg *Message) (<-chan 
 		return nil, errors.New("message cannot be nil")
 	}
 
+	runCtx, cancel := r.lifecycleContext(ctx)
 	events := make(chan agent.Event, 32)
 
 	go func() {
+		defer cancel()
 		defer close(events)
 
 		content := strings.TrimSpace(msg.Content)
 		if strings.HasPrefix(content, "/") && r.commandHandler != nil {
-			if handled, err := r.emitSpecialCommandEvents(ctx, events, msg); handled {
+			if handled, err := r.emitSpecialCommandEvents(runCtx, events, msg); handled {
 				if err != nil && !IsBenignCancellation(err) {
-					events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
+					emitRouterEvent(runCtx, events, agent.Event{Type: agent.EventTypeError, Error: err.Error()})
 				}
-				events <- agent.Event{Type: agent.EventTypeDone}
+				emitRouterEvent(runCtx, events, agent.Event{Type: agent.EventTypeDone})
 				return
 			}
-			r.emitCommandEvents(events, msg)
+			r.emitCommandEvents(runCtx, events, msg)
 			return
 		}
 
-		if err := r.streamAIMessage(ctx, msg, events); err != nil && !IsBenignCancellation(err) {
-			events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
+		if err := r.streamAIMessage(runCtx, msg, events); err != nil && !IsBenignCancellation(err) {
+			emitRouterEvent(runCtx, events, agent.Event{Type: agent.EventTypeError, Error: err.Error()})
 		}
 
-		events <- agent.Event{Type: agent.EventTypeDone}
+		emitRouterEvent(runCtx, events, agent.Event{Type: agent.EventTypeDone})
 	}()
 
 	return events, nil
+}
+
+func emitRouterEvent(ctx context.Context, events chan<- agent.Event, event agent.Event) bool {
+	if event.Type == "" {
+		return true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case events <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, stream <-chan agent.Event) error {
@@ -218,22 +239,22 @@ func (r *Router) sendReply(ctx context.Context, userID string, content string) e
 	return nil
 }
 
-func (r *Router) emitCommandEvents(events chan<- agent.Event, msg *Message) {
+func (r *Router) emitCommandEvents(ctx context.Context, events chan<- agent.Event, msg *Message) {
 	resp, err := r.commandHandler.Handle(msg)
 	if err != nil {
-		events <- agent.Event{Type: agent.EventTypeError, Error: err.Error()}
-		events <- agent.Event{Type: agent.EventTypeDone}
+		emitRouterEvent(ctx, events, agent.Event{Type: agent.EventTypeError, Error: err.Error()})
+		emitRouterEvent(ctx, events, agent.Event{Type: agent.EventTypeDone})
 		return
 	}
 
 	if resp == nil {
-		events <- agent.Event{Type: agent.EventTypeError, Error: "response is nil"}
-		events <- agent.Event{Type: agent.EventTypeDone}
+		emitRouterEvent(ctx, events, agent.Event{Type: agent.EventTypeError, Error: "response is nil"})
+		emitRouterEvent(ctx, events, agent.Event{Type: agent.EventTypeDone})
 		return
 	}
 
 	if resp.Content != "" {
-		events <- agent.Event{Type: agent.EventTypeMessage, Content: resp.Content}
+		emitRouterEvent(ctx, events, agent.Event{Type: agent.EventTypeMessage, Content: resp.Content})
 	}
 	if resp.Success && isDirSetCommand(msg.Content) {
 		sessionID := strings.TrimSpace(msg.SessionID)
@@ -245,9 +266,9 @@ func (r *Router) emitCommandEvents(events chan<- agent.Event, msg *Message) {
 		}
 	}
 	if !resp.Success && resp.Error != nil {
-		events <- agent.Event{Type: agent.EventTypeError, Error: resp.Error.Error()}
+		emitRouterEvent(ctx, events, agent.Event{Type: agent.EventTypeError, Error: resp.Error.Error()})
 	}
-	events <- agent.Event{Type: agent.EventTypeDone}
+	emitRouterEvent(ctx, events, agent.Event{Type: agent.EventTypeDone})
 }
 
 func isDirSetCommand(content string) bool {

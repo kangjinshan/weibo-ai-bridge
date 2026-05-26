@@ -138,7 +138,7 @@ func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<
 	collector := &superTurnCollector{}
 	emit := func(event agent.Event) {
 		collector.Add(event)
-		events <- event
+		emitRouterEvent(ctx, events, event)
 	}
 
 	execCtx := agent.WithWorkDir(ctx, sessionWorkDir(sess))

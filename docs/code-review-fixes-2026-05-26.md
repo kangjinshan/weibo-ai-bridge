@@ -27,11 +27,11 @@
 | P0-1 | 已修复 | `fa889f6`：`sendChunk` 发送后释放 `connMutex`，节流 sleep 移到锁外，并补回归测试。 |
 | P0-2 | 已修复 | `fa889f6`：Agent 流式事件统一走 `emitOrCancel(ctx, ...)`，覆盖 Claude/Codex/Hermes/Gemini 及 app-server/interactive 路径。 |
 | P0-3 | 已修复 | `fa889f6`：Hermes ACP 进程等待改为 `sync.Once`，stderr/readLoop 纳入 `WaitGroup`。 |
-| P0-4 | 未修复 | 主入口 `HandleMessage` 已有 ctx；兼容入口 `Handle` 和 Router-level lifecycle 仍待处理。 |
+| P0-4 | 已修复 | `48d585e`：Router 增加 lifecycle ctx/`Close`，legacy `Handle` 与流式路径随 Router close 取消。 |
 | P0-5 | 未修复 | `/listen` 与 `/super` 后台任务仍未统一挂到 Router 生命周期。 |
 | P0-6 | 已修复 | `fa889f6`：`/new` 使用一次 session 锁原子切换 AgentType 并清空 native session id。 |
 | P0-7 | 未修复 | 重连仍是固定 5s 等待，无退避/熔断。 |
-| P0-8 | 未修复 | 关停顺序仍待调整。 |
+| P0-8 | 已修复 | `48d585e`：主服务先 cancel+close Router，再 HTTP shutdown，最后停微博平台；关停后新 HTTP 请求返回 503。 |
 | P0-9 | 已修复 | `5f1d1b4`：startup notification 改为主 ctx 派生，取消后不再发送。 |
 | P1-1 | 已修复 | `5f1d1b4`：`GetOrCreateSession` 改为单个 `Manager.mu` 临界区内完成 get/create/active 更新。 |
 | P1-2 ~ P1-3 | 未修复 | 保留待后续处理。 |
@@ -177,7 +177,7 @@ go func() {
 
 ### P0-4. Router 流式路径无 ctx 透传 + `Handle` 强制 `context.Background()`
 
-**状态**：未修复
+**状态**：已修复（`48d585e`）
 
 **问题描述**
 - `router/router_core.go:143` `Handle` 接口创建 `ctx, _ := context.WithTimeout(context.Background(), 5*time.Minute)`，丢掉了上层 ctx。
@@ -313,7 +313,7 @@ for {
 
 ### P0-8. `cmd/server/main.go:275-290` 关停顺序错误
 
-**状态**：未修复
+**状态**：已修复（`48d585e`）
 
 **问题描述**
 当前顺序：`platform.Stop()` → `httpServer.Shutdown` → `cancel()`。HTTP Shutdown 期间仍可能受理 `/chat/stream` 请求，调用已经 stop 的 router/platform。
@@ -717,8 +717,7 @@ make test-report   # 生成 reports/test-report.md，对比 coverage 不下降
 
 ## 修复顺序建议
 
-1. **已完成**：P0-1, P0-2, P0-3, P0-6, P0-9, P1-1, P1-4, P1-6, P1-8, P2-9。
-2. **下一轮（必须）**：P0-4, P0-8 — Router lifecycle context 和关停顺序耦合，应一起处理。
-3. **后续 P0**：P0-5, P0-7 — 后台 goroutine 生命周期与 WebSocket 重连退避。
-4. **剩余 P1**：P1-2, P1-3, P1-5, P1-7, P1-9, P1-10, P1-11, P1-12 — 可拆成 3-4 个小 PR。
-5. **P2**：提示性改动，按需。
+1. **已完成**：P0-1, P0-2, P0-3, P0-4, P0-6, P0-8, P0-9, P1-1, P1-4, P1-6, P1-8, P2-9。
+2. **剩余 P0**：P0-5, P0-7 — 后台 goroutine 生命周期与 WebSocket 重连退避。
+3. **剩余 P1**：P1-2, P1-3, P1-5, P1-7, P1-9, P1-10, P1-11, P1-12 — 可拆成 3-4 个小 PR。
+4. **P2**：提示性改动，按需。

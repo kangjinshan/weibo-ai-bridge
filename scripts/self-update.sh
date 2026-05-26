@@ -302,6 +302,40 @@ resolve_service_script() {
     echo ""
 }
 
+detect_linux_scope_from_cgroup() {
+    local cgroup_file="${WEIBO_AI_BRIDGE_TEST_CGROUP_FILE:-/proc/self/cgroup}"
+    [[ -r "${cgroup_file}" ]] || return
+
+    if grep -Eq "(^|/)system\.slice(/|[^[:space:]]*)${PROJECT_NAME}\.service" "${cgroup_file}"; then
+        echo "system"
+        return
+    fi
+    if grep -Eq "(^|/)user\.slice(/|[^[:space:]]*)${PROJECT_NAME}\.service" "${cgroup_file}"; then
+        echo "user"
+        return
+    fi
+}
+
+resolve_linux_restart_scope() {
+    local selected="${SCOPE}"
+    if [[ "${selected}" == "auto" ]]; then
+        selected="$(detect_linux_scope_from_cgroup || true)"
+        if [[ -z "${selected}" ]]; then
+            if [[ "${EUID}" -eq 0 ]]; then
+                selected="system"
+            else
+                selected="user"
+            fi
+        fi
+    fi
+
+    if [[ "${selected}" != "system" && "${selected}" != "user" ]]; then
+        die "Linux 仅支持 --scope system|user（当前: ${selected}）"
+    fi
+
+    echo "${selected}"
+}
+
 write_restart_runner() {
     local runner="$1"
     local restart_log="$2"
@@ -334,26 +368,25 @@ schedule_restart() {
     local restart_command
     : > "${restart_log}"
     if [[ "${OS_NAME}" == "Linux" ]]; then
-        restart_command="${service_script} restart --scope ${SCOPE}"
+        local restart_scope
+        restart_scope="$(resolve_linux_restart_scope)"
+        restart_command="${service_script} restart --scope ${restart_scope}"
         log_info "将在 ${RESTART_DELAY}s 后重启服务: ${restart_command}"
-        write_restart_runner "${restart_runner}" "${restart_log}" "${service_script}" "${SCOPE}"
+        write_restart_runner "${restart_runner}" "${restart_log}" "${service_script}" "${restart_scope}"
 
         if command -v systemd-run >/dev/null 2>&1; then
-            local systemd_scope="${SCOPE}"
-            if [[ "${systemd_scope}" == "auto" ]]; then
-                if [[ "${EUID}" -eq 0 ]]; then
-                    systemd_scope="system"
-                else
-                    systemd_scope="user"
-                fi
-            fi
-
             local -a systemd_run_cmd
-            systemd_run_cmd=(systemd-run)
-            if [[ "${systemd_scope}" == "system" && "${EUID}" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
-                systemd_run_cmd=(sudo -n systemd-run)
+            if [[ "${restart_scope}" == "system" && "${EUID}" -ne 0 ]]; then
+                if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+                    systemd_run_cmd=(sudo -n systemd-run)
+                else
+                    log_warn "当前进程属于 system scope，但没有免密 sudo，无法可靠安排 systemd 延迟重启"
+                    return
+                fi
+            else
+                systemd_run_cmd=(systemd-run)
             fi
-            if [[ "${systemd_scope}" == "user" ]]; then
+            if [[ "${restart_scope}" == "user" ]]; then
                 systemd_run_cmd+=(--user)
             fi
             systemd_run_cmd+=(
@@ -371,7 +404,7 @@ schedule_restart() {
                 log_success "延迟重启已安排，日志: ${restart_log}"
                 return
             fi
-            if [[ "${systemd_scope}" == "system" && "${EUID}" -ne 0 ]]; then
+            if [[ "${restart_scope}" == "system" && "${EUID}" -ne 0 ]]; then
                 log_warn "无法以非 root 用户安排 system scope 重启；请用 root 执行: systemctl restart ${PROJECT_NAME}.service"
                 return
             fi

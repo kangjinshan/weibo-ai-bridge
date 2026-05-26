@@ -402,7 +402,7 @@ printf '%s\n' "$@" > "${SYSTEMD_RUN_ARGS}"
 	}
 	runner := string(runnerBytes)
 	for _, want := range []string{
-		"service.sh restart --scope auto",
+		"service.sh restart --scope user",
 		"weibo-ai-bridge-self-update-restart.log",
 	} {
 		if !strings.Contains(runner, want) {
@@ -532,6 +532,154 @@ printf '%s\n' "$@" > "${SYSTEMD_RUN_ARGS}"
 	args := string(argsBytes)
 	if strings.Contains(args, "--user") {
 		t.Fatalf("system restart must not use --user:\n%s\noutput:\n%s", args, output)
+	}
+}
+
+func TestSelfUpdateScriptAutoScopeRestartsSystemServiceFromSystemdCgroup(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	scriptPath, err := filepath.Abs(filepath.Join(repoRoot, "scripts", "self-update.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tmp := t.TempDir()
+	fakeBin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	writeExecutable(t, filepath.Join(fakeBin, "git"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "ls-remote" ]]; then
+  echo "3333333333333333333333333333333333333333	refs/heads/main"
+  exit 0
+fi
+if [[ "${1:-}" == "clone" ]]; then
+  dest="${@: -1}"
+  mkdir -p "${dest}/scripts" "${dest}/skills"
+  touch "${dest}/go.mod"
+  printf '#!/usr/bin/env bash\n' > "${dest}/scripts/service.sh"
+  chmod +x "${dest}/scripts/service.sh"
+  exit 0
+fi
+if [[ "${1:-}" == "-C" && "${3:-}" == "describe" ]]; then
+  echo "test-version"
+  exit 0
+fi
+if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" ]]; then
+  echo "3333333"
+  exit 0
+fi
+echo "unexpected git args: $*" >&2
+exit 1
+`)
+	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "version" && "${2:-}" == "-m" ]]; then
+  cat <<EOF
+$3: go1.25.0
+	build	vcs.revision=1111111111111111111111111111111111111111
+EOF
+  exit 0
+fi
+if [[ "${1:-}" == "mod" && "${2:-}" == "download" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "build" ]]; then
+  out=""
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "-o" ]]; then
+      out="$2"
+      break
+    fi
+    shift
+  done
+  [[ -n "${out}" ]] || { echo "missing -o" >&2; exit 1; }
+  printf '#!/usr/bin/env bash\necho fake bridge\n' > "${out}"
+  chmod +x "${out}"
+  exit 0
+fi
+echo "unexpected go args: $*" >&2
+exit 1
+`)
+	sudoArgs := filepath.Join(tmp, "sudo-args.txt")
+	writeExecutable(t, filepath.Join(fakeBin, "sudo"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "${SUDO_ARGS}"
+if [[ "${1:-}" == "-n" ]]; then
+  shift
+fi
+if [[ "${1:-}" == "true" ]]; then
+  exit 0
+fi
+exec "$@"
+`)
+	systemdRunArgs := filepath.Join(tmp, "systemd-run-args.txt")
+	writeExecutable(t, filepath.Join(fakeBin, "systemd-run"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "${SYSTEMD_RUN_ARGS}"
+`)
+
+	targetBin := filepath.Join(tmp, "install", "weibo-ai-bridge")
+	if err := os.MkdirAll(filepath.Dir(targetBin), 0o755); err != nil {
+		t.Fatalf("mkdir install dir: %v", err)
+	}
+	if err := os.WriteFile(targetBin, []byte("fake binary"), 0o755); err != nil {
+		t.Fatalf("write target binary: %v", err)
+	}
+	cgroupFile := filepath.Join(tmp, "cgroup")
+	if err := os.WriteFile(cgroupFile, []byte("0::/system.slice/weibo-ai-bridge.service\n"), 0o644); err != nil {
+		t.Fatalf("write cgroup fixture: %v", err)
+	}
+
+	cmd := exec.Command("bash", scriptPath, "--repo", "fake-repo", "--ref", "main", "--target-bin", targetBin)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"WEIBO_AI_BRIDGE_TEST_OS=Linux",
+		"WEIBO_AI_BRIDGE_RESTART_DELAY=0",
+		"WEIBO_AI_BRIDGE_TEST_CGROUP_FILE="+cgroupFile,
+		"SUDO_ARGS="+sudoArgs,
+		"SYSTEMD_RUN_ARGS="+systemdRunArgs,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("self-update script failed: %v\n%s", err, output)
+	}
+
+	sudoBytes, err := os.ReadFile(sudoArgs)
+	if err != nil {
+		t.Fatalf("sudo was not used for system scope scheduling: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(sudoBytes), "systemd-run") {
+		t.Fatalf("sudo should wrap systemd-run for system scope, got:\n%s\noutput:\n%s", sudoBytes, output)
+	}
+
+	argsBytes, err := os.ReadFile(systemdRunArgs)
+	if err != nil {
+		t.Fatalf("systemd-run was not used to schedule restart: %v\n%s", err, output)
+	}
+	args := string(argsBytes)
+	if strings.Contains(args, "--user") {
+		t.Fatalf("system service restart must not schedule a user transient unit:\n%s\noutput:\n%s", args, output)
+	}
+
+	var runnerPath string
+	for _, line := range strings.Split(args, "\n") {
+		if strings.Contains(line, "weibo-ai-bridge-self-update-restart.") && strings.HasSuffix(line, ".sh") {
+			runnerPath = line
+			break
+		}
+	}
+	if runnerPath == "" {
+		t.Fatalf("systemd-run args missing restart runner path:\n%s\noutput:\n%s", args, output)
+	}
+	runnerBytes, err := os.ReadFile(runnerPath)
+	if err != nil {
+		t.Fatalf("read restart runner: %v\nargs:\n%s\noutput:\n%s", err, args, output)
+	}
+	if !strings.Contains(string(runnerBytes), "service.sh restart --scope system") {
+		t.Fatalf("system restart runner should use system scope:\n%s\nargs:\n%s\noutput:\n%s", runnerBytes, args, output)
 	}
 }
 

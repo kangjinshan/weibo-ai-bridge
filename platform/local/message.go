@@ -170,6 +170,16 @@ func shortRandom(n int) string {
 
 // ─── inbound: msghub → bridge ───
 
+// supportedBridgeAgents mirrors router.isSupportedAgentType. We duplicate the
+// list here so platform/local stays free of a router import. If the bridge
+// gains a new agent kind, add it in both places.
+var supportedBridgeAgents = map[string]struct{}{
+	"claude": {},
+	"codex":  {},
+	"hermes": {},
+	"gemini": {},
+}
+
 func (p *Platform) handleUserMessage(ctx context.Context, evt *UserMessageEvt) {
 	if evt == nil {
 		return
@@ -177,6 +187,21 @@ func (p *Platform) handleUserMessage(ctx context.Context, evt *UserMessageEvt) {
 	if len(evt.Message.Attachments) > 0 {
 		p.logger.Printf("local: user_message %s carries %d attachment(s); MVP ignores attachments", evt.Message.ID, len(evt.Message.Attachments))
 	}
+
+	// Tell the bridge session manager which agent this conv belongs to BEFORE
+	// the Router pulls the message off messageChan. Router will then resolve
+	// the active session for UserID=convID and find the correct AgentType.
+	// Skip the bind for unknown agent ids so the Router emits its usual
+	// "no agent" error instead of registering a bogus type.
+	if p.deps.Sessions != nil {
+		agentType := strings.ToLower(strings.TrimSpace(evt.AgentID))
+		if _, ok := supportedBridgeAgents[agentType]; ok {
+			p.deps.Sessions.BindActiveSessionAgent(evt.ConvID, agentType)
+		} else if agentType != "" {
+			p.logger.Printf("local: user_message %s has unsupported agent_id=%q; not binding session", evt.Message.ID, evt.AgentID)
+		}
+	}
+
 	wmsg := &weibo.Message{
 		ID:        evt.Message.ID,
 		Type:      weibo.MessageTypeText,

@@ -41,6 +41,7 @@ func buildPlatform(cfg *config.Config, agentMgr *agent.Manager, sessionMgr *sess
 		deps := local.PlatformDeps{
 			Agents:   agentListerFromManager(agentMgr),
 			Commands: commandListerFromRouter(sessionMgr, agentMgr),
+			Sessions: sessionBinderFromManager(sessionMgr),
 			Logger:   logger,
 		}
 		return local.NewPlatform(
@@ -139,4 +140,28 @@ func (r *routerCommandLister) ListCommands() []local.CommandDescriptor {
 		})
 	}
 	return out
+}
+
+// sessionBinderAdapter routes local.SessionBinder calls into the existing
+// session.Manager API. The semantic contract is "after Bind returns, the
+// active session for userID has AgentType=agentType": create the session if
+// needed, otherwise rewrite its AgentType if msghub told us the conv now
+// belongs to a different agent.
+type sessionBinderAdapter struct{ mgr *session.Manager }
+
+func sessionBinderFromManager(mgr *session.Manager) local.SessionBinder {
+	return &sessionBinderAdapter{mgr: mgr}
+}
+
+func (s *sessionBinderAdapter) BindActiveSessionAgent(userID, agentType string) {
+	if s == nil || s.mgr == nil || userID == "" || agentType == "" {
+		return
+	}
+	sess := s.mgr.GetOrCreateActiveSession(userID, agentType)
+	if sess == nil {
+		return
+	}
+	if sess.AgentType != agentType {
+		s.mgr.SetSessionAgentType(sess.ID, agentType)
+	}
 }

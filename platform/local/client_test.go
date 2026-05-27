@@ -155,7 +155,35 @@ type fakeCommandLister struct{ commands []CommandDescriptor }
 
 func (f *fakeCommandLister) ListCommands() []CommandDescriptor { return f.commands }
 
+type fakeSessionBinder struct {
+	mu    sync.Mutex
+	calls []bindCall
+}
+
+type bindCall struct {
+	UserID    string
+	AgentType string
+}
+
+func (f *fakeSessionBinder) BindActiveSessionAgent(userID, agentType string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, bindCall{UserID: userID, AgentType: agentType})
+}
+
+func (f *fakeSessionBinder) Calls() []bindCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]bindCall, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
 func newTestPlatform(t *testing.T, hub *fakeHub) *Platform {
+	return newTestPlatformWithBinder(t, hub, nil)
+}
+
+func newTestPlatformWithBinder(t *testing.T, hub *fakeHub, binder SessionBinder) *Platform {
 	t.Helper()
 	plat, err := NewPlatform(hub.URL(), "test-token", "bridge-test", PlatformDeps{
 		Agents: &fakeAgentLister{agents: []AgentDescriptor{
@@ -166,7 +194,8 @@ func newTestPlatform(t *testing.T, hub *fakeHub) *Platform {
 			{Name: "/help", Description: "显示帮助"},
 			{Name: "/new", Description: "新建会话", Args: []string{"agent_type"}},
 		}},
-		Logger: log.New(testWriter{t: t}, "[hub-test] ", 0),
+		Logger:   log.New(testWriter{t: t}, "[hub-test] ", 0),
+		Sessions: binder,
 	})
 	require.NoError(t, err)
 	require.NoError(t, plat.Start(context.Background()))
@@ -248,6 +277,87 @@ func TestPlatform_UserMessageFlowsThroughChannel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("user_message never arrived on Messages channel")
 	}
+}
+
+// Regression: msghub tells the bridge which agent each conv belongs to via
+// UserMessageEvt.AgentID. The bridge previously dropped that field, so the
+// Router fell back to the default agent and every conv was answered by claude
+// regardless of the user's selection. This test pins the contract that
+// platform/local hands the agent_id to a SessionBinder *before* the message
+// reaches the Router, so the Router's GetActiveSession path sees the right
+// AgentType.
+func TestPlatform_UserMessageBindsActiveSessionToAgentID(t *testing.T) {
+	hub := newFakeHub(t)
+	defer hub.Close()
+	binder := &fakeSessionBinder{}
+	plat := newTestPlatformWithBinder(t, hub, binder)
+	hub.waitFor(t, func(e Envelope) bool { return e.Type == FrameRegisterAgents }, 2*time.Second)
+
+	push := func(convID, agentID, msgID string) {
+		hub.push(t, FrameUserMessage, UserMessageEvt{
+			ConvID:  convID,
+			AgentID: agentID,
+			Message: Message{
+				ID:             msgID,
+				ConversationID: convID,
+				Seq:            1,
+				Role:           RoleUser,
+				Kind:           KindText,
+				Content:        "ping",
+				Status:         StatusDone,
+				CreatedAt:      1700000000000,
+				UpdatedAt:      1700000000000,
+			},
+		})
+	}
+
+	push("conv-claude", "claude", "m1")
+	push("conv-codex", "codex", "m2")
+
+	// drain both messages so we know handleUserMessage completed for both
+	for i := 0; i < 2; i++ {
+		select {
+		case <-plat.Messages():
+		case <-time.After(time.Second):
+			t.Fatalf("user_message %d never arrived on Messages channel", i+1)
+		}
+	}
+
+	calls := binder.Calls()
+	require.Len(t, calls, 2, "binder must be called once per inbound user_message")
+	assert.Equal(t, bindCall{UserID: "conv-claude", AgentType: "claude"}, calls[0])
+	assert.Equal(t, bindCall{UserID: "conv-codex", AgentType: "codex"}, calls[1])
+}
+
+// Defensive: an unknown agent_id from msghub must NOT bind a bogus agentType
+// onto the Router session, because Router would then try to resolve an
+// unsupported agent and fail in confusing ways. We expect the binder to be
+// skipped (or rejected) for unsupported types; the message itself can still
+// flow through so the Router can emit its usual "no agent" error.
+func TestPlatform_UserMessageSkipsBindForUnsupportedAgentID(t *testing.T) {
+	hub := newFakeHub(t)
+	defer hub.Close()
+	binder := &fakeSessionBinder{}
+	plat := newTestPlatformWithBinder(t, hub, binder)
+	hub.waitFor(t, func(e Envelope) bool { return e.Type == FrameRegisterAgents }, 2*time.Second)
+
+	hub.push(t, FrameUserMessage, UserMessageEvt{
+		ConvID:  "conv-x",
+		AgentID: "definitely-not-an-agent",
+		Message: Message{
+			ID: "m1", ConversationID: "conv-x", Seq: 1,
+			Role: RoleUser, Kind: KindText, Content: "ping",
+			Status: StatusDone, CreatedAt: 1700000000000, UpdatedAt: 1700000000000,
+		},
+	})
+
+	select {
+	case <-plat.Messages():
+	case <-time.After(time.Second):
+		t.Fatal("user_message never arrived on Messages channel")
+	}
+
+	assert.Empty(t, binder.Calls(), "binder must not be called for unsupported agent_id")
 }
 
 func TestPlatform_UserCommandIsLoweredToSlashMessage(t *testing.T) {

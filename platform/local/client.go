@@ -62,9 +62,21 @@ type CommandDescriptor struct {
 type PlatformDeps struct {
 	Agents   AgentLister
 	Commands CommandLister
+	Sessions SessionBinder
 	Logger   *log.Logger
 	// Now is injected for tests; defaults to time.Now.
 	Now func() time.Time
+}
+
+// SessionBinder lets the local platform tell the bridge's session manager
+// which agent each inbound conv should be routed to. msghub is the source of
+// truth for "conv X belongs to agent Y" (the user picked the agent in the
+// web/android client). Without this hook the Router falls back to its default
+// agent and every conv ends up answered by the same one. Bind is invoked
+// before the user_message reaches the Router, so the Router's GetActiveSession
+// path sees the right AgentType on the very first turn.
+type SessionBinder interface {
+	BindActiveSessionAgent(userID, agentType string)
 }
 
 // Platform is the msghub upstream adapter. It satisfies router.Platform via

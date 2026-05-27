@@ -209,17 +209,12 @@ func main() {
 
 	logger.Printf("Agent manager initialized: count=%d, default=%s", agentMgr.Count(), defaultAgent)
 
-	// 创建微博平台适配器
-	platform, err := weibo.NewPlatform(cfg.Platform.Weibo.AppID, cfg.Platform.Weibo.Appsecret)
+	// 创建上游平台适配器（微博或本地 msghub）
+	platform, err := buildPlatform(cfg, agentMgr, sessionMgr, logger)
 	if err != nil {
 		logger.Fatalf("Failed to create platform: %v", err)
 	}
-	platform.Configure(
-		cfg.Platform.Weibo.TokenURL,
-		cfg.Platform.Weibo.WSURL,
-		time.Duration(cfg.Platform.Weibo.Timeout)*time.Second,
-	)
-	logger.Printf("Platform created: app_id=%s", cfg.Platform.Weibo.AppID)
+	logger.Printf("Platform created: kind=%s", platformKind(cfg))
 
 	// 创建消息路由器
 	msgRouter := router.NewRouter(platform, sessionMgr, agentMgr)

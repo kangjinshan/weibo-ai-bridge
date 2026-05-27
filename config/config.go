@@ -16,6 +16,7 @@ import (
 // Config 应用配置
 type Config struct {
 	Platform PlatformConfig
+	Upstream UpstreamConfig
 	Agent    AgentConfig
 	Session  SessionConfig
 	Log      LogConfig
@@ -31,6 +32,29 @@ type HTTPConfig struct {
 // PlatformConfig 平台配置
 type PlatformConfig struct {
 	Weibo WeiboConfig
+}
+
+// UpstreamKind 描述当前 bridge 连接的上游消息源。
+type UpstreamKind string
+
+const (
+	// UpstreamKindWeibo 表示连接微博开放平台（默认，向后兼容）。
+	UpstreamKindWeibo UpstreamKind = "weibo"
+	// UpstreamKindLocal 表示连接本地 msghub WS。
+	UpstreamKindLocal UpstreamKind = "local"
+)
+
+// UpstreamConfig 选择 bridge 的上游消息源。
+type UpstreamConfig struct {
+	Kind  string            `toml:"kind"`
+	Local LocalUpstreamConfig `toml:"local"`
+}
+
+// LocalUpstreamConfig 用于 upstream.kind = "local" 时的 msghub 连接信息。
+type LocalUpstreamConfig struct {
+	HubURL      string `toml:"hub_url"`
+	DeviceToken string `toml:"device_token"`
+	BridgeName  string `toml:"bridge_name"`
 }
 
 // WeiboConfig 微博配置
@@ -191,6 +215,20 @@ func Load() *Config {
 		cfg.HTTP.APIKey = val
 	}
 
+	// 上游选择与本地 msghub 配置
+	if val := strings.TrimSpace(os.Getenv("BRIDGE_UPSTREAM_KIND")); val != "" {
+		cfg.Upstream.Kind = val
+	}
+	if val := os.Getenv("MSGHUB_URL"); val != "" {
+		cfg.Upstream.Local.HubURL = val
+	}
+	if val := os.Getenv("MSGHUB_DEVICE_TOKEN"); val != "" {
+		cfg.Upstream.Local.DeviceToken = val
+	}
+	if val := os.Getenv("MSGHUB_BRIDGE_NAME"); val != "" {
+		cfg.Upstream.Local.BridgeName = val
+	}
+
 	return cfg
 }
 
@@ -287,6 +325,9 @@ func defaultConfig() *Config {
 		HTTP: HTTPConfig{
 			Port: "5533",
 		},
+		Upstream: UpstreamConfig{
+			Kind: string(UpstreamKindWeibo),
+		},
 		Log: LogConfig{
 			Level:  "info",
 			Format: "json",
@@ -297,12 +338,39 @@ func defaultConfig() *Config {
 
 // Validate 验证配置
 func (c *Config) Validate() error {
-	// 验证微博配置
-	if strings.TrimSpace(c.Platform.Weibo.AppID) == "" {
-		return errors.New("platform.weibo.app_id is required")
+	kind := strings.TrimSpace(strings.ToLower(c.Upstream.Kind))
+	if kind == "" {
+		kind = string(UpstreamKindWeibo)
+		c.Upstream.Kind = kind
 	}
-	if strings.TrimSpace(c.Platform.Weibo.Appsecret) == "" {
-		return errors.New("platform.weibo.app_secret is required")
+
+	switch UpstreamKind(kind) {
+	case UpstreamKindWeibo:
+		// 验证微博配置
+		if strings.TrimSpace(c.Platform.Weibo.AppID) == "" {
+			return errors.New("platform.weibo.app_id is required")
+		}
+		if strings.TrimSpace(c.Platform.Weibo.Appsecret) == "" {
+			return errors.New("platform.weibo.app_secret is required")
+		}
+		// 验证超时配置
+		if c.Platform.Weibo.Timeout <= 0 {
+			return errors.New("platform.weibo.timeout must be positive")
+		}
+	case UpstreamKindLocal:
+		hubURL := strings.TrimSpace(c.Upstream.Local.HubURL)
+		if hubURL == "" {
+			return errors.New("upstream.local.hub_url is required when upstream.kind = \"local\"")
+		}
+		lower := strings.ToLower(hubURL)
+		if !strings.HasPrefix(lower, "ws://") && !strings.HasPrefix(lower, "wss://") {
+			return fmt.Errorf("upstream.local.hub_url must use ws:// or wss:// scheme, got %q", hubURL)
+		}
+		if strings.TrimSpace(c.Upstream.Local.DeviceToken) == "" {
+			return errors.New("upstream.local.device_token is required when upstream.kind = \"local\"")
+		}
+	default:
+		return fmt.Errorf("invalid upstream.kind: %q (expected \"weibo\" or \"local\")", c.Upstream.Kind)
 	}
 
 	// 验证 Agent 配置
@@ -313,10 +381,6 @@ func (c *Config) Validate() error {
 		return errors.New("at least one agent must be enabled")
 	}
 
-	// 验证超时配置
-	if c.Platform.Weibo.Timeout <= 0 {
-		return errors.New("platform.weibo.timeout must be positive")
-	}
 	if c.Session.Timeout <= 0 {
 		return errors.New("session.timeout must be positive")
 	}

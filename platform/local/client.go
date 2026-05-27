@@ -197,8 +197,6 @@ func (p *Platform) Start(ctx context.Context) error {
 		// Don't fail the bridge if msghub is temporarily down — log and let
 		// the reconnect loop keep retrying.
 		p.logger.Printf("local: initial dial failed, will keep retrying: %v", err)
-	} else {
-		p.afterConnected(runCtx)
 	}
 
 	p.wg.Add(1)
@@ -300,13 +298,17 @@ func (p *Platform) supervisor(ctx context.Context) {
 				continue
 			}
 			delay = defaultInitialReconnect
-			p.afterConnected(ctx)
 			conn = p.currentConn()
 		}
 
 		pingStop := make(chan struct{})
 		p.wg.Add(1)
 		go p.pingLoop(ctx, conn, pingStop)
+
+		// afterConnected runs register_agents which expects an ack. readLoop
+		// must be live to deliver that ack, so run afterConnected in a
+		// separate goroutine and let this one enter readLoop immediately.
+		go p.afterConnected(ctx)
 
 		p.readLoop(ctx, conn)
 		close(pingStop)
@@ -391,6 +393,14 @@ func (p *Platform) handleIncoming(ctx context.Context, raw []byte) {
 
 	case FramePong:
 		// keepalive, nothing to do
+
+	case FrameAgentStatus:
+		// Broadcast to all msghub clients (including bridge itself). Bridge
+		// is the source of agent status, so nothing to do here.
+
+	case "message_appended", "message_delta", "message_finalized":
+		// Broadcasts from msghub to all clients (web/android). Bridge is the
+		// origin of these messages, so it has no use for the echo.
 
 	case FrameUserMessage:
 		var evt UserMessageEvt

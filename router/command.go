@@ -116,6 +116,38 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 	}
 }
 
+// CommandMeta 描述一个 slash 命令的对外可见信息。
+// 当前 platform/local 用它向 msghub 上报命令清单，供客户端做 `/`
+// 触发的命令补全；其它路径不依赖这个类型。
+type CommandMeta struct {
+	Name        string
+	Description string
+	Args        []string
+}
+
+// ListCommands 返回 bridge 当前支持的 slash 命令清单。顺序固定为代码声明顺序，
+// 与 `/help` 文案保持一致，方便客户端做 UI 排序。
+func (h *CommandHandler) ListCommands() []CommandMeta {
+	return []CommandMeta{
+		{Name: "/help", Description: "显示帮助信息"},
+		{Name: "/new", Description: "准备一个新的原生会话", Args: []string{"agent_type"}},
+		{Name: "/list", Description: "查看当前用户的原生会话"},
+		{Name: "/switch", Description: "切换当前活跃会话或 Agent", Args: []string{"index_or_agent"}},
+		{Name: "/claude", Description: "切换到 Claude agent"},
+		{Name: "/codex", Description: "切换到 Codex agent"},
+		{Name: "/hermes", Description: "切换到 Hermes agent"},
+		{Name: "/gemini", Description: "切换到 Gemini agent"},
+		{Name: "/btw", Description: "向当前正在进行的交互会话插入一条补充消息", Args: []string{"content"}},
+		{Name: "/listen", Description: "监听当前或指定编号的原生会话日志", Args: []string{"index"}},
+		{Name: "/unlisten", Description: "停止当前监听"},
+		{Name: "/model", Description: "显示当前使用的模型"},
+		{Name: "/dir", Description: "显示或设置当前工作目录", Args: []string{"path"}},
+		{Name: "/status", Description: "显示当前会话状态"},
+		{Name: "/super", Description: "管理 Super 模式", Args: []string{"on_off_status"}},
+		{Name: "/upgrade", Description: "从 GitHub 升级 bridge", Args: []string{"--ref"}},
+	}
+}
+
 // handleHelp 处理帮助命令
 func (h *CommandHandler) handleHelp() (*Response, error) {
 	helpText := `可用命令：

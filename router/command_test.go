@@ -66,6 +66,7 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.Contains(t, resp.Content, "/dir")
 	assert.Contains(t, resp.Content, "/status")
 	assert.Contains(t, resp.Content, "/super")
+	assert.Contains(t, resp.Content, "/simple")
 	assert.Contains(t, resp.Content, "/upgrade")
 }
 
@@ -1477,6 +1478,85 @@ func TestCommandHandler_Handle_Super(t *testing.T) {
 	assert.False(t, sessionContextBool(sess, superAutoApproveContextKey))
 	assert.Equal(t, "", sessionContextString(sess, superFeedbackForClaudeKey))
 	assert.False(t, sessionContextBool(sess, superFeedbackReadyForClaudeKey))
+}
+
+func TestCommandHandler_Handle_Simple(t *testing.T) {
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	sess := sessionManager.Create("session-1", "user-1", "claude")
+	assert.NotNil(t, sess)
+
+	resp, err := handler.Handle(&Message{
+		ID:        "msg-simple-toggle-on",
+		Type:      TypeText,
+		Content:   "/simple",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Simple mode enabled")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.True(t, isSimpleModeEnabled(sess))
+
+	resp, err = handler.Handle(&Message{
+		ID:        "msg-simple-toggle-off",
+		Type:      TypeText,
+		Content:   "/simple",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Simple mode disabled")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.False(t, isSimpleModeEnabled(sess))
+
+	resp, err = handler.Handle(&Message{
+		ID:        "msg-simple-on",
+		Type:      TypeText,
+		Content:   "/simple on",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Simple mode enabled")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.True(t, isSimpleModeEnabled(sess))
+
+	resp, err = handler.Handle(&Message{
+		ID:        "msg-simple-status-2",
+		Type:      TypeText,
+		Content:   "/simple status",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Simple mode: ON")
+
+	resp, err = handler.Handle(&Message{
+		ID:        "msg-simple-off",
+		Type:      TypeText,
+		Content:   "/simple off",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Simple mode disabled")
+
+	sess, _ = sessionManager.Get("session-1")
+	assert.False(t, isSimpleModeEnabled(sess))
 }
 
 func TestCommandHandler_Handle_UnknownCommand(t *testing.T) {

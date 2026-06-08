@@ -106,6 +106,8 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 		return h.handleStatus(msg.UserID, msg.SessionID)
 	case "/super":
 		return h.handleSuper(msg.UserID, msg.SessionID, args)
+	case "/simple":
+		return h.handleSimple(msg.UserID, msg.SessionID, args)
 	case "/upgrade":
 		return h.handleUpgrade(args)
 	default:
@@ -144,6 +146,7 @@ func (h *CommandHandler) ListCommands() []CommandMeta {
 		{Name: "/dir", Description: "显示或设置当前工作目录", Args: []string{"path"}},
 		{Name: "/status", Description: "显示当前会话状态"},
 		{Name: "/super", Description: "管理 Super 模式", Args: []string{"on_off_status"}},
+		{Name: "/simple", Description: "管理简洁模式", Args: []string{"on_off_status"}},
 		{Name: "/upgrade", Description: "从 GitHub 升级 bridge", Args: []string{"--ref"}},
 	}
 }
@@ -167,6 +170,7 @@ func (h *CommandHandler) handleHelp() (*Response, error) {
 /dir [path] - 显示或设置当前工作目录
 /status - 显示当前会话状态
 /super [on|off|status] - 管理 Super 模式（on 等价于 Allow All）
+/simple [on|off|status] - 管理简洁模式（不带参数时切换开关；只发送授权、选择和最终回复）
 /upgrade [--ref branch|tag] - 从 GitHub 下载最新代码，编译安装，并在回复后延迟重启服务`
 	return &Response{
 		Success: true,
@@ -959,6 +963,61 @@ func (h *CommandHandler) handleSuper(userID, sessionID string, args []string) (*
 	}
 }
 
+func (h *CommandHandler) handleSimple(userID, sessionID string, args []string) (*Response, error) {
+	sessID := strings.TrimSpace(sessionID)
+	if sessID == "" {
+		if activeID := strings.TrimSpace(h.sessionManager.GetActiveSessionID(userID)); activeID != "" {
+			sessID = activeID
+		}
+	}
+
+	sess, exists := h.sessionManager.Get(sessID)
+	if !exists {
+		return &Response{
+			Success: false,
+			Content: "Session not found. Use /new to create a new session.",
+		}, nil
+	}
+
+	showStatus := func() *Response {
+		return &Response{
+			Success: true,
+			Content: fmt.Sprintf("Simple mode: %s", boolToOnOff(isSimpleModeEnabled(sess))),
+		}
+	}
+	setEnabled := func(enabled bool) *Response {
+		setSimpleMode(h.sessionManager, sess.ID, enabled)
+		if enabled {
+			return &Response{
+				Success: true,
+				Content: "Simple mode enabled. Only approval prompts, choice prompts, and final replies will be sent.",
+			}
+		}
+		return &Response{
+			Success: true,
+			Content: "Simple mode disabled.",
+		}
+	}
+
+	if len(args) == 0 {
+		return setEnabled(!isSimpleModeEnabled(sess)), nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "status":
+		return showStatus(), nil
+	case "on":
+		return setEnabled(true), nil
+	case "off":
+		return setEnabled(false), nil
+	default:
+		return &Response{
+			Success: false,
+			Content: "Invalid simple command. Use /simple on, /simple off, or /simple status.",
+		}, nil
+	}
+}
+
 func boolToOnOff(enabled bool) string {
 	if enabled {
 		return "ON"
@@ -1215,6 +1274,7 @@ Total Sessions: %d`,
 	} else {
 		statusText += "\nSuper mode: OFF"
 	}
+	statusText += fmt.Sprintf("\nSimple mode: %s", boolToOnOff(isSimpleModeEnabled(sess)))
 
 	return &Response{
 		Success: true,

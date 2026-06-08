@@ -1582,6 +1582,72 @@ func TestForwardStreamToPlatform_SendsFinalMessageThenDoneChunk(t *testing.T) {
 	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
 }
 
+func TestForwardSimpleStreamToPlatform_SendsOnlyApprovalAndFinal(t *testing.T) {
+	platform := &MockPlatform{}
+	router := NewRouter(platform, nil, nil)
+
+	stream := make(chan agent.Event, 5)
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "过程一。"}
+	stream <- agent.Event{Type: agent.EventTypeApproval, Content: "需要授权"}
+	stream <- agent.Event{Type: agent.EventTypeDelta, Content: "最终回复"}
+	stream <- agent.Event{Type: agent.EventTypeDone}
+	close(stream)
+
+	err := router.forwardSimpleStreamToPlatform(context.Background(), "user-simple", stream)
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 3)
+	assert.Equal(t, "需要授权", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, false, platform.streams[0].chunks[0]["done"])
+	assert.Equal(t, "过程一。最终回复", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, false, platform.streams[0].chunks[1]["done"])
+	assert.Equal(t, "", platform.streams[0].chunks[2]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[2]["done"])
+}
+
+func TestHandleMessage_SimpleModePrefersFinalMessageAfterDeltas(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+	streamAgent := &MockAgent{
+		name:      "codex",
+		available: true,
+		streamFn: func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
+			events := make(chan agent.Event, 3)
+			go func() {
+				defer close(events)
+				events <- agent.Event{Type: agent.EventTypeDelta, Content: "partial"}
+				events <- agent.Event{Type: agent.EventTypeMessage, Content: "final answer"}
+				events <- agent.Event{Type: agent.EventTypeDone}
+			}()
+			return events, nil
+		},
+	}
+	agentMgr.Register(streamAgent)
+	agentMgr.SetDefault("codex")
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	sess := sessionMgr.Create("session-simple", "user-simple", "codex")
+	assert.NotNil(t, sess)
+	assert.True(t, sessionMgr.SetActiveSession("user-simple", sess.ID))
+	setSimpleMode(sessionMgr, sess.ID, true)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:      "msg-simple",
+		Type:    weibo.MessageTypeText,
+		Content: "hello",
+		UserID:  "user-simple",
+	})
+
+	assert.NoError(t, err)
+	assert.Len(t, platform.streams, 1)
+	assert.Len(t, platform.streams[0].chunks, 2)
+	assert.Equal(t, "final answer", platform.streams[0].chunks[0]["content"])
+	assert.Equal(t, "", platform.streams[0].chunks[1]["content"])
+	assert.Equal(t, true, platform.streams[0].chunks[1]["done"])
+}
+
 func TestForwardStreamToPlatform_SettlesCurrentStreamOnContextCancel(t *testing.T) {
 	platform := &MockPlatform{}
 	router := NewRouter(platform, nil, nil)

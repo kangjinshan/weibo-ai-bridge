@@ -47,12 +47,13 @@
 - `listen.go` — `/listen` / `/unlisten` 原生会话日志监听。按 `/list` 编号或当前活跃会话解析 Claude/Codex/Hermes/Gemini 原生日志文件，tail 新增内容并回传微博；不会向 Agent 发送输入。
 - `stream_sender.go` — 流式分片发送器 `streamReplySender`，delta 缓冲与边界感知 flush，`idleLineBreakAfter`（5s 静默补换行）、`maxBufferDelay`。
 - `agent_repair.go` — Agent 可用性自动修复：`configBackedAgentAvailabilityRepairer` 会写入 TOML 配置文件并重新注册 Agent。
-- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/claude`、`/codex`、`/hermes`、`/gemini`、`/model`、`/dir`、`/status`、`/super`、`/upgrade`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。`/listen`、`/unlisten` 是 Router 层特殊命令，不在 command.go 里执行监听。
+- `command.go` — 斜杠命令处理（`/help`、`/new`、`/list`、`/switch`、`/claude`、`/codex`、`/hermes`、`/gemini`、`/model`、`/dir`、`/status`、`/super`、`/simple`、`/upgrade`）。`/list` 展示所有项目的 native 会话，带项目名前缀区分来源。`/listen`、`/unlisten` 是 Router 层特殊命令，不在 command.go 里执行监听。
 - `self_update.go` — `/upgrade` 的 shell 自更新适配器，调用 `scripts/self-update.sh`，收集输出并识别“已是最新”与延迟重启标记。
 - `native_sessions.go` — 原生会话扫描与元数据提取。Claude 数据源：① `sessions-index.json` ② `.jsonl` 文件解析 ③ `~/.claude/history.jsonl` 补充；Codex 数据源：`state_5.sqlite` / `session_index.jsonl` / `.jsonl`；Hermes 数据源：`~/.hermes/sessions/session_*.json`；Gemini 数据源：`~/.gemini/tmp|history/*/chats/session-*.jsonl`。`decodeProjectPath` 把 Claude 项目目录中的 `-` 还原成 `/`，无法保留原路径中本身包含 `-` 的目录名，这是与 Claude Code 同步的已知不可逆限制。
 - `router_session_binding.go` — `bindAgentNativeSessionID` 把 Agent 返回的 native session ID 收敛到 bridge 会话；adopt 后可能返回新的 `*session.Session`，调用方需要使用返回值而不是旧指针。
 - `stream_sender.go` — 流式分片发送器 `streamReplySender`，delta 缓冲与边界感知 flush，`idleLineBreakAfter`（5s 静默补换行）、`maxBufferDelay`。
 - `super_mode.go` — `/super` 模式状态管理与 Super Peer Review 后台流程（向其它 Agent 请求 review 并把结果作为 feedback 写回当前 turn）。
+- `simple_mode.go` — `/simple` 模式状态管理。开启后普通 AI 对话不发送过程 delta，只即时发送审批提示，并在 turn 完成时发送最终回复；slash 命令和 `/listen` 仍按命令语义即时输出。
 - `router_utils.go` — rune 安全切分等辅助函数。
 
 ### `agent/`
@@ -128,6 +129,7 @@
 - `/btw` 是特殊命令，它会把补充内容注入当前活跃的交互式会话，而不是走普通命令逻辑
 - `/listen` 和 `/unlisten` 是 Router 层特殊命令。监听只读取本地原生会话日志并回传新增内容，不应调用 Agent resume/send，也不应打断当前对话。
 - 当用户已有普通消息在处理中时，其它 slash 指令应旁路消息队列并立即执行；不要把 `/help`、`/status` 之类命令排到当前回复之后
+- `/simple on` 只影响普通 AI 对话流的对外发送策略，不应阻塞 slash 命令即时响应，也不应把 `/listen` 的原生日志监听输出憋到监听结束
 - 从微博对话里升级 bridge 时优先使用 `/upgrade` 或 `scripts/self-update.sh`；不要在普通 Agent turn 中直接同步执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，否则会先终止承载当前回复的 bridge 进程
 - `/upgrade` 必须先比较本地二进制 commit 与 GitHub 目标 ref commit；一致时直接回复已是最新，不应下载、编译或重启
 - Linux systemd unit 必须持久化 `WEIBO_AI_BRIDGE_SCOPE=system|user`，避免 system service 中的非 root 进程把 `/upgrade` 延迟重启误判为 `systemctl --user`；system scope 的非 root 延迟重启只能使用非交互式 `sudo -n systemd-run`，无权限时不要回报已安排重启
@@ -167,6 +169,7 @@
 - `/dir [path]`（不传参数显示当前目录；传 `path` 时设置当前会话目录）
 - `/status`
 - `/super [on|off|status]`（开启/关闭/查看 Super 模式，`on` 等价于当前会话 `Allow All`）
+- `/simple [on|off|status]`（开启/关闭/查看简洁模式；不带参数时切换开关；普通 AI 对话只发送授权提示、需要用户做选择的最终提示和最终回复）
 - `/upgrade [--ref branch|tag]`（先比对本地与 GitHub 目标版本；不一致时下载、编译安装，并在当前回复发出后延迟重启服务）
 - `/btw <content>`（实际在 `router_core.go` 和 `router_bytheway.go` 中处理，不走 command.go）
 - `/listen [index]`（实际在 `router/listen.go` 中处理，不走 command.go；不传 index 时监听当前活跃原生会话，传 index 时监听 `/list` 对应编号的原生会话）
@@ -177,6 +180,7 @@
 - `/list` 展示所有项目的 native 会话（不再按当前项目过滤），标题前带项目名前缀（如 `weibo-ai-bridge/会话标题`）
 - `/claude`、`/codex`、`/hermes` 与 `/gemini` 是 `/switch` 的快捷别名（大小写不敏感）
 - `/status` 在 `session_id` 缺失时，会回退到该用户当前 active session
+- `/simple` 在 `session_id` 缺失时，会回退到该用户当前 active session；不带参数时切换开关，`status` 只查看状态；简洁模式按当前会话持久化到 `simple_mode`
 - `/upgrade` 由 bridge 命令层直接执行，不进入 Agent；本地与 GitHub 目标 commit 一致时不执行升级；成功构建并安装后只安排后台延迟重启，确保本轮回复先发给用户
 - `/listen` 复用 `/list` 的 native 会话候选顺序。再次 `/listen` 会替换同一用户旧监听；`/unlisten` 通过 cancel 结束后台监听 goroutine。
 - native 会话标题优先级与 Claude Code resume 一致：customTitle > aiTitle > summary > lastPrompt > content

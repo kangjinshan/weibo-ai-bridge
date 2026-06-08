@@ -50,6 +50,10 @@ func (r *Router) HandleMessage(ctx context.Context, msg *weibo.Message) error {
 		return err
 	}
 
+	if !strings.HasPrefix(content, "/") && r.simpleModeForMessage(routerMsg) {
+		return r.forwardSimpleStreamToPlatform(runCtx, msg.UserID, stream)
+	}
+
 	return r.forwardStreamToPlatform(runCtx, msg.UserID, stream)
 }
 
@@ -196,6 +200,118 @@ func (r *Router) forwardStreamToPlatform(ctx context.Context, userID string, str
 		case <-ticker.C:
 			if err := sender.FlushPendingIfDelayed(ctx); err != nil {
 				return err
+			}
+		}
+	}
+}
+
+func (r *Router) forwardSimpleStreamToPlatform(ctx context.Context, userID string, stream <-chan agent.Event) error {
+	var deltaText strings.Builder
+	var finalMessage string
+	var streamErr error
+	var sender *streamReplySender
+
+	ensureSender := func() (*streamReplySender, error) {
+		if sender != nil {
+			return sender, nil
+		}
+		if r.platform == nil {
+			return nil, errors.New("platform is not set")
+		}
+		writer, err := r.openStreamWriter(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		sender = newStreamReplySender(writer)
+		return sender, nil
+	}
+
+	sendInformational := func(text string) error {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil
+		}
+		s, err := ensureSender()
+		if err != nil {
+			return err
+		}
+		return s.PushInformationalText(ctx, text)
+	}
+
+	sendFinal := func(text string) error {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil
+		}
+		s, err := ensureSender()
+		if err != nil {
+			return err
+		}
+		return s.PushDeliverText(ctx, text, true)
+	}
+
+	settle := func() error {
+		if sender == nil {
+			return nil
+		}
+		return sender.Settle(ctx)
+	}
+	finalText := func() string {
+		if strings.TrimSpace(finalMessage) != "" {
+			return finalMessage
+		}
+		return deltaText.String()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			if sender != nil {
+				if err := sender.Settle(context.WithoutCancel(ctx)); err != nil {
+					return err
+				}
+			}
+			return ctx.Err()
+		case event, ok := <-stream:
+			if !ok {
+				if streamErr == nil {
+					if err := sendFinal(finalText()); err != nil {
+						return err
+					}
+				}
+				if err := settle(); err != nil {
+					return err
+				}
+				return streamErr
+			}
+
+			switch event.Type {
+			case agent.EventTypeDelta:
+				deltaText.WriteString(event.Content)
+			case agent.EventTypeApproval:
+				if err := sendInformational(event.Content); err != nil {
+					return err
+				}
+			case agent.EventTypeMessage:
+				if strings.TrimSpace(event.Content) != "" && strings.TrimSpace(finalMessage) == "" {
+					finalMessage = event.Content
+				}
+			case agent.EventTypeError:
+				if strings.TrimSpace(event.Error) != "" && !IsBenignCancellation(errors.New(event.Error)) {
+					streamErr = errors.New(event.Error)
+					if err := sendFinal("AI execution failed: " + event.Error); err != nil {
+						return err
+					}
+				}
+			case agent.EventTypeDone:
+				if streamErr == nil {
+					if err := sendFinal(finalText()); err != nil {
+						return err
+					}
+				}
+				if err := settle(); err != nil {
+					return err
+				}
 			}
 		}
 	}

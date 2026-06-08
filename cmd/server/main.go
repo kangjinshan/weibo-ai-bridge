@@ -141,16 +141,34 @@ func main() {
 	// 初始化日志
 	logger := newLogger(cfg.Log)
 
+	handled, err := runAsWindowsService(func(ctx context.Context) error {
+		return runBridge(ctx, cfg, logger)
+	})
+	if handled {
+		if err != nil {
+			logger.Fatalf("Windows service failed: %v", err)
+		}
+		return
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := runBridge(ctx, cfg, logger); err != nil {
+		logger.Fatalf("%v", err)
+	}
+}
+
+func runBridge(ctx context.Context, cfg *config.Config, logger *log.Logger) error {
 	logger.Printf("Build info: version=%s, git_commit=%s, build_time=%s", version, gitCommit, buildTime)
 	logger.Printf("Configuration loaded: log_level=%s, log_format=%s", cfg.Log.Level, cfg.Log.Format)
 
 	// 验证配置
 	if err := cfg.Validate(); err != nil {
-		logger.Fatalf("Configuration validation failed: %v", err)
+		return fmt.Errorf("Configuration validation failed: %w", err)
 	}
 
-	// 创建上下文和取消函数
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// 创建会话管理器
@@ -204,7 +222,7 @@ func main() {
 	}
 
 	if defaultAgent == "" {
-		logger.Fatalf("No agent enabled, please enable at least one agent (claude, codex, hermes, or gemini)")
+		return fmt.Errorf("No agent enabled, please enable at least one agent (claude, codex, hermes, or gemini)")
 	}
 
 	logger.Printf("Agent manager initialized: count=%d, default=%s", agentMgr.Count(), defaultAgent)
@@ -212,7 +230,7 @@ func main() {
 	// 创建上游平台适配器（微博或本地 msghub）
 	platform, err := buildPlatform(cfg, agentMgr, sessionMgr, logger)
 	if err != nil {
-		logger.Fatalf("Failed to create platform: %v", err)
+		return fmt.Errorf("Failed to create platform: %w", err)
 	}
 	logger.Printf("Platform created: kind=%s", platformKind(cfg))
 
@@ -222,7 +240,7 @@ func main() {
 
 	// 启动平台
 	if err := platform.Start(ctx); err != nil {
-		logger.Fatalf("Failed to start platform: %v", err)
+		return fmt.Errorf("Failed to start platform: %w", err)
 	}
 	logger.Printf("Platform started successfully")
 
@@ -255,10 +273,7 @@ func main() {
 		}
 	}()
 
-	// 等待中断信号
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	<-ctx.Done()
 
 	logger.Println("Shutdown signal received, shutting down gracefully...")
 	shutdownGracefully(logger, func() {
@@ -267,6 +282,7 @@ func main() {
 	}, server, platform, 30*time.Second)
 
 	logger.Println("Server shutdown completed")
+	return nil
 }
 
 // newLogger 创建日志记录器

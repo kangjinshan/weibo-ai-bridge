@@ -58,6 +58,13 @@ GEMINI_ENABLED=false
 make build && ./build/weibo-ai-bridge
 ```
 
+Windows 11 原生运行可以直接用 PowerShell 构建 `.exe`：
+
+```powershell
+go build -o build\weibo-ai-bridge.exe .\cmd\server
+.\build\weibo-ai-bridge.exe
+```
+
 开发时也可以使用：
 
 ```bash
@@ -80,6 +87,7 @@ bash scripts/install.sh
 |------|------|
 | `make build` | 构建到 `build/weibo-ai-bridge` |
 | `make build-linux` | 交叉编译 Linux AMD64 |
+| `make build-windows` | 交叉编译 Windows AMD64 到 `build/weibo-ai-bridge.exe` |
 | `make test` | 运行测试（含覆盖率） |
 | `make test-report` | 生成 Markdown/文本测试报告到 `reports/` |
 | `make test-coverage` | 生成 HTML 覆盖率报告 |
@@ -412,7 +420,7 @@ POST 请求：
 
 ## 部署
 
-### 统一服务管理（Linux + macOS）
+### 统一服务管理（Linux + macOS + Windows）
 
 ```bash
 # 安装服务定义
@@ -450,6 +458,23 @@ scripts/service.sh status
 scripts/service.sh logs
 ```
 
+Windows 11 原生说明：
+```powershell
+# 先构建 Windows 可执行文件
+go build -o build\weibo-ai-bridge.exe .\cmd\server
+
+# 以管理员身份打开 PowerShell，安装为 Windows Service
+.\scripts\service.ps1 install
+.\scripts\service.ps1 start
+.\scripts\service.ps1 status
+.\scripts\service.ps1 logs
+
+# 更新二进制或配置后
+.\scripts\service.ps1 restart
+```
+
+Windows 服务脚本会安装真正的 Windows Service，并写入服务级 `CONFIG_PATH`、`LOG_OUTPUT`、`PATH` 和 `WEIBO_AI_BRIDGE_SERVICE_NAME`。默认日志位于 `C:\ProgramData\weibo-ai-bridge\weibo-ai-bridge.log`。如果 Agent CLI 的认证只存在于当前桌面用户环境中，优先前台运行 `.\build\weibo-ai-bridge.exe`；需要后台服务时，请用 `.\scripts\service.ps1 install -Credential (Get-Credential)` 指定已完成 Agent 登录的 Windows 账号，或确保服务账号也完成 Claude/Codex/Hermes/Gemini CLI 配置。
+
 macOS 权限提示说明：
 - `make build`、`scripts/install.sh`、`scripts/self-update.sh` 和 `scripts/service.sh install|restart` 会自动尝试给二进制添加稳定代码签名，避免每次重建后被系统当成新程序。
 - 如果机器上有多个签名 identity，建议固定一个：`export WEIBO_AI_BRIDGE_CODESIGN_IDENTITY="Apple Development: your@example.com (TEAMID)"`。
@@ -467,6 +492,7 @@ macOS 权限提示说明：
 
 说明：
 - 统一入口脚本会根据系统自动选择 Linux `systemd` 或 macOS `launchd`
+- Windows 原生服务使用 `scripts/service.ps1` 安装到 Windows Service Control Manager
 - 服务进程通过 `CONFIG_PATH` 读取 TOML，并按现有逻辑自动尝试加载 `.env`
 - Linux systemd unit 会写入 `WEIBO_AI_BRIDGE_SCOPE=system|user`，避免 `/upgrade` 从非 root 的 system service 里误判成 `systemctl --user`
 - 模板文件位于 `deploy/weibo-ai-bridge.service.tmpl` 与 `deploy/com.weibo-ai-bridge.plist.tmpl`
@@ -479,7 +505,7 @@ macOS 权限提示说明：
 /upgrade
 ```
 
-服务会先读取本地二进制的 commit，再查询 GitHub 目标 ref 的 commit；两边一致时直接回复“已经是最新版本”，不下载、不编译、不重启。只有版本不一致时，才会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由延迟任务重启服务。Linux 下优先使用 `systemd-run` 创建 transient timer/service，避免重启任务随旧 bridge 进程一起被 systemd 清理。
+服务会先读取本地二进制的 commit，再查询 GitHub 目标 ref 的 commit；两边一致时直接回复“已经是最新版本”，不下载、不编译、不重启。只有版本不一致时，才会下载 GitHub 最新代码，编译并原子替换当前二进制；成功回复用户之后，再由延迟任务重启服务。Linux 下优先使用 `systemd-run` 创建 transient timer/service，避免重启任务随旧 bridge 进程一起被 systemd 清理。Windows 11 原生运行暂不使用 `/upgrade` 的 shell 自升级链路；请重新执行 `go build -o build\weibo-ai-bridge.exe .\cmd\server` 后用 `.\scripts\service.ps1 restart` 重启服务。
 
 如果 bridge 安装为 Linux 系统级 systemd 服务，unit 里应包含 `Environment=WEIBO_AI_BRIDGE_SCOPE=system`。通过当前 `scripts/service.sh install --scope system` 重新安装 unit 会自动写入该环境变量。若服务进程使用非 root 用户运行，系统级重启仍需要该用户具备非交互式 systemd 管理权限；脚本会优先尝试 `sudo -n systemd-run` 安排延迟重启。没有权限时升级可能只完成二进制替换，需要用 root 执行一次 `systemctl restart weibo-ai-bridge.service` 来加载新版本。
 

@@ -29,6 +29,44 @@ func TestServiceScriptTemplatesPersistLinuxScope(t *testing.T) {
 	}
 }
 
+func TestWindowsServiceSupportFiles(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+
+	makefileBytes, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(makefileBytes)
+	if !strings.Contains(makefile, "build-windows:") || !strings.Contains(makefile, "GOOS=windows GOARCH=amd64") {
+		t.Fatalf("Makefile must expose a Windows build target:\n%s", makefile)
+	}
+	if !strings.Contains(makefile, "BINARY_WINDOWS=$(BINARY_NAME).exe") || !strings.Contains(makefile, "$(BUILD_DIR)/$(BINARY_WINDOWS)") {
+		t.Fatalf("Windows build target should produce the .exe binary:\n%s", makefile)
+	}
+
+	serviceScriptBytes, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "service.ps1"))
+	if err != nil {
+		t.Fatalf("read Windows service script: %v", err)
+	}
+	serviceScript := string(serviceScriptBytes)
+	for _, want := range []string{"New-Service", "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\$Name", "CONFIG_PATH=", "LOG_OUTPUT=", "Get-Content -LiteralPath $logPath -Tail 100 -Wait"} {
+		if !strings.Contains(serviceScript, want) {
+			t.Fatalf("Windows service script missing %q:\n%s", want, serviceScript)
+		}
+	}
+
+	windowsServiceBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "server", "windows_service.go"))
+	if err != nil {
+		t.Fatalf("read Windows service host: %v", err)
+	}
+	windowsService := string(windowsServiceBytes)
+	for _, want := range []string{"//go:build windows", "svc.IsWindowsService()", "svc.Run", "svc.AcceptStop | svc.AcceptShutdown"} {
+		if !strings.Contains(windowsService, want) {
+			t.Fatalf("Windows service host missing %q:\n%s", want, windowsService)
+		}
+	}
+}
+
 func TestServiceScriptLinuxUserInstallPersistsUserScope(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	scriptPath, err := filepath.Abs(filepath.Join(repoRoot, "scripts", "service.sh"))

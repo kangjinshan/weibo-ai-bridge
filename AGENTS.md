@@ -101,6 +101,7 @@
 - `self-update.sh` — 安全自升级脚本：先比对本地二进制与 GitHub 指定 ref 的 commit；不一致时下载、编译、原子替换二进制，并通过延迟任务重启服务。Linux 下优先用 `systemd-run` 创建 transient timer/service，避免重启任务随旧 bridge service cgroup 一起被清理。
 - `setup.sh` — 初始设置。
 - `service.sh` — 跨平台服务管理入口（Linux systemd / macOS launchd）。
+- `service.ps1` — Windows 11 原生服务管理入口。安装真正的 Windows Service，并写入服务级 `CONFIG_PATH`、`LOG_OUTPUT`、`PATH` 和 `WEIBO_AI_BRIDGE_SERVICE_NAME`。
 
 ### `docs/`
 
@@ -131,6 +132,9 @@
 - 当用户已有普通消息在处理中时，其它 slash 指令应旁路消息队列并立即执行；不要把 `/help`、`/status` 之类命令排到当前回复之后
 - `/simple on` 只影响普通 AI 对话流的对外发送策略，不应阻塞 slash 命令即时响应，也不应把 `/listen` 的原生日志监听输出憋到监听结束
 - 从微博对话里升级 bridge 时优先使用 `/upgrade` 或 `scripts/self-update.sh`；不要在普通 Agent turn 中直接同步执行 `scripts/service.sh restart`、`systemctl restart` 或 `launchctl bootout`，否则会先终止承载当前回复的 bridge 进程
+- Windows 11 原生运行支持前台 `.exe` 和 `scripts/service.ps1` Windows Service；服务模式需要二进制内的 Windows Service Control Manager 宿主逻辑，不要用 `sc.exe` 直接托管不懂 SCM 的普通控制台程序
+- Windows 11 原生服务默认日志写到 `C:\ProgramData\weibo-ai-bridge\weibo-ai-bridge.log`；Agent CLI 认证需要存在于服务账号环境中，必要时用 `scripts/service.ps1 install -Credential (Get-Credential)` 指定已完成 Agent 登录的账号
+- Windows 11 原生运行暂不使用 `/upgrade` 的 shell 自升级链路；升级时重新构建 `build\weibo-ai-bridge.exe` 后用 `scripts\service.ps1 restart`
 - `/upgrade` 必须先比较本地二进制 commit 与 GitHub 目标 ref commit；一致时直接回复已是最新，不应下载、编译或重启
 - Linux systemd unit 必须持久化 `WEIBO_AI_BRIDGE_SCOPE=system|user`，避免 system service 中的非 root 进程把 `/upgrade` 延迟重启误判为 `systemctl --user`；system scope 的非 root 延迟重启只能使用非交互式 `sudo -n systemd-run`，无权限时不要回报已安排重启
 - Codex 优先走 `codex app-server` 流式路径，失败时才回退到 JSON CLI 路径
@@ -222,6 +226,7 @@ SSE 事件类型（8 种，定义在 `agent/agent.go`）：
 
 ```bash
 make build
+make build-windows
 make test
 make test-report
 make fmt
@@ -239,6 +244,7 @@ make dev
 - `make test-report` 执行 `go run ./cmd/test-report`，输出 Markdown/文本报告、测试 JSON 日志和 coverage profile 到 `reports/`
 - `make fmt` 会执行 `gofmt -w -s .`
 - `make lint` 依赖 `golangci-lint`
+- `make build-windows` 交叉编译 Windows AMD64，产物为 `build/weibo-ai-bridge.exe`
 - 产物目录约定：`build/` 放本地构建产物，`dist/` 放发布包；仓库根目录不应出现可执行文件
 
 ## 测试要求

@@ -1,4 +1,4 @@
-.PHONY: all build test test-report clean fmt lint check-root-executables
+.PHONY: all build build-linux build-windows test test-report clean fmt lint check-root-executables
 
 # Go parameters
 GOCMD=go
@@ -12,6 +12,7 @@ GOFMT=gofmt
 # Binary name
 BINARY_NAME=weibo-ai-bridge
 BINARY_UNIX=$(BINARY_NAME)_unix
+BINARY_WINDOWS=$(BINARY_NAME).exe
 
 # Main package
 MAIN_PACKAGE=./cmd/server
@@ -93,6 +94,10 @@ dev: build
 build-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_UNIX) $(MAIN_PACKAGE)
 
+build-windows:
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_WINDOWS) $(MAIN_PACKAGE)
+
 # Help
 help:
 	@echo "Available targets:"
@@ -108,3 +113,4 @@ help:
 	@echo "  tidy         - Tidy dependencies"
 	@echo "  dev          - Build and run in dev mode"
 	@echo "  build-linux  - Build for Linux AMD64"
+	@echo "  build-windows- Build for Windows AMD64"

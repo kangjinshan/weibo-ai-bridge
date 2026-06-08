@@ -1,11 +1,3 @@
-> ⚠️ **本仓自 2026-05-28 起冻结于当前版本,只继续作为纯微博 daemon 维护。**
->
-> msghub 多端控制台(含 bridge 的 platform/local、agent、router 等新功能开发)统一搬到 DM 仓,目录 `bridge/`。msghub 相关 PR 请提到 DM 仓。
->
-> 本仓继续接收的改动: 微博平台适配 bug 修复、安全补丁。**不接收** msghub WS 协议相关变更。
-
----
-
 # Weibo AI Bridge
 
 微博私信与本地 AI Agent CLI 的桥接服务。它通过微博开放平台 WebSocket API 接收私信，把消息路由到 Claude Code、Codex CLI、Hermes CLI 或 Gemini CLI，再把 Agent 输出流式回传到微博。

@@ -32,13 +32,17 @@ type processorTestPlatform struct {
 }
 
 type startupNotificationTestPlatform struct {
-	uid int64
+	uid   int64
+	onUID func()
 
 	mu      sync.Mutex
 	replies int
 }
 
 func (p *startupNotificationTestPlatform) UID() int64 {
+	if p.onUID != nil {
+		p.onUID()
+	}
 	return p.uid
 }
 
@@ -506,6 +510,27 @@ func TestStartupNotificationSkipsWhenContextCanceledBeforeDelay(t *testing.T) {
 
 	platform := &startupNotificationTestPlatform{uid: 123}
 	done := sendStartupNotificationAfterDelay(ctx, platform, log.New(io.Discard, "", 0), time.Millisecond)
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("startup notification did not exit after context cancellation")
+	}
+
+	assert.Equal(t, 0, platform.ReplyCount())
+}
+
+func TestStartupNotificationSkipsWhenContextCanceledAfterDelayBeforeReply(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	platform := &startupNotificationTestPlatform{
+		uid: 123,
+		onUID: func() {
+			cancel()
+		},
+	}
+	done := sendStartupNotificationAfterDelay(ctx, platform, log.New(io.Discard, "", 0), 0)
 
 	select {
 	case <-done:

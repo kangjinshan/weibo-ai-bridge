@@ -370,6 +370,10 @@ func sendStartupNotificationAfterDelay(ctx context.Context, platform startupNoti
 	go func() {
 		defer close(done)
 
+		if ctx.Err() != nil {
+			return
+		}
+
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
@@ -377,10 +381,16 @@ func sendStartupNotificationAfterDelay(ctx context.Context, platform startupNoti
 			return
 		case <-timer.C:
 		}
+		if ctx.Err() != nil {
+			return
+		}
 
 		botUID := platform.UID()
 		if botUID == 0 {
 			logger.Printf("Startup notification skipped: bot UID not available")
+			return
+		}
+		if ctx.Err() != nil {
 			return
 		}
 		buildTimeDisplay := buildTime

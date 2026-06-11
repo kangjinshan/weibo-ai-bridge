@@ -27,6 +27,7 @@ type fakeHub struct {
 	upgrader websocket.Upgrader
 
 	mu       sync.Mutex
+	writeMu  sync.Mutex
 	conn     *websocket.Conn
 	received chan Envelope
 	gotConn  chan struct{}
@@ -115,6 +116,8 @@ func (h *fakeHub) sendAck(requestID string, ok bool, errMsg, msgID string) {
 	if err != nil {
 		h.t.Fatalf("encode ack: %v", err)
 	}
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	_ = conn.WriteMessage(websocket.TextMessage, raw)
 }
 
@@ -127,6 +130,8 @@ func (h *fakeHub) push(t *testing.T, frameType FrameType, payload interface{}) {
 	}
 	raw, err := EncodeFrame(frameType, "", payload)
 	require.NoError(t, err)
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	require.NoError(t, conn.WriteMessage(websocket.TextMessage, raw))
 }
 
@@ -212,7 +217,10 @@ func newTestPlatformWithBinder(t *testing.T, hub *fakeHub, binder SessionBinder)
 
 type testWriter struct{ t *testing.T }
 
-func (w testWriter) Write(p []byte) (int, error) { w.t.Log(strings.TrimRight(string(p), "\n")); return len(p), nil }
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
 
 // ─── tests ────────────────────────────────────────────────────────────────
 
@@ -449,9 +457,12 @@ func TestPlatform_ApprovalRoundTrip(t *testing.T) {
 	plat := newTestPlatform(t, hub)
 	hub.waitFor(t, func(e Envelope) bool { return e.Type == FrameRegisterAgents }, 2*time.Second)
 
-	var callCount int
-	var gotAction, gotDevice string
+	var approvalMu sync.Mutex
+	callCount := 0
+	gotAction, gotDevice := "", ""
 	plat.RegisterApprovalRouter("conv-a", "appr-1", func(_ context.Context, action, device string) error {
+		approvalMu.Lock()
+		defer approvalMu.Unlock()
 		callCount++
 		gotAction = action
 		gotDevice = device
@@ -469,7 +480,13 @@ func TestPlatform_ApprovalRoundTrip(t *testing.T) {
 	hub.push(t, FrameUserApproval, UserApprovalEvt{ConvID: "conv-a", ApprovalID: "appr-1", Action: "allow_once", Device: &device})
 	hub.push(t, FrameUserApproval, UserApprovalEvt{ConvID: "conv-a", ApprovalID: "appr-1", Action: "deny", Device: &device})
 
-	require.Eventually(t, func() bool { return callCount == 1 }, 2*time.Second, 20*time.Millisecond, "duplicate user_approval frames should be deduplicated")
+	require.Eventually(t, func() bool {
+		approvalMu.Lock()
+		defer approvalMu.Unlock()
+		return callCount == 1
+	}, 2*time.Second, 20*time.Millisecond, "duplicate user_approval frames should be deduplicated")
+	approvalMu.Lock()
+	defer approvalMu.Unlock()
 	assert.Equal(t, "allow_once", gotAction)
 	assert.Equal(t, "dev_btn", gotDevice)
 }

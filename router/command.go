@@ -153,25 +153,35 @@ func (h *CommandHandler) ListCommands() []CommandMeta {
 
 // handleHelp 处理帮助命令
 func (h *CommandHandler) handleHelp() (*Response, error) {
-	helpText := `可用命令：
-/help - 显示帮助信息
-/new [agent_type] - 准备一个新的原生会话（可选参数：claude/codex/hermes/gemini）
-/list - 查看当前用户的原生会话
-/switch [number] - 切换当前活跃会话
-/switch [agent_type] - 切换当前会话的 Agent 类型
-/claude - 等价于 /switch claude（大小写不敏感）
-/codex - 等价于 /switch codex（大小写不敏感）
-/hermes - 等价于 /switch hermes（大小写不敏感）
-/gemini - 等价于 /switch gemini（大小写不敏感）
-/btw [content] - 向当前正在进行的交互会话插入一条补充消息
-/listen [number] - 监听当前或 /list 编号对应的原生会话日志
-/unlisten - 停止当前监听
-/model - 显示当前使用的模型
-/dir [path] - 显示或设置当前工作目录
-/status - 显示当前会话状态
-/super [on|off|status] - 管理 Super 模式（on 等价于 Allow All）
-/simple [on|off|status] - 管理简洁模式（不带参数时切换开关；只发送授权、选择和最终回复）
-/upgrade [--ref branch|tag] - 从 GitHub 下载最新代码，编译安装，并在回复后延迟重启服务`
+	helpText := strings.Join([]string{
+		"## 可用命令",
+		"",
+		"### 会话",
+		"- `/new [claude|codex|hermes|gemini]`：准备一个新的原生会话，不传参数时沿用当前 Agent。",
+		"- `/list`：查看当前用户的原生会话。",
+		"- `/switch <编号>`：切换到 `/list` 中对应编号的会话。",
+		"- `/switch <agent>`：切换当前会话的 Agent 类型。",
+		"",
+		"### Agent 快捷切换",
+		"- `/claude`：等价于 `/switch claude`。",
+		"- `/codex`：等价于 `/switch codex`。",
+		"- `/hermes`：等价于 `/switch hermes`。",
+		"- `/gemini`：等价于 `/switch gemini`。",
+		"",
+		"### 监听与注入",
+		"- `/btw <内容>`：向当前正在进行的交互会话插入一条补充消息。",
+		"- `/listen [编号]`：监听当前或 `/list` 编号对应的原生会话日志。",
+		"- `/unlisten`：停止当前监听。",
+		"",
+		"### 工具",
+		"- `/help`：显示这份帮助。",
+		"- `/model`：显示当前使用的模型。",
+		"- `/dir [path]`：显示或设置当前工作目录。",
+		"- `/status`：显示当前会话状态。",
+		"- `/super [on|off|status]`：管理 Super 模式，`on` 等价于 Allow All。",
+		"- `/simple [on|off|status]`：管理简洁模式，不带参数时切换开关。",
+		"- `/upgrade [--ref branch|tag]`：从 GitHub 升级 bridge，并在回复后延迟重启服务。",
+	}, "\n")
 	return &Response{
 		Success: true,
 		Content: helpText,

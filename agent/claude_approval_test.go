@@ -1,9 +1,15 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+type nopWriteCloser struct{ *bytes.Buffer }
+
+func (nopWriteCloser) Close() error { return nil }
 
 func TestSummarizeApprovalInput(t *testing.T) {
 	t.Run("empty input returns empty", func(t *testing.T) {
@@ -159,4 +165,139 @@ func TestClaudeParseControlRequest(t *testing.T) {
 			t.Errorf("input should be empty, got %q", ev.ToolInput)
 		}
 	})
+}
+
+func TestParseUserQuestions(t *testing.T) {
+	t.Run("parses questions with options", func(t *testing.T) {
+		input := map[string]any{
+			"questions": []any{
+				map[string]any{
+					"question":    "选哪个框架?",
+					"header":      "框架",
+					"multiSelect": true,
+					"options": []any{
+						map[string]any{"label": "React", "description": "前端库"},
+						map[string]any{"label": "Vue"},
+					},
+				},
+			},
+		}
+		got := parseUserQuestions(input)
+		if len(got) != 1 {
+			t.Fatalf("len = %d", len(got))
+		}
+		q := got[0]
+		if q.Question != "选哪个框架?" || q.Header != "框架" || !q.MultiSelect {
+			t.Errorf("unexpected question: %+v", q)
+		}
+		if len(q.Options) != 2 || q.Options[0].Label != "React" || q.Options[0].Description != "前端库" || q.Options[1].Label != "Vue" {
+			t.Errorf("unexpected options: %+v", q.Options)
+		}
+	})
+
+	t.Run("skips questions without text", func(t *testing.T) {
+		input := map[string]any{
+			"questions": []any{
+				map[string]any{"question": ""},
+				map[string]any{"question": "real"},
+			},
+		}
+		got := parseUserQuestions(input)
+		if len(got) != 1 || got[0].Question != "real" {
+			t.Errorf("unexpected: %+v", got)
+		}
+	})
+
+	t.Run("missing questions returns nil", func(t *testing.T) {
+		if got := parseUserQuestions(map[string]any{}); got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+}
+
+func TestParseControlRequestAskUserQuestion(t *testing.T) {
+	s := &claudeInteractiveSession{}
+	raw := map[string]any{
+		"type":       "control_request",
+		"request_id": "req-ask",
+		"request": map[string]any{
+			"subtype":   "can_use_tool",
+			"tool_name": "AskUserQuestion",
+			"input": map[string]any{
+				"questions": []any{
+					map[string]any{
+						"question": "继续吗?",
+						"options": []any{
+							map[string]any{"label": "是"},
+							map[string]any{"label": "否"},
+						},
+					},
+				},
+			},
+		},
+	}
+	ev, ok := s.parseControlRequest(raw)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ev.Type != EventTypeApproval {
+		t.Errorf("type = %v", ev.Type)
+	}
+	if len(ev.Questions) != 1 || ev.Questions[0].Question != "继续吗?" {
+		t.Errorf("questions = %+v", ev.Questions)
+	}
+	if s.pending == nil || s.pending.requestID != "req-ask" {
+		t.Errorf("pending not set correctly: %+v", s.pending)
+	}
+}
+
+func TestRespondQuestionAnswers(t *testing.T) {
+	buf := &bytes.Buffer{}
+	s := &claudeInteractiveSession{
+		stdin: nopWriteCloser{buf},
+		pending: &claudePendingApproval{
+			requestID: "req-ask",
+			input: map[string]any{
+				"questions": []any{map[string]any{"question": "q"}},
+			},
+		},
+	}
+	s.alive.Store(true)
+
+	if err := s.RespondQuestionAnswers(map[int]string{0: "选项A", 1: "选项B"}); err != nil {
+		t.Fatalf("RespondQuestionAnswers: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	response, _ := payload["response"].(map[string]any)
+	if response["request_id"] != "req-ask" {
+		t.Errorf("request_id = %v", response["request_id"])
+	}
+	inner, _ := response["response"].(map[string]any)
+	if inner["behavior"] != "allow" {
+		t.Errorf("behavior = %v", inner["behavior"])
+	}
+	updated, _ := inner["updatedInput"].(map[string]any)
+	answers, _ := updated["answers"].(map[string]any)
+	if answers["0"] != "选项A" || answers["1"] != "选项B" {
+		t.Errorf("answers = %+v", answers)
+	}
+	if _, ok := updated["questions"]; !ok {
+		t.Errorf("updatedInput should preserve original input fields: %+v", updated)
+	}
+
+	if s.pending != nil {
+		t.Errorf("pending should be cleared")
+	}
+}
+
+func TestRespondQuestionAnswersNoPending(t *testing.T) {
+	s := &claudeInteractiveSession{stdin: nopWriteCloser{&bytes.Buffer{}}}
+	s.alive.Store(true)
+	if err := s.RespondQuestionAnswers(map[int]string{0: "x"}); err == nil {
+		t.Error("expected error when no pending approval")
+	}
 }

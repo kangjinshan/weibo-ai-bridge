@@ -24,6 +24,20 @@ const (
 	ApprovalActionCancel   ApprovalAction = "cancel"
 )
 
+// UserQuestion 表示 Claude AskUserQuestion 工具发起的一个结构化问题。
+type UserQuestion struct {
+	Question    string               `json:"question"`
+	Header      string               `json:"header,omitempty"`
+	Options     []UserQuestionOption `json:"options,omitempty"`
+	MultiSelect bool                 `json:"multi_select,omitempty"`
+}
+
+// UserQuestionOption 是 UserQuestion 的一个候选项。
+type UserQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
 // Event 描述 Agent 运行过程中产生的结构化事件。
 type Event struct {
 	Type      EventType      `json:"type"`
@@ -32,6 +46,7 @@ type Event struct {
 	Error     string         `json:"error,omitempty"`
 	ToolName  string         `json:"tool_name,omitempty"`
 	ToolInput string         `json:"tool_input,omitempty"`
+	Questions []UserQuestion `json:"questions,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
@@ -82,6 +97,15 @@ type InterruptibleSession interface {
 
 	// Interrupt 中断当前正在执行的 turn；如果当前没有活动 turn，应静默成功返回。
 	Interrupt() error
+}
+
+// QuestionAnsweringSession 支持回应 AskUserQuestion 工具的结构化问题。
+// answers 的键为问题在 Questions 中的索引，值为用户选择的答案文本。
+type QuestionAnsweringSession interface {
+	InteractiveSession
+
+	// RespondQuestionAnswers 把用户对 AskUserQuestion 的回答回灌给当前待处理请求。
+	RespondQuestionAnswers(answers map[int]string) error
 }
 
 // emitOrCancel emits an event unless the context is canceled first.

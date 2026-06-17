@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,6 +163,46 @@ func (s *claudeInteractiveSession) RespondApproval(action ApprovalAction) error 
 	})
 }
 
+// RespondQuestionAnswers 把用户对 AskUserQuestion 的回答回灌给当前待处理请求。
+func (s *claudeInteractiveSession) RespondQuestionAnswers(answers map[int]string) error {
+	if !s.alive.Load() {
+		return fmt.Errorf("claude session is not running")
+	}
+
+	s.pendingMu.Lock()
+	pending := s.pending
+	if pending != nil {
+		s.pending = nil
+	}
+	s.pendingMu.Unlock()
+
+	if pending == nil {
+		return fmt.Errorf("no pending claude approval")
+	}
+
+	updatedInput := make(map[string]any, len(pending.input)+1)
+	for k, v := range pending.input {
+		updatedInput[k] = v
+	}
+	encodedAnswers := make(map[string]any, len(answers))
+	for idx, ans := range answers {
+		encodedAnswers[strconv.Itoa(idx)] = ans
+	}
+	updatedInput["answers"] = encodedAnswers
+
+	return s.writeJSON(map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": pending.requestID,
+			"response": map[string]any{
+				"behavior":     "allow",
+				"updatedInput": updatedInput,
+			},
+		},
+	})
+}
+
 func (s *claudeInteractiveSession) Events() <-chan Event {
 	return s.events
 }
@@ -310,6 +351,16 @@ func (s *claudeInteractiveSession) parseControlRequest(raw map[string]any) (Even
 	}
 	s.pendingMu.Unlock()
 
+	if toolName == "AskUserQuestion" {
+		if questions := parseUserQuestions(input); len(questions) > 0 {
+			return Event{
+				Type:      EventTypeApproval,
+				ToolName:  toolName,
+				Questions: questions,
+			}, true
+		}
+	}
+
 	return Event{
 		Type:     EventTypeApproval,
 		ToolName: toolName,
@@ -318,6 +369,53 @@ func (s *claudeInteractiveSession) parseControlRequest(raw map[string]any) (Even
 			input,
 		),
 	}, true
+}
+
+// parseUserQuestions 从 AskUserQuestion 工具的 input 中提取结构化问题。
+func parseUserQuestions(input map[string]any) []UserQuestion {
+	questionsRaw, ok := input["questions"].([]any)
+	if !ok || len(questionsRaw) == 0 {
+		return nil
+	}
+
+	var questions []UserQuestion
+	for _, qRaw := range questionsRaw {
+		qMap, ok := qRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		q := UserQuestion{
+			Question:    claudeStrVal(qMap, "question"),
+			Header:      claudeStrVal(qMap, "header"),
+			MultiSelect: claudeBoolVal(qMap, "multiSelect"),
+		}
+		if optsRaw, ok := qMap["options"].([]any); ok {
+			for _, oRaw := range optsRaw {
+				oMap, ok := oRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+				q.Options = append(q.Options, UserQuestionOption{
+					Label:       claudeStrVal(oMap, "label"),
+					Description: claudeStrVal(oMap, "description"),
+				})
+			}
+		}
+		if q.Question != "" {
+			questions = append(questions, q)
+		}
+	}
+	return questions
+}
+
+func claudeStrVal(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+func claudeBoolVal(m map[string]any, key string) bool {
+	v, _ := m[key].(bool)
+	return v
 }
 
 func summarizeApprovalInput(toolName string, input map[string]any) string {

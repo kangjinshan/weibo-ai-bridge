@@ -41,8 +41,8 @@
 - `router_core.go` — Router 类型定义、Handle/Route 主入口、toRouterMessage 转换。非命令消息统一走 `streamRouterMessage`。
 - `router_stream.go` — 统一流式路径 `streamRouterMessage`、`forwardStreamToPlatform`（delta/message/approval/error→分片回传）、`IsBenignCancellation`。
 - `router_agent.go` — `resolveAgentExecution`（会话获取/Agent 解析）、`streamAIMessage`（交互式优先→流式回退）、`handleAIMessage`（私有方法，主入口不再调用）、`agentSessionContextKey`（`claude_session_id` / `codex_session_id` / `hermes_session_id` / `gemini_session_id`）。执行上下文会携带当前会话 `work_dir` 和 `Allow All` 状态，供 Agent 选择 CLI 参数。
-- `router_interactive.go` — `liveSessions` 生命周期管理、`getOrCreateInteractiveSession`、`drainInteractiveSession`、审批等待态、`allowAll` 标记、交互式会话尾部静默保护（`interactiveDoneGracePeriod` 200ms）、leading done 防误判等待（`interactiveLeadingDoneWait` 12s）与 stale 会话“空 done”自动重建重试。
-- `router_approval.go` — `formatApprovalPrompt`（审批提示格式化）、`parseApprovalAction`（28 个同义词解析，分为允许类/取消类/允许所有类）。
+- `router_interactive.go` — `liveSessions` 生命周期管理、`getOrCreateInteractiveSession`、`drainInteractiveSession`、审批等待态、`allowAll` 标记、交互式会话尾部静默保护（`interactiveDoneGracePeriod` 200ms）、leading done 防误判等待（`interactiveLeadingDoneWait` 12s）与 stale 会话“空 done”自动重建重试；以及 Claude AskUserQuestion 逐题应答状态机（`BeginQuestions`/`RecordAnswerAndAdvance`/`handleQuestionReply`）。
+- `router_approval.go` — `formatApprovalPrompt`（审批提示格式化）、`parseApprovalAction`（28 个同义词解析，分为允许类/取消类/允许所有类）、`formatQuestionPrompt`/`resolveQuestionAnswer`（Claude AskUserQuestion 选择题的渲染与答案解析）。
 - `router_bytheway.go` — `/btw` 命令注入逻辑，区分流式/交互式两种注入路径。
 - `listen.go` — `/listen` / `/unlisten` 原生会话日志监听。按 `/list` 编号或当前活跃会话解析 Claude/Codex/Hermes/Gemini 原生日志文件，tail 新增内容并回传微博；不会向 Agent 发送输入。
 - `stream_sender.go` — 流式分片发送器 `streamReplySender`，delta 缓冲与边界感知 flush，`idleLineBreakAfter`（5s 静默补换行）、`maxBufferDelay`。
@@ -58,10 +58,10 @@
 
 ### `agent/`
 
-- `agent.go` — `Agent`/`InteractiveAgent`/`InteractiveSession`/`InterruptibleSession` 接口、8 种 EventType（session/delta/message/approval/tool_start/tool_end/error/done）、ApprovalAction。
+- `agent.go` — `Agent`/`InteractiveAgent`/`InteractiveSession`/`InterruptibleSession`/`QuestionAnsweringSession` 接口、8 种 EventType（session/delta/message/approval/tool_start/tool_end/error/done）、ApprovalAction、`UserQuestion`/`UserQuestionOption`（AskUserQuestion 结构化选择题）。
 - `manager.go` — Agent 注册/解析/默认。`agentCandidates`（`claude`→`claude-code`）。`getDefaultAgentLocked` 和 `ListAgents` 按名称排序。
 - `claude.go` — Claude 流式执行（`--output-format stream-json`）、`resolveTextDelta`（rune 安全增量对比）、`parseClaudeStreamEvent`/`parseClaudeStructuredStreamEvent`。
-- `claude_session.go` — Claude 交互式会话（stdin/stdout stream-json 协议）、审批（`control_request`/`control_response`）、`claudePendingApproval`。
+- `claude_session.go` — Claude 交互式会话（stdin/stdout stream-json 协议）、审批（`control_request`/`control_response`）、`claudePendingApproval`；`AskUserQuestion` 选择题解析（`parseUserQuestions`）与答案回灌（`RespondQuestionAnswers`，实现 `agent.QuestionAnsweringSession`）。
 - `codex.go` — Codex 流式执行。`ExecuteStream` 优先走 `executeViaAppServer`，失败时回退到 `executeViaJSONCLI`。`parseCodexEvent`/`parseCodexItemCompleted`。
 - `codex_interactive_session.go` — Codex app-server 交互式会话，优先 stdio，兼容回退 WebSocket。审批（`requestApproval` 系列）、`Interrupt`（turn/interrupt）、`shouldIgnoreCodexAppServerReadError`（EOF/closed pipe/close 1006 容错）。
 - `codex_appserver.go` — Codex app-server 客户端。优先 `--listen stdio://`，失败时回退旧版 `ws://127.0.0.1:port` + `/readyz`；通过 JSON-RPC 执行 initialize/ensureThread/startTurn，保留 5 分钟读超时，`parseCodexAppServerMessage`（delta/completed）。
@@ -199,6 +199,16 @@
 - `允许所有` 仅对当前会话生效；router 会把后续同会话审批自动转成 allow
 - Gemini 是一次性 stream-json 进程，不走交互式审批等待；router 会把当前会话 `Allow All` 状态下传，Gemini Agent 只用它决定是否追加 `-y`
 - `/btw` 与授权回复都依赖交互式会话；当前测试已覆盖 `claude-code`、`codex` 和 `hermes`
+
+Claude `AskUserQuestion`（让用户做选择）：
+
+- Claude 通过 `control_request`（`subtype: can_use_tool`，`tool_name: AskUserQuestion`）发起结构化选择，`input.questions` 携带 `question`/`header`/`options[].label,description`/`multiSelect`
+- `agent/claude_session.go` 的 `parseControlRequest` 识别 `AskUserQuestion` 并用 `parseUserQuestions` 解析成 `agent.Event.Questions`，不再退化成原始 JSON 授权提示
+- router 把它存到会话状态后逐题提问：每次只发一个问题（多题带 `(i/total)`），由 `formatQuestionPrompt` 渲染成带编号的纯文本选项（无卡片/按钮）
+- 用户回复经 `resolveQuestionAnswer` 解析：单选取编号对应 label，多选按逗号/空格拆分多个编号；无法解析为编号时回退原文
+- 全部问题答完后，通过 `agent.QuestionAnsweringSession.RespondQuestionAnswers` 把答案以 `updatedInput.answers={"0":label,...}` 回灌给 Claude 的 `control_response`
+- AskUserQuestion 即使在 `Allow All` / `/super on` 下也必须真正询问用户（答案是用户的选择，不是 yes/no 授权），不走自动批准
+- 仅 `claude-code` 实现该能力接口；codex/hermes/gemini 不受影响
 
 当前由 `cmd/server/main.go` 暴露的 HTTP 接口：
 

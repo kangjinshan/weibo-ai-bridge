@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,10 @@ type interactiveSessionState struct {
 	mu               sync.Mutex
 	awaitingApproval bool
 	allowAll         bool
+
+	pendingQuestions []agent.UserQuestion
+	currentQuestion  int
+	answers          map[int]string
 }
 
 func (s *interactiveSessionState) AwaitingApproval() bool {
@@ -30,6 +35,64 @@ func (s *interactiveSessionState) SetAwaitingApproval(v bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.awaitingApproval = v
+}
+
+// BeginQuestions 进入 AskUserQuestion 逐题应答态。
+func (s *interactiveSessionState) BeginQuestions(questions []agent.UserQuestion) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingQuestions = questions
+	s.currentQuestion = 0
+	s.answers = make(map[int]string)
+	s.awaitingApproval = true
+}
+
+// HasPendingQuestions 当前是否处于 AskUserQuestion 应答态。
+func (s *interactiveSessionState) HasPendingQuestions() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pendingQuestions) > 0
+}
+
+// CurrentQuestion 返回当前待回答的问题、其 0 基序号和问题总数。
+func (s *interactiveSessionState) CurrentQuestion() (agent.UserQuestion, int, int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.currentQuestion < 0 || s.currentQuestion >= len(s.pendingQuestions) {
+		return agent.UserQuestion{}, 0, len(s.pendingQuestions), false
+	}
+	return s.pendingQuestions[s.currentQuestion], s.currentQuestion, len(s.pendingQuestions), true
+}
+
+// RecordAnswerAndAdvance 记录当前问题答案并推进到下一题。
+// hasNext 为 true 时返回下一题；否则 collected 为全部答案的副本。
+func (s *interactiveSessionState) RecordAnswerAndAdvance(answer string) (next agent.UserQuestion, nextIdx int, total int, hasNext bool, collected map[int]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.answers == nil {
+		s.answers = make(map[int]string)
+	}
+	s.answers[s.currentQuestion] = answer
+	total = len(s.pendingQuestions)
+	if s.currentQuestion+1 < total {
+		s.currentQuestion++
+		return s.pendingQuestions[s.currentQuestion], s.currentQuestion, total, true, nil
+	}
+	collected = make(map[int]string, len(s.answers))
+	for k, v := range s.answers {
+		collected[k] = v
+	}
+	return agent.UserQuestion{}, 0, total, false, collected
+}
+
+// ResetQuestions 清空 AskUserQuestion 应答态。
+func (s *interactiveSessionState) ResetQuestions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingQuestions = nil
+	s.currentQuestion = 0
+	s.answers = nil
+	s.awaitingApproval = false
 }
 
 func (s *interactiveSessionState) AllowAll() bool {
@@ -123,6 +186,12 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 	}
 
 	if liveState.AwaitingApproval() {
+		// AskUserQuestion 应答优先于普通授权逻辑：答案是用户的选择，不是 yes/no 授权，
+		// 即使 Allow All / super 模式也必须真正询问并回灌答案。
+		if liveState.HasPendingQuestions() {
+			return r.handleQuestionReply(ctx, msg, sess, sessionKey, agentSessionID, interactiveAgent, liveState, emit)
+		}
+
 		if isSuperAutoApproveEnabled(sess) {
 			liveState.SetAwaitingApproval(false)
 			liveState, err = r.respondInteractiveApproval(ctx, sess, sessionKey, agentSessionID, agent.ApprovalActionAllow, interactiveAgent, liveState)
@@ -189,6 +258,71 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 	r.discardBufferedInteractiveEvents(sess, sessionKey, liveState)
 
 	return r.sendAndDrainInteractiveTurn(ctx, sess, sessionKey, agentSessionID, msg.Content, interactiveAgent, liveState, emit)
+}
+
+// emitFirstQuestionPrompt 进入 AskUserQuestion 逐题应答态并 emit 第一题。
+func (r *Router) emitFirstQuestionPrompt(liveState *interactiveSessionState, questions []agent.UserQuestion, emit func(agent.Event)) {
+	liveState.BeginQuestions(questions)
+	q, idx, total, ok := liveState.CurrentQuestion()
+	if !ok {
+		return
+	}
+	emit(agent.Event{
+		Type:    agent.EventTypeApproval,
+		Content: formatQuestionPrompt(q, idx, total),
+	})
+}
+
+// handleQuestionReply 处理用户对 AskUserQuestion 的一条回复。
+// 未答完时推进到下一题；答完后把答案回灌给 Claude 并收尾被阻塞的 turn。
+func (r *Router) handleQuestionReply(
+	ctx context.Context,
+	msg *Message,
+	sess *session.Session,
+	sessionKey string,
+	agentSessionID string,
+	interactiveAgent agent.InteractiveAgent,
+	liveState *interactiveSessionState,
+	emit func(agent.Event),
+) error {
+	cur, _, _, ok := liveState.CurrentQuestion()
+	if !ok {
+		liveState.ResetQuestions()
+		return nil
+	}
+
+	answer := resolveQuestionAnswer(cur, msg.Content)
+	next, nextIdx, total, hasNext, collected := liveState.RecordAnswerAndAdvance(answer)
+
+	emit(agent.Event{
+		Type:    agent.EventTypeApproval,
+		Content: fmt.Sprintf("✅ 已选择：%s", answer),
+	})
+
+	if hasNext {
+		emit(agent.Event{
+			Type:    agent.EventTypeApproval,
+			Content: formatQuestionPrompt(next, nextIdx, total),
+		})
+		return nil
+	}
+
+	answerer, ok := liveState.session.(agent.QuestionAnsweringSession)
+	if !ok {
+		liveState.ResetQuestions()
+		return fmt.Errorf("current agent session does not support answering questions")
+	}
+
+	if err := answerer.RespondQuestionAnswers(collected); err != nil {
+		liveState.ResetQuestions()
+		return err
+	}
+	liveState.ResetQuestions()
+
+	if err := r.drainInteractiveSession(ctx, sess, sessionKey, liveState, emit, false); err != nil && !errors.Is(err, errInteractiveTurnNoSignal) {
+		return err
+	}
+	return nil
 }
 
 func (r *Router) sendAndDrainInteractiveTurn(
@@ -391,6 +525,10 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 			switch event.Type {
 			case agent.EventTypeApproval:
 				sawTurnSignal = true
+				if len(event.Questions) > 0 {
+					r.emitFirstQuestionPrompt(liveState, event.Questions, emit)
+					return nil
+				}
 				if isSuperAutoApproveEnabled(sess) {
 					if err := liveState.session.RespondApproval(agent.ApprovalActionAllow); err != nil {
 						r.removeInteractiveSession(sess.ID)
@@ -433,6 +571,10 @@ func (r *Router) drainInteractiveSession(ctx context.Context, sess *session.Sess
 					switch event.Type {
 					case agent.EventTypeApproval:
 						sawTurnSignal = true
+						if len(event.Questions) > 0 {
+							r.emitFirstQuestionPrompt(liveState, event.Questions, emit)
+							return nil
+						}
 						if isSuperAutoApproveEnabled(sess) {
 							if err := liveState.session.RespondApproval(agent.ApprovalActionAllow); err != nil {
 								r.removeInteractiveSession(sess.ID)

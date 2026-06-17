@@ -271,11 +271,13 @@ type MockInteractiveSession struct {
 	approveFn    func(action agent.ApprovalAction)
 	approveErrFn func(action agent.ApprovalAction) error
 	closeFn      func() error
+	answerFn     func(answers map[int]string) error
 
-	sentInputs []string
-	interrupts int
-	actions    []agent.ApprovalAction
-	sessionID  string
+	sentInputs     []string
+	interrupts     int
+	actions        []agent.ApprovalAction
+	answeredInputs []map[int]string
+	sessionID      string
 }
 
 func NewMockInteractiveSession() *MockInteractiveSession {
@@ -314,6 +316,14 @@ func (m *MockInteractiveSession) Interrupt() error {
 	m.interrupts++
 	if m.interruptFn != nil {
 		m.interruptFn()
+	}
+	return nil
+}
+
+func (m *MockInteractiveSession) RespondQuestionAnswers(answers map[int]string) error {
+	m.answeredInputs = append(m.answeredInputs, answers)
+	if m.answerFn != nil {
+		return m.answerFn(answers)
 	}
 	return nil
 }

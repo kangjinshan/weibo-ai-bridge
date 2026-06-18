@@ -76,9 +76,7 @@ type AgentConfig struct {
 
 // ClaudeConfig Claude Agent 配置
 type ClaudeConfig struct {
-	APIKey  string `toml:"api_key"`
-	Model   string `toml:"model"`
-	Enabled bool   `toml:"enabled"`
+	Enabled bool `toml:"enabled"`
 }
 
 // CodexConfig Codex Agent 配置
@@ -299,7 +297,6 @@ func defaultConfig() *Config {
 		},
 		Agent: AgentConfig{
 			Claude: ClaudeConfig{
-				Model:   "claude-3-5-sonnet-20241022",
 				Enabled: true,
 			},
 			Codex: CodexConfig{

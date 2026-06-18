@@ -12,10 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/websocket"
 )
+
+// testUpgrader 把 httptest HTTP 连接升级为 gorilla WebSocket，供测试用。
+var testUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 // mockWebSocketServer 创建一个模拟的 WebSocket 服务器
 func mockWebSocketServer(t *testing.T, handler func(*testing.T, http.ResponseWriter, *http.Request)) *httptest.Server {
@@ -277,7 +282,11 @@ func TestPlatform_StartStopsWhenParentContextIsCanceled(t *testing.T) {
 	}))
 	defer tokenServer.Close()
 
-	wsServer := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
 		defer conn.Close()
 		<-time.After(2 * time.Second)
 	}))
@@ -346,16 +355,20 @@ func TestBuildSendMessageFrame_RejectsEmptyNonFinalChunk(t *testing.T) {
 
 func TestPlatformReply_SendsStreamingFrameWithDone(t *testing.T) {
 	received := make(chan map[string]any, 4)
-	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
 		defer conn.Close()
 		for {
-			var data string
-			if err := websocket.Message.Receive(conn, &data); err != nil {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
 				return
 			}
 
 			var frame map[string]any
-			if err := json.Unmarshal([]byte(data), &frame); err != nil {
+			if err := json.Unmarshal(data, &frame); err != nil {
 				continue
 			}
 			received <- frame
@@ -364,7 +377,10 @@ func TestPlatformReply_SendsStreamingFrameWithDone(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, err := websocket.Dial(wsURL, "", "http://localhost/")
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	require.NoError(t, err)
 
 	platform, err := NewPlatform("test-app-id", "test-secret")
@@ -403,17 +419,23 @@ drain:
 
 func TestPlatformSendChunkReleasesConnectionLockBeforeDelay(t *testing.T) {
 	received := make(chan struct{}, 1)
-	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
 		defer conn.Close()
-		var data string
-		if err := websocket.Message.Receive(conn, &data); err == nil {
+		if _, _, err := conn.ReadMessage(); err == nil {
 			received <- struct{}{}
 		}
 	}))
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, err := websocket.Dial(wsURL, "", "http://localhost/")
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	require.NoError(t, err)
 
 	platform, err := NewPlatform("test-app-id", "test-secret")

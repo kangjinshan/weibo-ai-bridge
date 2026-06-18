@@ -31,6 +31,7 @@ var (
 
 const (
 	queueNoticeCooldown  = 10 * time.Second
+	maxQueuedPerUser     = 10
 	processingAckMessage = "已收到消息，正在处理中，请稍候。"
 	messageQueuedHint    = "上一条消息还在处理中，这条消息已加入队列，会在当前回复结束后继续处理。"
 )
@@ -185,7 +186,7 @@ func runBridge(ctx context.Context, cfg *config.Config, logger *log.Logger) erro
 		agentMgr.Register(claudeAgent)
 		defaultAgent = "claude-code"
 		agentMgr.SetDefault("claude-code")
-		logger.Printf("Claude agent registered: model=%s", cfg.Agent.Claude.Model)
+		logger.Printf("Claude agent registered")
 	}
 
 	// 注册 Codex Agent（如果启用）
@@ -398,6 +399,9 @@ func sendStartupNotificationAfterDelay(ctx context.Context, platform startupNoti
 			buildTimeDisplay = t.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05 CST")
 		}
 		msg := fmt.Sprintf("✅ 服务启动成功\n编译时间: %s\n版本: %s (%s)", buildTimeDisplay, version, gitCommit)
+		if ctx.Err() != nil {
+			return
+		}
 		if err := platform.Reply(ctx, fmt.Sprintf("%d", botUID), msg); err != nil {
 			logger.Printf("Failed to send startup notification: %v", err)
 		} else {
@@ -457,6 +461,9 @@ func (p *messageProcessor) enqueue(msg *weibo.Message) (startNow bool, queued bo
 
 	if _, exists := p.inFlightUsers[msg.UserID]; exists {
 		p.queuedMessages[msg.UserID] = append(p.queuedMessages[msg.UserID], msg)
+		if len(p.queuedMessages[msg.UserID]) > maxQueuedPerUser {
+			p.queuedMessages[msg.UserID] = p.queuedMessages[msg.UserID][1:]
+		}
 		return false, true
 	}
 
@@ -497,6 +504,14 @@ func (p *messageProcessor) nextQueued(userID string) *weibo.Message {
 }
 
 func (p *messageProcessor) handle(ctx context.Context, msg *weibo.Message) {
+	userID := msg.UserID
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Printf("PANIC in message handler for user %s: %v", userID, r)
+			p.clearUser(userID)
+		}
+	}()
+
 	for current := msg; current != nil; current = p.nextQueued(current.UserID) {
 		if ctx.Err() != nil {
 			p.clearUser(current.UserID)
@@ -905,5 +920,5 @@ func (j *jsonLogWriter) Write(p []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	return len(p), nil
+	return n, nil
 }

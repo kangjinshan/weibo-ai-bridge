@@ -55,9 +55,6 @@ type Agent interface {
 	// Name 返回 Agent 名称
 	Name() string
 
-	// Execute 执行 AI 任务并等待完整结果
-	Execute(ctx context.Context, sessionID string, input string) (string, error)
-
 	// ExecuteStream 执行 AI 任务并返回事件流
 	ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan Event, error)
 

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -198,14 +198,13 @@ func (p *Platform) connect() error {
 	// 构建连接 URL（需要 app_id 和 token）
 	url := fmt.Sprintf("%s?app_id=%s&token=%s", p.wsURL, p.appID, p.token)
 
-	// 配置 WebSocket
-	config, err := websocket.NewConfig(url, "http://localhost/")
-	if err != nil {
-		return err
-	}
+	header := http.Header{}
+	header.Set("Origin", "http://localhost/")
 
-	// 建立 WebSocket 连接
-	conn, err := websocket.DialConfig(config)
+	conn, resp, err := websocket.DefaultDialer.Dial(url, header)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return err
 	}
@@ -244,18 +243,20 @@ func (p *Platform) Start(ctx context.Context) error {
 	p.logger.Printf("✅ Platform started successfully")
 
 	// 启动心跳
-	p.wg.Add(3)
+	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 		p.heartbeatLoop(childCtx)
 	}()
 
 	// 启动消息循环
+	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 		p.messageLoop(childCtx)
 	}()
 
+	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 		<-childCtx.Done()
@@ -393,7 +394,7 @@ func (p *Platform) sendChunk(ctx context.Context, userID, messageID string, chun
 
 	p.logger.Printf("📤 Sending chunk: to=%s message_id=%s chunk_id=%d done=%t text=%q", userID, messageID, chunkID, done, summarizeChunk(content))
 
-	if err := websocket.Message.Send(p.conn, string(data)); err != nil {
+	if err := p.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		p.connMutex.Unlock()
 		return err
 	}
@@ -466,7 +467,7 @@ func (p *Platform) heartbeatLoop(ctx context.Context) {
 				pingMsg := map[string]interface{}{"type": "ping"}
 				data, err := json.Marshal(pingMsg)
 				if err == nil {
-					if err := websocket.Message.Send(p.conn, string(data)); err != nil {
+					if err := p.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 						p.logger.Printf("❌ Send ping failed: %v", err)
 					}
 				}
@@ -499,11 +500,10 @@ func (p *Platform) messageLoop(ctx context.Context) {
 				}
 			}
 
-			var data string
 			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
 				p.logger.Printf("❌ Set read deadline error: %v", err)
 			}
-			err := websocket.Message.Receive(conn, &data)
+			messageType, payload, err := conn.ReadMessage()
 			if err != nil {
 				p.logger.Printf("❌ Read message error: %v", err)
 				// 尝试重连
@@ -534,6 +534,12 @@ func (p *Platform) messageLoop(ctx context.Context) {
 				}
 				continue
 			}
+
+			// 只处理文本帧。
+			if messageType != websocket.TextMessage {
+				continue
+			}
+			data := string(payload)
 
 			// 跳过心跳响应（纯文本格式）
 			if data == "pong" {
@@ -625,7 +631,7 @@ func (p *Platform) sendJSONPong() error {
 		return err
 	}
 
-	return websocket.Message.Send(p.conn, string(data))
+	return p.conn.WriteMessage(websocket.TextMessage, data)
 }
 
 // isDuplicate 检查消息是否重复

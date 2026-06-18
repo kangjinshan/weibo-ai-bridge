@@ -27,11 +27,14 @@ func TestClaudeCodeAgent_IsAvailable(t *testing.T) {
 	_ = agent.IsAvailable()
 }
 
-func TestClaudeCodeAgent_Execute(t *testing.T) {
+func TestClaudeCodeAgent_ExecuteStream(t *testing.T) {
 	agent := NewClaudeCodeAgent()
-	_, err := agent.Execute(context.Background(), "", "test input")
+	events, err := agent.ExecuteStream(context.Background(), "", "test input")
 	if err != nil {
-		t.Logf("Execute failed (expected if claude CLI is not logged in or not installed): %v", err)
+		t.Logf("ExecuteStream failed (expected if claude CLI is not logged in or not installed): %v", err)
+		return
+	}
+	for range events {
 	}
 }
 

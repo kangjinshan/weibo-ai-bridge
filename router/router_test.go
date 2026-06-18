@@ -176,7 +176,6 @@ type MockAgent struct {
 	name      string
 	response  string
 	available bool
-	executeFn func(ctx context.Context, sessionID string, input string) (string, error)
 	streamFn  func(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error)
 	lastInput string
 	lastSID   string
@@ -184,15 +183,6 @@ type MockAgent struct {
 
 func (m *MockAgent) Name() string {
 	return m.name
-}
-
-func (m *MockAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
-	m.lastSID = sessionID
-	m.lastInput = input
-	if m.executeFn != nil {
-		return m.executeFn(ctx, sessionID, input)
-	}
-	return m.response, nil
 }
 
 func (m *MockAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
@@ -237,10 +227,6 @@ func (m *MockInteractiveAgent) Name() string {
 	return m.name
 }
 
-func (m *MockInteractiveAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
-	return "", nil
-}
-
 func (m *MockInteractiveAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan agent.Event, error) {
 	stream := make(chan agent.Event)
 	close(stream)
@@ -249,6 +235,46 @@ func (m *MockInteractiveAgent) ExecuteStream(ctx context.Context, sessionID stri
 
 func (m *MockInteractiveAgent) IsAvailable() bool {
 	return m.available
+}
+
+// collectAIMessage 运行流式 AI 消息路径并收集成 Response，用于替代已删除的 handleAIMessage。
+func collectAIMessage(r *Router, ctx context.Context, msg *Message) (*Response, error) {
+	if r.agentMgr == nil {
+		return &Response{Success: false, Content: "Agent manager is not available"}, nil
+	}
+	if r.sessionMgr == nil {
+		return &Response{Success: false, Content: "Session manager is not available"}, nil
+	}
+
+	events := make(chan agent.Event, 32)
+	var streamErr error
+	go func() {
+		defer close(events)
+		streamErr = r.streamAIMessage(ctx, msg, events)
+	}()
+
+	var parts []string
+	var errMsg string
+	for event := range events {
+		switch event.Type {
+		case agent.EventTypeDelta, agent.EventTypeMessage:
+			if strings.TrimSpace(event.Content) != "" {
+				parts = append(parts, event.Content)
+			}
+		case agent.EventTypeError:
+			if strings.TrimSpace(event.Error) != "" {
+				errMsg = event.Error
+			}
+		}
+	}
+
+	if streamErr != nil && !IsBenignCancellation(streamErr) {
+		return &Response{Success: false, Content: streamErr.Error()}, nil
+	}
+	if errMsg != "" {
+		return &Response{Success: false, Content: "AI execution failed: " + errMsg}, nil
+	}
+	return &Response{Success: true, Content: strings.Join(parts, "")}, nil
 }
 
 func (m *MockInteractiveAgent) StartSession(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
@@ -898,7 +924,7 @@ func TestHandleAIMessage(t *testing.T) {
 				SessionID: "session-1",
 			}
 
-			resp, err := router.handleAIMessage(context.Background(), msg)
+			resp, err := collectAIMessage(router, context.Background(), msg)
 
 			assert.NoError(t, err)
 			assert.NotNil(t, resp)
@@ -933,7 +959,7 @@ func TestHandleAIMessage_UsesSessionAgentType(t *testing.T) {
 	sessionMgr.Create("session-1", "user-1", "codex")
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
-	resp, err := router.handleAIMessage(context.Background(), &Message{
+	resp, err := collectAIMessage(router, context.Background(), &Message{
 		ID:        "msg-1",
 		Type:      TypeText,
 		Content:   "Hello AI",
@@ -965,7 +991,7 @@ func TestHandleAIMessage_PersistsClaudeSessionID(t *testing.T) {
 	sessionMgr.Create("session-1", "user-1", "claude")
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
-	resp, err := router.handleAIMessage(context.Background(), &Message{
+	resp, err := collectAIMessage(router, context.Background(), &Message{
 		ID:        "msg-1",
 		Type:      TypeText,
 		Content:   "Hello Claude",
@@ -1005,7 +1031,7 @@ func TestHandleAIMessage_ResumesClaudeSessionID(t *testing.T) {
 	sess.SetContext("claude_session_id", "claude-session-1")
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
-	resp, err := router.handleAIMessage(context.Background(), &Message{
+	resp, err := collectAIMessage(router, context.Background(), &Message{
 		ID:        "msg-2",
 		Type:      TypeText,
 		Content:   "Continue",
@@ -1037,7 +1063,7 @@ func TestHandleAIMessage_PersistsCodexSessionID(t *testing.T) {
 	sessionMgr.Create("session-1", "user-1", "codex")
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
-	resp, err := router.handleAIMessage(context.Background(), &Message{
+	resp, err := collectAIMessage(router, context.Background(), &Message{
 		ID:        "msg-1",
 		Type:      TypeText,
 		Content:   "Hello Codex",
@@ -1076,7 +1102,7 @@ func TestHandleAIMessage_AdoptsPendingOrBridgeSessionIDToNativeSessionID(t *test
 	sessionMgr.Create("user-1-1", "user-1", "codex")
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
-	resp, err := router.handleAIMessage(context.Background(), &Message{
+	resp, err := collectAIMessage(router, context.Background(), &Message{
 		ID:        "msg-1",
 		Type:      TypeText,
 		Content:   "Hello Codex",
@@ -1119,7 +1145,7 @@ func TestHandleAIMessage_SetsSessionTitleFromFirstQuestionOnly(t *testing.T) {
 
 	router := NewRouter(platform, sessionMgr, agentMgr)
 	firstQuestion := strings.Repeat("你", 60)
-	_, err := router.handleAIMessage(context.Background(), &Message{
+	_, err := collectAIMessage(router, context.Background(), &Message{
 		ID:        "msg-1",
 		Type:      TypeText,
 		Content:   firstQuestion,
@@ -1128,7 +1154,7 @@ func TestHandleAIMessage_SetsSessionTitleFromFirstQuestionOnly(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	_, err = router.handleAIMessage(context.Background(), &Message{
+	_, err = collectAIMessage(router, context.Background(), &Message{
 		ID:        "msg-2",
 		Type:      TypeText,
 		Content:   "第二个问题不会覆盖标题",
@@ -1143,59 +1169,19 @@ func TestHandleAIMessage_SetsSessionTitleFromFirstQuestionOnly(t *testing.T) {
 	assert.Equal(t, string([]rune(firstQuestion)[:50]), sess.Title)
 }
 
-func TestSendReply(t *testing.T) {
-	tests := []struct {
-		name         string
-		content      string
-		expectError  bool
-		expectChunks int
-	}{
-		{
-			name:         "发送短消息",
-			content:      "Hello",
-			expectError:  false,
-			expectChunks: 1,
-		},
-		{
-			name:         "发送长消息（按字符限制分块）",
-			content:      strings.Repeat("这是一条测试消息。\n", 100), // 约 900 字符，超过 1000 需要分块
-			expectError:  false,
-			expectChunks: 1,
-		},
-		{
-			name:         "平台未设置",
-			content:      "Test",
-			expectError:  true,
-			expectChunks: 0,
-		},
-	}
+func TestSendReply_DirectPlatformCall(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{
+		Timeout: 300,
+		MaxSize: 10,
+	})
+	agentMgr := agent.NewManager()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			platform := &MockPlatform{}
-			sessionMgr := session.NewManager(session.ManagerConfig{
-				Timeout: 300,
-				MaxSize: 10,
-			})
-			agentMgr := agent.NewManager()
+	router := NewRouter(platform, sessionMgr, agentMgr)
 
-			router := NewRouter(platform, sessionMgr, agentMgr)
-
-			// 对于"平台未设置"的测试，移除 platform
-			if tt.name == "平台未设置" {
-				router.platform = nil
-			}
-
-			err := router.sendReply(context.Background(), "msg-1", tt.content)
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectChunks, len(platform.replies))
-			}
-		})
-	}
+	err := router.sendReply(context.Background(), "user-1", "Hello")
+	assert.NoError(t, err)
+	assert.Len(t, platform.replies, 1)
 }
 
 func TestSplitMessage(t *testing.T) {
@@ -1427,22 +1413,6 @@ func TestStreamReplySender_InformationalTextFlushesBufferedDeltaFirst(t *testing
 	assert.Len(t, writer.chunks, 2)
 	assert.Equal(t, "短", writer.chunks[0]["content"])
 	assert.Equal(t, "需要授权", writer.chunks[1]["content"])
-}
-
-func TestLegacyStreamReplyWriterSkipsEmptyDoneChunk(t *testing.T) {
-	var sent []string
-	writer := &legacyStreamReplyWriter{
-		send: func(content string) error {
-			sent = append(sent, content)
-			return nil
-		},
-	}
-
-	assert.NoError(t, writer.SendChunk(context.Background(), "", true))
-	assert.NoError(t, writer.SendChunk(context.Background(), "", false))
-	assert.NoError(t, writer.SendChunk(context.Background(), "hello", false))
-
-	assert.Equal(t, []string{"hello"}, sent)
 }
 
 func TestForwardStreamToPlatform_FlushesIdleShortDeltaWithoutNextChunk(t *testing.T) {

@@ -257,6 +257,9 @@ func (r *Router) forwardSimpleStreamToPlatform(ctx context.Context, userID strin
 		return sender.Settle(ctx)
 	}
 	finalText := func() string {
+		if streamErr != nil {
+			return "AI execution failed: " + streamErr.Error()
+		}
 		if strings.TrimSpace(finalMessage) != "" {
 			return finalMessage
 		}
@@ -274,10 +277,8 @@ func (r *Router) forwardSimpleStreamToPlatform(ctx context.Context, userID strin
 			return ctx.Err()
 		case event, ok := <-stream:
 			if !ok {
-				if streamErr == nil {
-					if err := sendFinal(finalText()); err != nil {
-						return err
-					}
+				if err := sendFinal(finalText()); err != nil {
+					return err
 				}
 				if err := settle(); err != nil {
 					return err
@@ -299,15 +300,10 @@ func (r *Router) forwardSimpleStreamToPlatform(ctx context.Context, userID strin
 			case agent.EventTypeError:
 				if strings.TrimSpace(event.Error) != "" && !IsBenignCancellation(errors.New(event.Error)) {
 					streamErr = errors.New(event.Error)
-					if err := sendFinal("AI execution failed: " + event.Error); err != nil {
-						return err
-					}
 				}
 			case agent.EventTypeDone:
-				if streamErr == nil {
-					if err := sendFinal(finalText()); err != nil {
-						return err
-					}
+				if err := sendFinal(finalText()); err != nil {
+					return err
 				}
 				if err := settle(); err != nil {
 					return err
@@ -327,15 +323,7 @@ func IsBenignCancellation(err error) bool {
 }
 
 func (r *Router) openStreamWriter(ctx context.Context, userID string) (streamReplyWriter, error) {
-	if streamer, ok := r.platform.(streamingPlatformInterface); ok {
-		return streamer.OpenReplyStream(ctx, userID)
-	}
-
-	return &legacyStreamReplyWriter{
-		send: func(content string) error {
-			return r.sendReply(ctx, userID, content)
-		},
-	}, nil
+	return r.platform.OpenReplyStream(ctx, userID)
 }
 
 // sendReply 发送回复（支持分块）
@@ -344,15 +332,7 @@ func (r *Router) sendReply(ctx context.Context, userID string, content string) e
 		return errors.New("platform is not set")
 	}
 
-	chunks := r.splitMessage(content, 1000)
-
-	for _, chunk := range chunks {
-		if err := r.platform.Reply(ctx, userID, chunk); err != nil {
-			return errors.New("send reply chunk failed")
-		}
-	}
-
-	return nil
+	return r.platform.Reply(ctx, userID, content)
 }
 
 func (r *Router) emitCommandEvents(ctx context.Context, events chan<- agent.Event, msg *Message) {

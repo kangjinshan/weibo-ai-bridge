@@ -49,7 +49,7 @@ type Router struct {
 	handlersMu     sync.RWMutex
 	handlers       map[MessageType]Handler
 	defaultHandler Handler
-	platform       PlatformInterface
+	platform       Platform
 	sessionMgr     *session.Manager
 	agentMgr       *agent.Manager
 	commandHandler *CommandHandler
@@ -77,21 +77,12 @@ type listenRun struct {
 	target NativeSession
 }
 
-// PlatformInterface 平台接口
-type PlatformInterface interface {
-	Reply(ctx context.Context, messageID string, content string) error
-}
-
 type streamReplyWriter interface {
 	SendChunk(ctx context.Context, content string, done bool) error
 }
 
-type streamingPlatformInterface interface {
-	OpenReplyStream(ctx context.Context, userID string) (weibo.ChunkSender, error)
-}
-
 // NewRouter 创建路由器
-func NewRouter(platform PlatformInterface, sessionMgr *session.Manager, agentMgr *agent.Manager) *Router {
+func NewRouter(platform Platform, sessionMgr *session.Manager, agentMgr *agent.Manager) *Router {
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	router := &Router{
 		handlers:     make(map[MessageType]Handler),
@@ -123,6 +114,25 @@ func (r *Router) Close() {
 		return
 	}
 	r.closeOnce.Do(func() {
+		// Cancel listen runs and super peer reviews before root cancel.
+		r.listenMu.Lock()
+		for _, run := range r.listenRuns {
+			if run.cancel != nil {
+				run.cancel()
+			}
+		}
+		r.listenRuns = make(map[string]listenRun)
+		r.listenMu.Unlock()
+
+		r.superReviewMu.Lock()
+		for _, run := range r.superReviews {
+			if run.cancel != nil {
+				run.cancel()
+			}
+		}
+		r.superReviews = make(map[string]superReviewRun)
+		r.superReviewMu.Unlock()
+
 		if r.rootCancel != nil {
 			r.rootCancel()
 		}

@@ -18,8 +18,14 @@ func TestMockAgent(t *testing.T) {
 	assert.Equal(t, "test-agent", agent.Name())
 	assert.True(t, agent.IsAvailable())
 
-	response, err := agent.Execute(context.Background(), "", "test input")
+	events, err := agent.ExecuteStream(context.Background(), "", "test input")
 	assert.NoError(t, err)
+	var response string
+	for event := range events {
+		if event.Type == EventTypeMessage {
+			response = event.Content
+		}
+	}
 	assert.Equal(t, "response: test input", response)
 }
 

@@ -40,7 +40,7 @@
 
 - `router_core.go` — Router 类型定义、Handle/Route 主入口、toRouterMessage 转换。非命令消息统一走 `streamRouterMessage`。
 - `router_stream.go` — 统一流式路径 `streamRouterMessage`、`forwardStreamToPlatform`（delta/message/approval/error→分片回传）、`IsBenignCancellation`。
-- `router_agent.go` — `resolveAgentExecution`（会话获取/Agent 解析）、`streamAIMessage`（交互式优先→流式回退）、`handleAIMessage`（私有方法，主入口不再调用）、`agentSessionContextKey`（`claude_session_id` / `codex_session_id` / `hermes_session_id` / `gemini_session_id`）。执行上下文会携带当前会话 `work_dir` 和 `Allow All` 状态，供 Agent 选择 CLI 参数。
+- `router_agent.go` — `resolveAgentExecution`（会话获取/Agent 解析）、`streamAIMessage`（交互式优先→流式回退）、`agentSessionContextKey`（`claude_session_id` / `codex_session_id` / `hermes_session_id` / `gemini_session_id`）。执行上下文会携带当前会话 `work_dir` 和 `Allow All` 状态，供 Agent 选择 CLI 参数。
 - `router_interactive.go` — `liveSessions` 生命周期管理、`getOrCreateInteractiveSession`、`drainInteractiveSession`、审批等待态、`allowAll` 标记、交互式会话尾部静默保护（`interactiveDoneGracePeriod` 200ms）、leading done 防误判等待（`interactiveLeadingDoneWait` 12s）与 stale 会话“空 done”自动重建重试；以及 Claude AskUserQuestion 逐题应答状态机（`BeginQuestions`/`RecordAnswerAndAdvance`/`handleQuestionReply`）。
 - `router_approval.go` — `formatApprovalPrompt`（审批提示格式化）、`parseApprovalAction`（28 个同义词解析，分为允许类/取消类/允许所有类）、`formatQuestionPrompt`/`resolveQuestionAnswer`（Claude AskUserQuestion 选择题的渲染与答案解析）。
 - `router_bytheway.go` — `/btw` 命令注入逻辑，区分流式/交互式两种注入路径。
@@ -153,9 +153,9 @@
 - 对交互式会话，若新 turn 首个事件是 `done` 且在 `interactiveLeadingDoneWait` 窗口内没有任何有效信号（delta/message/approval/error），应视为 stale 会话空结束并自动重建会话后重试一次，避免用户看到“发了消息但无回复”
 - Codex `thread/resume` 续接已存在本地线程时，应避免覆盖原线程策略参数（如 approval/sandbox/model）；优先使用最小续接参数并同步事件里的 `threadId` 变化，避免“看似续接但实际分叉新线程”
 - `skills/weibo-skill-api` 默认应复用 `weibo-ai-bridge` 的微博配置与 token 缓存，不要重新引入单独的 `~/.weibo-skill/config.json`
-- Router 的 `Handle` 主入口（`Handler` 接口）和生产入口 `HandleMessage` 都走流式路径（`streamRouterMessage`）。`handleAIMessage` 作为私有方法仍保留，仅供单元测试调用；生产流程不再经过它。Agent 接口仍保留 `Execute`（非流式）方法，但主流程只走 `ExecuteStream` 和 `InteractiveSession`
-- `cmd/server/main.go` 启动后会通过微博平台发出一条 startup notification（约启动 2s 后），用的是 `context.Background()`；若与即时 SIGTERM 关停叠加，可能在 `Stop` 期间仍然尝试发送，需要注意这条 goroutine 不受主 ctx 管控
-- `/listen` / `/unlisten` 的后台 goroutine（`listenRuns`）和 `/super` 的 peer review 后台 goroutine（`superReviews`）目前都使用独立 ctx，进程退出时依赖 cancel 链路收尾；后续如果加入 Router-level shutdown，需要把这两类后台任务一起取消
+- Router 的 `Handle` 主入口（`Handler` 接口）和生产入口 `HandleMessage` 都走流式路径（`streamRouterMessage`）。不再保留遗留的 `handleAIMessage` 非流式路径；Agent 接口也不再保留 `Execute` 非流式方法，主流程只走 `ExecuteStream` 和 `InteractiveSession`
+- `cmd/server/main.go` 启动后会通过微博平台发出一条 startup notification（约启动 2s 后），发送前会检查主 ctx；若服务已开始关停，应跳过发送。
+- `Router.Close()` 会主动取消 `/listen` / `/unlisten` 的后台 goroutine（`listenRuns`）和 `/super` 的 peer review 后台 goroutine（`superReviews`），再取消 root ctx 并关闭交互式会话。
 
 ## 命令与接口
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/kangjinshan/weibo-ai-bridge/agent"
 )
 
 const deltaFallbackFlushRunes = 24
@@ -67,7 +69,7 @@ func (s *streamReplySender) PushPartialSnapshot(ctx context.Context, snapshot st
 	}
 
 	s.hasSeenPartial = true
-	delta, nextSnapshot := resolveDeltaFromSnapshot(s.lastPartialSnapshot, snapshot)
+	delta, nextSnapshot := agent.ResolveTextDelta(s.lastPartialSnapshot, snapshot)
 	s.lastPartialSnapshot = nextSnapshot
 	if delta == "" {
 		return nil
@@ -234,46 +236,8 @@ func (s *streamReplySender) flushBufferedDelta(ctx context.Context, force bool) 
 	return true, nil
 }
 
-type legacyStreamReplyWriter struct {
-	send func(content string) error
-}
-
-func (w *legacyStreamReplyWriter) SendChunk(ctx context.Context, content string, done bool) error {
-	if done && content == "" {
-		return nil
-	}
-	if content == "" {
-		return nil
-	}
-
-	return w.send(content)
-}
-
 func resolveDeltaFromSnapshot(previous, next string) (string, string) {
-	if next == "" || next == previous {
-		return "", next
-	}
-	if strings.HasPrefix(next, previous) {
-		return next[len(previous):], next
-	}
-	if strings.HasPrefix(previous, next) {
-		return "", next
-	}
-
-	commonBytes := 0
-	prevIdx, nextIdx := 0, 0
-	for prevIdx < len(previous) && nextIdx < len(next) {
-		prevRune, prevSize := utf8.DecodeRuneInString(previous[prevIdx:])
-		nextRune, nextSize := utf8.DecodeRuneInString(next[nextIdx:])
-		if prevRune != nextRune {
-			break
-		}
-		commonBytes = nextIdx + nextSize
-		prevIdx += prevSize
-		nextIdx += nextSize
-	}
-
-	return next[commonBytes:], next
+	return agent.ResolveTextDelta(previous, next)
 }
 
 func findDeltaFlushBoundary(buffered string, force bool) int {

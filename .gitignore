@@ -51,6 +51,7 @@ config/config.*.toml
 tmp/
 temp/
 test-weibo
+app-session-*.js
 
 # Codex marker
 .codex

@@ -46,66 +46,6 @@ func (c *superTurnCollector) HasError() bool {
 	return c.hasError
 }
 
-// handleAIMessage 处理 AI 消息（非命令消息）
-func (r *Router) handleAIMessage(ctx context.Context, msg *Message) (*Response, error) {
-	if r.agentMgr == nil {
-		return &Response{
-			Success: false,
-			Content: "Agent manager is not available",
-		}, nil
-	}
-
-	if r.sessionMgr == nil {
-		return &Response{
-			Success: false,
-			Content: "Session manager is not available",
-		}, nil
-	}
-
-	sess, sessionKey, agentSessionID, currentAgent, err := r.resolveAgentExecution(msg)
-	if err != nil {
-		return &Response{
-			Success: false,
-			Content: err.Error(),
-		}, nil
-	}
-
-	injectedFeedback := ""
-	execInput := msg.Content
-	if isSuperModeEnabled(sess) {
-		if feedback, ready := superFeedbackReadyForAgent(sess, sess.AgentType); ready {
-			injectedFeedback = strings.TrimSpace(feedback)
-			execInput = buildSuperInjectedInput(msg.Content, injectedFeedback)
-		}
-	}
-
-	execCtx := agent.WithWorkDir(ctx, sessionWorkDir(sess))
-	execCtx = agent.WithAllowAll(execCtx, isSuperAutoApproveEnabled(sess))
-	response, err := currentAgent.Execute(execCtx, agentSessionID, execInput)
-	if err != nil {
-		return &Response{
-			Success: false,
-			Content: fmt.Sprintf("AI execution failed: %v", err),
-		}, nil
-	}
-
-	if strings.TrimSpace(injectedFeedback) != "" {
-		clearSuperFeedbackForAgentIfMatch(r.sessionMgr, sess.ID, sess.AgentType, injectedFeedback)
-	}
-
-	if sessionKey != "" {
-		if newSessionID := extractSessionID(response); newSessionID != "" {
-			sess = r.bindAgentNativeSessionID(sess, sessionKey, newSessionID)
-			response = removeSessionIDMarker(response)
-		}
-	}
-
-	return &Response{
-		Success: true,
-		Content: response,
-	}, nil
-}
-
 func (r *Router) streamAIMessage(ctx context.Context, msg *Message, events chan<- agent.Event) error {
 	if r.agentMgr == nil {
 		return errors.New("Agent manager is not available")
@@ -192,6 +132,11 @@ func (r *Router) launchSuperPeerReview(sessionID, userID, currentAgentType, user
 		return
 	}
 	if strings.TrimSpace(mainOutput) == "" {
+		return
+	}
+
+	if oppositeAgentType(currentAgentType) == "" {
+		r.sendSuperNotice(userID, "Super：当前代理没有对侧代理，已跳过复盘。")
 		return
 	}
 
@@ -495,6 +440,10 @@ func oppositeAgentType(currentAgentType string) string {
 		return "codex"
 	case "codex":
 		return "claude"
+	case "hermes":
+		return "gemini"
+	case "gemini":
+		return "hermes"
 	default:
 		return ""
 	}
@@ -521,6 +470,7 @@ func (r *Router) resolveAgentExecution(msg *Message) (*session.Session, string, 
 		return nil, "", "", nil, errors.New("Failed to create or get session")
 	}
 	if strings.TrimSpace(currentSession.AgentType) == "" {
+		r.sessionMgr.SetSessionAgentType(currentSession.ID, agentType)
 		currentSession.AgentType = agentType
 	}
 

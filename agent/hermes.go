@@ -96,46 +96,6 @@ const (
 	hermesReplayMaxDrain    = 2 * time.Second
 )
 
-// Execute 执行 AI 任务并等待完整结果。
-func (a *HermesAgent) Execute(ctx context.Context, sessionID string, input string) (string, error) {
-	events, err := a.ExecuteStream(ctx, sessionID, input)
-	if err != nil {
-		return "", err
-	}
-
-	var responseParts []string
-	var errorParts []string
-	var latestSessionID string
-
-	for event := range events {
-		switch event.Type {
-		case EventTypeSession:
-			if strings.TrimSpace(event.SessionID) != "" {
-				latestSessionID = strings.TrimSpace(event.SessionID)
-			}
-		case EventTypeDelta, EventTypeMessage:
-			if strings.TrimSpace(event.Content) != "" {
-				responseParts = append(responseParts, event.Content)
-			}
-		case EventTypeError:
-			if strings.TrimSpace(event.Error) != "" {
-				errorParts = append(errorParts, event.Error)
-			}
-		}
-	}
-
-	if len(errorParts) > 0 {
-		return "", fmt.Errorf("%s", strings.Join(uniqueNonEmpty(errorParts), "\n"))
-	}
-
-	response := strings.Join(responseParts, "\n")
-	if latestSessionID != "" {
-		response += "\n\n__SESSION_ID__: " + latestSessionID
-	}
-
-	return response, nil
-}
-
 // ExecuteStream 执行 AI 任务并返回结构化事件流。
 func (a *HermesAgent) ExecuteStream(ctx context.Context, sessionID string, input string) (<-chan Event, error) {
 	if !a.IsAvailable() {

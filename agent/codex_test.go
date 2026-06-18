@@ -36,11 +36,14 @@ func TestCodeXAgent_IsAvailable(t *testing.T) {
 	_ = agent.IsAvailable()
 }
 
-func TestCodeXAgent_Execute(t *testing.T) {
+func TestCodeXAgent_ExecuteStream(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
-	_, err := agent.Execute(context.Background(), "", "test input")
+	events, err := agent.ExecuteStream(context.Background(), "", "test input")
 	if err != nil {
-		t.Logf("Execute failed (expected if codex CLI is not configured): %v", err)
+		t.Logf("ExecuteStream failed (expected if codex CLI is not configured): %v", err)
+		return
+	}
+	for range events {
 	}
 }
 

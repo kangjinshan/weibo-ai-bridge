@@ -13,10 +13,25 @@ const (
 
 	superFeedbackForClaudeKey = "super_feedback_for_claude"
 	superFeedbackForCodexKey  = "super_feedback_for_codex"
+	superFeedbackForHermesKey = "super_feedback_for_hermes"
+	superFeedbackForGeminiKey = "super_feedback_for_gemini"
 
 	superFeedbackReadyForClaudeKey = "super_feedback_ready_for_claude"
 	superFeedbackReadyForCodexKey  = "super_feedback_ready_for_codex"
+	superFeedbackReadyForHermesKey = "super_feedback_ready_for_hermes"
+	superFeedbackReadyForGeminiKey = "super_feedback_ready_for_gemini"
 )
+
+// superFeedbackAgentKeys 列出所有 agent 的反馈键，便于批量清理。
+var superFeedbackAgentKeys = []struct {
+	feedbackKey string
+	readyKey    string
+}{
+	{superFeedbackForClaudeKey, superFeedbackReadyForClaudeKey},
+	{superFeedbackForCodexKey, superFeedbackReadyForCodexKey},
+	{superFeedbackForHermesKey, superFeedbackReadyForHermesKey},
+	{superFeedbackForGeminiKey, superFeedbackReadyForGeminiKey},
+}
 
 func isSuperModeEnabled(sess *session.Session) bool {
 	if sess == nil {
@@ -42,6 +57,10 @@ func superFeedbackKeyForAgent(agentType string) string {
 		return superFeedbackForClaudeKey
 	case "codex":
 		return superFeedbackForCodexKey
+	case "hermes":
+		return superFeedbackForHermesKey
+	case "gemini":
+		return superFeedbackForGeminiKey
 	default:
 		return ""
 	}
@@ -53,6 +72,10 @@ func superFeedbackReadyKeyForAgent(agentType string) string {
 		return superFeedbackReadyForClaudeKey
 	case "codex":
 		return superFeedbackReadyForCodexKey
+	case "hermes":
+		return superFeedbackReadyForHermesKey
+	case "gemini":
+		return superFeedbackReadyForGeminiKey
 	default:
 		return ""
 	}
@@ -111,21 +134,15 @@ func setSuperMode(sessionMgr *session.Manager, sessionID string, enabled bool) {
 			return changed
 		}
 
-		if strings.TrimSpace(contextStringMap(ctx, superFeedbackForClaudeKey)) != "" {
-			ctx[superFeedbackForClaudeKey] = ""
-			changed = true
-		}
-		if strings.TrimSpace(contextStringMap(ctx, superFeedbackForCodexKey)) != "" {
-			ctx[superFeedbackForCodexKey] = ""
-			changed = true
-		}
-		if contextBoolMap(ctx, superFeedbackReadyForClaudeKey) {
-			ctx[superFeedbackReadyForClaudeKey] = false
-			changed = true
-		}
-		if contextBoolMap(ctx, superFeedbackReadyForCodexKey) {
-			ctx[superFeedbackReadyForCodexKey] = false
-			changed = true
+		for _, keys := range superFeedbackAgentKeys {
+			if strings.TrimSpace(contextStringMap(ctx, keys.feedbackKey)) != "" {
+				ctx[keys.feedbackKey] = ""
+				changed = true
+			}
+			if contextBoolMap(ctx, keys.readyKey) {
+				ctx[keys.readyKey] = false
+				changed = true
+			}
 		}
 		return changed
 	})
@@ -138,21 +155,15 @@ func clearAllSuperFeedback(sessionMgr *session.Manager, sessionID string) {
 
 	_ = sessionMgr.UpdateSessionContextAtomically(sessionID, func(ctx map[string]interface{}) bool {
 		changed := false
-		if strings.TrimSpace(contextStringMap(ctx, superFeedbackForClaudeKey)) != "" {
-			ctx[superFeedbackForClaudeKey] = ""
-			changed = true
-		}
-		if strings.TrimSpace(contextStringMap(ctx, superFeedbackForCodexKey)) != "" {
-			ctx[superFeedbackForCodexKey] = ""
-			changed = true
-		}
-		if contextBoolMap(ctx, superFeedbackReadyForClaudeKey) {
-			ctx[superFeedbackReadyForClaudeKey] = false
-			changed = true
-		}
-		if contextBoolMap(ctx, superFeedbackReadyForCodexKey) {
-			ctx[superFeedbackReadyForCodexKey] = false
-			changed = true
+		for _, keys := range superFeedbackAgentKeys {
+			if strings.TrimSpace(contextStringMap(ctx, keys.feedbackKey)) != "" {
+				ctx[keys.feedbackKey] = ""
+				changed = true
+			}
+			if contextBoolMap(ctx, keys.readyKey) {
+				ctx[keys.readyKey] = false
+				changed = true
+			}
 		}
 		return changed
 	})

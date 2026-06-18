@@ -205,6 +205,24 @@ func (p *listenTestPlatform) Reply(ctx context.Context, messageID string, conten
 	return nil
 }
 
+func (p *listenTestPlatform) OpenReplyStream(ctx context.Context, userID string) (weibo.ChunkSender, error) {
+	return &listenTestStream{platform: p}, nil
+}
+
+type listenTestStream struct {
+	platform *listenTestPlatform
+}
+
+func (s *listenTestStream) SendChunk(ctx context.Context, content string, done bool) error {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	s.platform.mu.Lock()
+	defer s.platform.mu.Unlock()
+	s.platform.replies = append(s.platform.replies, content)
+	return nil
+}
+
 func (p *listenTestPlatform) Replies() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -1790,6 +1790,86 @@ func TestHandleMessage_AllowAllContinuesPendingInteractiveSession(t *testing.T) 
 	assert.Equal(t, true, platform.replies[4]["done"])
 }
 
+func TestHandleMessage_StaleCodexApprovalDoesNotReturnExecutionFailure(t *testing.T) {
+	platform := &MockPlatform{}
+	sessionMgr := session.NewManager(session.ManagerConfig{Timeout: 300, MaxSize: 10})
+	agentMgr := agent.NewManager()
+
+	firstSession := NewMockInteractiveSession()
+	firstSession.sendFn = func(input string) {
+		firstSession.events <- agent.Event{
+			Type:      agent.EventTypeApproval,
+			ToolName:  "command_execution",
+			ToolInput: "Get-Process",
+		}
+	}
+	firstSession.approveErrFn = func(action agent.ApprovalAction) error {
+		return errors.New("no pending codex approval")
+	}
+
+	secondSession := NewMockInteractiveSession()
+	secondSession.sendFn = func(input string) {
+		secondSession.events <- agent.Event{Type: agent.EventTypeMessage, Content: "fresh reply"}
+		secondSession.events <- agent.Event{Type: agent.EventTypeDone}
+	}
+
+	mockAgent := &MockInteractiveAgent{
+		name:      "codex",
+		available: true,
+	}
+	mockAgent.startFn = func(ctx context.Context, sessionID string) (agent.InteractiveSession, error) {
+		switch mockAgent.startCalls {
+		case 1:
+			return firstSession, nil
+		case 2:
+			return secondSession, nil
+		default:
+			t.Fatalf("unexpected StartSession call %d", mockAgent.startCalls)
+			return nil, nil
+		}
+	}
+	agentMgr.Register(mockAgent)
+	agentMgr.SetDefault("codex")
+
+	router := NewRouter(platform, sessionMgr, agentMgr)
+
+	err := router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-start",
+		Type:      weibo.MessageTypeText,
+		Content:   "检查服务",
+		UserID:    "user-stale-codex-approval",
+		UserName:  "tester",
+		Timestamp: 1,
+	})
+	assert.NoError(t, err)
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-allow-all",
+		Type:      weibo.MessageTypeText,
+		Content:   "允许所有",
+		UserID:    "user-stale-codex-approval",
+		UserName:  "tester",
+		Timestamp: 2,
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, platform.replies[2]["content"], "授权请求已过期")
+	assert.NotContains(t, platform.replies[2]["content"], "AI execution failed")
+
+	err = router.HandleMessage(context.Background(), &weibo.Message{
+		ID:        "msg-retry",
+		Type:      weibo.MessageTypeText,
+		Content:   "再检查一次",
+		UserID:    "user-stale-codex-approval",
+		UserName:  "tester",
+		Timestamp: 3,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, 2, mockAgent.startCalls)
+	assert.Equal(t, []string{"再检查一次"}, secondSession.sentInputs)
+	assert.Len(t, platform.streams, 3)
+	assert.Equal(t, "fresh reply", platform.streams[2].chunks[0]["content"])
+}
+
 func TestHandleMessage_AllowAndCancelContinuePendingInteractiveSession(t *testing.T) {
 	tests := []struct {
 		name           string

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -86,6 +88,7 @@ func TestResolveCodexCommandSpec_WindowsRunsBatchCommandViaCmdExe(t *testing.T) 
 }
 
 func TestResolveCodexCommandSpec_WindowsUsesShellForPackagedWindowsAppsExeWithoutShim(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "missing"))
 	packagedExe := `C:\Program Files\WindowsApps\OpenAI.Codex_26.616.3309.0_x64__2p2nqsd0c76g0\app\resources\codex.exe`
 
 	spec, err := resolveCodexCommandSpecFor("windows", func(file string) (string, error) {
@@ -103,6 +106,35 @@ func TestResolveCodexCommandSpec_WindowsUsesShellForPackagedWindowsAppsExeWithou
 	wantPrefix := []string{"/d", "/s", "/c", "codex"}
 	if !reflect.DeepEqual(spec.argsPrefix, wantPrefix) {
 		t.Fatalf("unexpected args prefix: got %v want %v", spec.argsPrefix, wantPrefix)
+	}
+}
+
+func TestResolveCodexCommandSpec_WindowsPrefersDesktopBundleOverPackagedWindowsAppsExe(t *testing.T) {
+	localAppData := t.TempDir()
+	t.Setenv("LOCALAPPDATA", localAppData)
+	desktopExe := filepath.Join(localAppData, "OpenAI", "Codex", "bin", "hash", "codex.exe")
+	if err := os.MkdirAll(filepath.Dir(desktopExe), 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(desktopExe, []byte("fake"), 0o755); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	packagedExe := `C:\Program Files\WindowsApps\OpenAI.Codex_26.616.3309.0_x64__2p2nqsd0c76g0\app\resources\codex.exe`
+	spec, err := resolveCodexCommandSpecFor("windows", func(file string) (string, error) {
+		if file == "codex" {
+			return packagedExe, nil
+		}
+		return "", exec.ErrNotFound
+	})
+	if err != nil {
+		t.Fatalf("resolveCodexCommandSpecFor returned error: %v", err)
+	}
+	if spec.command != desktopExe {
+		t.Fatalf("unexpected command: got %q want %q", spec.command, desktopExe)
+	}
+	if len(spec.argsPrefix) != 0 {
+		t.Fatalf("unexpected args prefix: got %v want empty", spec.argsPrefix)
 	}
 }
 
@@ -127,6 +159,7 @@ func TestCodeXAgent_ExecuteStream(t *testing.T) {
 }
 
 func TestCodeXAgent_buildCommand_NewSession(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "missing"))
 	agent := NewCodeXAgent("gpt-4.5")
 
 	cmd := agent.buildCommand(context.Background(), &codexSession{}, "hello")
@@ -148,6 +181,7 @@ func TestCodeXAgent_buildCommand_NewSession(t *testing.T) {
 }
 
 func TestCodeXAgent_buildCommand_NewSessionWithoutModelOverride(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "missing"))
 	agent := NewCodeXAgent("")
 
 	cmd := agent.buildCommand(context.Background(), &codexSession{}, "hello")
@@ -159,6 +193,7 @@ func TestCodeXAgent_buildCommand_NewSessionWithoutModelOverride(t *testing.T) {
 }
 
 func TestCodeXAgent_buildCommand_ResumeSession(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "missing"))
 	agent := NewCodeXAgent("gpt-4.5")
 	session := &codexSession{}
 	session.threadID.Store("thread-123")

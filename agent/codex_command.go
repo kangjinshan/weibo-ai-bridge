@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -51,10 +53,41 @@ func resolveCodexCommandSpecFor(goos string, lookPath lookPathFunc) (codexComman
 		}
 	}
 
+	if desktopCLI := findWindowsDesktopCodexCLI(); desktopCLI != "" {
+		return codexCommandSpec{command: desktopCLI}, nil
+	}
+
 	return codexCommandSpec{
 		command:    "cmd.exe",
 		argsPrefix: []string{"/d", "/s", "/c", "codex"},
 	}, nil
+}
+
+func findWindowsDesktopCodexCLI() string {
+	localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+	if localAppData == "" {
+		return ""
+	}
+
+	matches, err := filepath.Glob(filepath.Join(localAppData, "OpenAI", "Codex", "bin", "*", "codex.exe"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+
+	best := ""
+	var bestModTime int64
+	for _, match := range matches {
+		info, err := os.Stat(match)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		modTime := info.ModTime().UnixNano()
+		if best == "" || modTime > bestModTime {
+			best = match
+			bestModTime = modTime
+		}
+	}
+	return best
 }
 
 func isPackagedWindowsAppsCodexPath(path string) bool {

@@ -112,6 +112,7 @@ const interactiveLeadingDoneWait = 12 * time.Second
 
 var errInteractiveTurnNoSignal = errors.New("interactive turn completed without any turn signal")
 var errInteractiveRetryFreshNativeSession = errors.New("interactive turn should retry with a fresh native session")
+var errInteractiveStaleApproval = errors.New("interactive approval request is no longer pending")
 
 func (r *Router) getInteractiveSession(sessionID string) (*interactiveSessionState, bool) {
 	r.liveMu.Lock()
@@ -196,6 +197,21 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 			liveState.SetAwaitingApproval(false)
 			liveState, err = r.respondInteractiveApproval(ctx, sess, sessionKey, agentSessionID, agent.ApprovalActionAllow, interactiveAgent, liveState)
 			if err != nil {
+				if errors.Is(err, errInteractiveStaleApproval) {
+					if strings.TrimSpace(msg.Content) == "" {
+						return nil
+					}
+					if _, isApprovalReply := parseApprovalAction(msg.Content); isApprovalReply {
+						return nil
+					}
+					restartedState, _, restartErr := r.getOrCreateInteractiveSession(ctx, sess, sessionKey, agentSessionID, interactiveAgent)
+					if restartErr != nil {
+						return restartErr
+					}
+					restartedState.SetAllowAll(liveState.AllowAll())
+					restartedState.SetAwaitingApproval(false)
+					return r.sendAndDrainInteractiveTurn(ctx, sess, sessionKey, agentSessionID, msg.Content, interactiveAgent, restartedState, emit)
+				}
 				return err
 			}
 			// 先收尾之前被审批阻塞的 turn。
@@ -236,6 +252,20 @@ func (r *Router) streamInteractiveAIMessage(ctx context.Context, msg *Message, s
 
 		liveState, err = r.respondInteractiveApproval(ctx, sess, sessionKey, agentSessionID, action, interactiveAgent, liveState)
 		if err != nil {
+			if errors.Is(err, errInteractiveStaleApproval) {
+				if allowAllRequested {
+					emit(agent.Event{
+						Type:    agent.EventTypeApproval,
+						Content: "授权请求已过期；已保留允许所有设置。请重发上一条消息。",
+					})
+					return nil
+				}
+				emit(agent.Event{
+					Type:    agent.EventTypeApproval,
+					Content: "授权请求已过期，请重发上一条消息。",
+				})
+				return nil
+			}
 			return err
 		}
 
@@ -411,6 +441,11 @@ func (r *Router) clearAgentNativeSessionID(sess *session.Session, sessionKey str
 
 func (r *Router) respondInteractiveApproval(ctx context.Context, sess *session.Session, sessionKey, agentSessionID string, action agent.ApprovalAction, interactiveAgent agent.InteractiveAgent, liveState *interactiveSessionState) (*interactiveSessionState, error) {
 	if err := liveState.session.RespondApproval(action); err != nil {
+		if isStaleApprovalError(err) {
+			liveState.SetAwaitingApproval(false)
+			r.removeInteractiveSession(sess.ID)
+			return liveState, errInteractiveStaleApproval
+		}
 		if !isSessionNotRunningError(err) {
 			return nil, err
 		}
@@ -423,6 +458,10 @@ func (r *Router) respondInteractiveApproval(ctx context.Context, sess *session.S
 		restartedState.SetAllowAll(liveState.AllowAll())
 		restartedState.SetAwaitingApproval(false)
 		if err := restartedState.session.RespondApproval(action); err != nil {
+			if isStaleApprovalError(err) {
+				r.removeInteractiveSession(sess.ID)
+				return restartedState, errInteractiveStaleApproval
+			}
 			r.removeInteractiveSession(sess.ID)
 			return nil, err
 		}
@@ -430,6 +469,14 @@ func (r *Router) respondInteractiveApproval(ctx context.Context, sess *session.S
 	}
 
 	return liveState, nil
+}
+
+func isStaleApprovalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "no pending") && strings.Contains(msg, "approval")
 }
 
 func (r *Router) sendInteractiveInput(ctx context.Context, sess *session.Session, sessionKey, agentSessionID, input string, interactiveAgent agent.InteractiveAgent, liveState *interactiveSessionState) (*interactiveSessionState, error) {

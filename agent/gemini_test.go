@@ -119,6 +119,30 @@ func TestGeminiCommandEnv_AddsPayloadPatchPreload(t *testing.T) {
 	}
 }
 
+func TestGeminiCommandEnv_WindowsDoesNotInjectUnixShell(t *testing.T) {
+	cacheDir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheDir)
+
+	env := geminiCommandEnvForGOOS([]string{
+		"HOME=C:\\Users\\alice",
+	}, "windows")
+
+	if got := envValue(env, "SHELL"); got != "" {
+		t.Fatalf("Windows Gemini env should not inject a Unix shell, got %q", got)
+	}
+}
+
+func TestGeminiPayloadPatchImportArg_WindowsPathUsesValidFileURL(t *testing.T) {
+	got := geminiPayloadPatchImportArg(`C:\Users\alice\AppData\Local\weibo-ai-bridge\gemini-payload-sanitizer.cjs`)
+	want := "--import=file:///C:/Users/alice/AppData/Local/weibo-ai-bridge/gemini-payload-sanitizer.cjs"
+	if got != want {
+		t.Fatalf("unexpected import arg: got %q want %q", got, want)
+	}
+	if strings.Contains(got, `%5C`) || strings.Contains(got, `\`) {
+		t.Fatalf("Windows file URL should not encode path separators as backslashes: %q", got)
+	}
+}
+
 func TestGeminiAgent_sanitizeResumeSessionHistory_RemovesGeminiPreviewUnsupportedToolIDs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("GEMINI_HOME", home)

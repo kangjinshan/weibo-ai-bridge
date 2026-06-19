@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 
@@ -148,6 +149,10 @@ func (a *GeminiAgent) buildCommand(ctx context.Context, session *geminiSession, 
 }
 
 func geminiCommandEnv(base []string) []string {
+	return geminiCommandEnvForGOOS(base, runtime.GOOS)
+}
+
+func geminiCommandEnvForGOOS(base []string, goos string) []string {
 	env := append([]string(nil), base...)
 
 	ensure := func(key, value string) {
@@ -173,7 +178,9 @@ func geminiCommandEnv(base []string) []string {
 	}
 	ensure("USER", userName)
 	ensure("LOGNAME", firstNonEmpty(envValue(env, "LOGNAME"), userName))
-	ensure("SHELL", firstNonEmpty(envValue(env, "SHELL"), "/bin/zsh"))
+	if goos != "windows" {
+		ensure("SHELL", firstNonEmpty(envValue(env, "SHELL"), "/bin/zsh"))
+	}
 
 	if strings.TrimSpace(home) != "" {
 		env = appendDotEnvIfMissing(env, filepath.Join(home, ".gemini", ".env"))
@@ -189,7 +196,7 @@ func appendGeminiPayloadPatchEnv(env []string) []string {
 		return env
 	}
 	nodeOptions := strings.TrimSpace(envValue(env, "NODE_OPTIONS"))
-	importArg := "--import=" + (&url.URL{Scheme: "file", Path: patchPath}).String()
+	importArg := geminiPayloadPatchImportArg(patchPath)
 	if strings.Contains(nodeOptions, importArg) {
 		return env
 	}
@@ -198,6 +205,14 @@ func appendGeminiPayloadPatchEnv(env []string) []string {
 		return env
 	}
 	return setEnvValue(env, "NODE_OPTIONS", nodeOptions+" "+importArg)
+}
+
+func geminiPayloadPatchImportArg(path string) string {
+	normalized := strings.ReplaceAll(path, `\`, "/")
+	if len(normalized) >= 2 && normalized[1] == ':' {
+		normalized = "/" + normalized
+	}
+	return "--import=" + (&url.URL{Scheme: "file", Path: normalized}).String()
 }
 
 func ensureGeminiPayloadPatch() (string, error) {

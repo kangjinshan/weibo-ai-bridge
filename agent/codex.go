@@ -152,7 +152,7 @@ func (a *CodeXAgent) buildCommand(ctx context.Context, session *codexSession, in
 		)
 	}
 
-	cmd := exec.CommandContext(ctx, "codex", args...)
+	cmd := newCodexCommandContext(ctx, args...)
 	if workDir := WorkDirFromContext(ctx); workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -397,6 +397,6 @@ func uniqueNonEmpty(parts []string) []string {
 
 // IsAvailable 检查 codex CLI 是否可用
 func (a *CodeXAgent) IsAvailable() bool {
-	_, err := exec.LookPath("codex")
+	_, err := resolveCodexCommandSpec()
 	return err == nil
 }

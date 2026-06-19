@@ -128,7 +128,7 @@ func (c *codexAppServerClient) start(ctx context.Context, workDir string, transp
 }
 
 func (c *codexAppServerClient) startStdio(ctx context.Context, workDir string) error {
-	c.cmd = exec.CommandContext(ctx, "codex", "app-server", "--listen", "stdio://")
+	c.cmd = newCodexCommandContext(ctx, "app-server", "--listen", "stdio://")
 	if workDir != "" {
 		c.cmd.Dir = workDir
 	}
@@ -154,7 +154,7 @@ func (c *codexAppServerClient) startWebSocket(ctx context.Context, workDir strin
 		return err
 	}
 
-	c.cmd = exec.CommandContext(ctx, "codex", "app-server", "--listen", wsURL)
+	c.cmd = newCodexCommandContext(ctx, "app-server", "--listen", wsURL)
 	if workDir != "" {
 		c.cmd.Dir = workDir
 	}

@@ -1211,11 +1211,7 @@ func normalizeWorkDirPath(path string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if path == "~" {
-			path = homeDir
-		} else if strings.HasPrefix(path, "~/") {
-			path = filepath.Join(homeDir, path[2:])
-		}
+		path = expandHomePath(path, homeDir)
 	}
 
 	absPath, err := filepath.Abs(path)
@@ -1232,6 +1228,34 @@ func normalizeWorkDirPath(path string) (string, error) {
 	}
 
 	return absPath, nil
+}
+
+func expandHomePath(path, homeDir string) string {
+	path = strings.TrimSpace(path)
+	homeDir = strings.TrimSpace(homeDir)
+	if path == "~" {
+		if homeDir != "" {
+			return homeDir
+		}
+		return path
+	}
+	if homeDir == "" {
+		return path
+	}
+	for _, prefix := range []string{"~/", `~\`} {
+		if strings.HasPrefix(path, prefix) {
+			return joinHomePath(homeDir, strings.TrimPrefix(path, prefix))
+		}
+	}
+	return path
+}
+
+func joinHomePath(homeDir, rest string) string {
+	rest = strings.TrimLeft(rest, `/\`)
+	if strings.Contains(homeDir, `\`) && !strings.Contains(homeDir, "/") {
+		return strings.TrimRight(homeDir, `/\`) + `\` + strings.ReplaceAll(rest, "/", `\`)
+	}
+	return filepath.Join(homeDir, rest)
 }
 
 // handleStatus 处理显示状态命令

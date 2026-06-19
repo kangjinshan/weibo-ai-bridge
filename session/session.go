@@ -1085,21 +1085,39 @@ func (m *Manager) sessionStoragePath(id string) string {
 }
 
 func normalizeStoragePath(path string) string {
+	home := ""
+	if strings.HasPrefix(strings.TrimSpace(path), "~") {
+		if userHome, err := os.UserHomeDir(); err == nil {
+			home = userHome
+		}
+	}
+	return normalizeStoragePathWithHome(path, home)
+}
+
+func normalizeStoragePathWithHome(path, home string) string {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
 		return ""
 	}
 	if trimmed == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
+		if strings.TrimSpace(home) != "" {
 			return home
 		}
 	}
-	if strings.HasPrefix(trimmed, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(trimmed, "~/"))
+	for _, prefix := range []string{"~/", `~\`} {
+		if strings.HasPrefix(trimmed, prefix) && strings.TrimSpace(home) != "" {
+			return joinStorageHomePath(home, strings.TrimPrefix(trimmed, prefix))
 		}
 	}
 	return filepath.Clean(trimmed)
+}
+
+func joinStorageHomePath(home, rest string) string {
+	rest = strings.TrimLeft(rest, `/\`)
+	if strings.Contains(home, `\`) && !strings.Contains(home, "/") {
+		return strings.TrimRight(home, `/\`) + `\` + strings.ReplaceAll(rest, "/", `\`)
+	}
+	return filepath.Join(home, rest)
 }
 
 func legacyStoragePaths(currentStoragePath string) []string {

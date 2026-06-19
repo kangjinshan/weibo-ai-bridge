@@ -735,6 +735,12 @@ func TestNewManager_ExpandsHomeDirectoryStoragePath(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestNormalizeStoragePathExpandsWindowsBackslashTilde(t *testing.T) {
+	got := normalizeStoragePathWithHome(`~\persisted-sessions`, `C:\Users\alice`)
+	want := `C:\Users\alice\persisted-sessions`
+	assert.Equal(t, want, got)
+}
+
 func TestNewManager_ImportsLegacyStorageFromWorkingDirectory(t *testing.T) {
 	workspace := t.TempDir()
 	t.Chdir(workspace)

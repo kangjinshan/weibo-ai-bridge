@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -22,13 +23,22 @@ const (
 type shellSelfUpdater struct {
 	scriptPath string
 	timeout    time.Duration
+	goos       string
 }
 
 func newShellSelfUpdater() selfUpdater {
-	return &shellSelfUpdater{timeout: selfUpdateTimeout}
+	return newShellSelfUpdaterForGOOS(runtime.GOOS)
+}
+
+func newShellSelfUpdaterForGOOS(goos string) selfUpdater {
+	return &shellSelfUpdater{timeout: selfUpdateTimeout, goos: goos}
 }
 
 func (u *shellSelfUpdater) Run(args []string) (selfUpdateResult, error) {
+	if u.goos == "windows" {
+		return selfUpdateResult{}, errors.New(`Windows 11 native /upgrade is not supported; rebuild build\weibo-ai-bridge.exe and run scripts\service.ps1 restart`)
+	}
+
 	scriptPath, err := u.resolveScriptPath()
 	if err != nil {
 		return selfUpdateResult{}, err

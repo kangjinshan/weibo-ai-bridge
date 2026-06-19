@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,6 +36,83 @@ func TestCodeXAgent_Name(t *testing.T) {
 func TestCodeXAgent_IsAvailable(t *testing.T) {
 	agent := NewCodeXAgent("gpt-4.5")
 	_ = agent.IsAvailable()
+}
+
+func TestResolveCodexCommandSpec_WindowsPrefersCmdShimOverPackagedWindowsAppsExe(t *testing.T) {
+	packagedExe := `C:\Program Files\WindowsApps\OpenAI.Codex_26.616.3309.0_x64__2p2nqsd0c76g0\app\resources\codex.exe`
+	cmdShim := `C:\Users\alice\AppData\Roaming\npm\codex.cmd`
+
+	spec, err := resolveCodexCommandSpecFor("windows", func(file string) (string, error) {
+		switch file {
+		case "codex":
+			return packagedExe, nil
+		case "codex.cmd":
+			return cmdShim, nil
+		default:
+			return "", exec.ErrNotFound
+		}
+	})
+	if err != nil {
+		t.Fatalf("resolveCodexCommandSpecFor returned error: %v", err)
+	}
+	if spec.command != "cmd.exe" {
+		t.Fatalf("unexpected command: got %q want cmd.exe", spec.command)
+	}
+	wantPrefix := []string{"/d", "/s", "/c", cmdShim}
+	if !reflect.DeepEqual(spec.argsPrefix, wantPrefix) {
+		t.Fatalf("unexpected args prefix: got %v want %v", spec.argsPrefix, wantPrefix)
+	}
+}
+
+func TestResolveCodexCommandSpec_WindowsRunsBatchCommandViaCmdExe(t *testing.T) {
+	cmdShim := `C:\Users\alice\AppData\Roaming\npm\codex.cmd`
+
+	spec, err := resolveCodexCommandSpecFor("windows", func(file string) (string, error) {
+		if file == "codex" {
+			return cmdShim, nil
+		}
+		return "", exec.ErrNotFound
+	})
+	if err != nil {
+		t.Fatalf("resolveCodexCommandSpecFor returned error: %v", err)
+	}
+	if spec.command != "cmd.exe" {
+		t.Fatalf("unexpected command: got %q want cmd.exe", spec.command)
+	}
+	wantPrefix := []string{"/d", "/s", "/c", cmdShim}
+	if !reflect.DeepEqual(spec.argsPrefix, wantPrefix) {
+		t.Fatalf("unexpected args prefix: got %v want %v", spec.argsPrefix, wantPrefix)
+	}
+}
+
+func TestResolveCodexCommandSpec_WindowsUsesShellForPackagedWindowsAppsExeWithoutShim(t *testing.T) {
+	packagedExe := `C:\Program Files\WindowsApps\OpenAI.Codex_26.616.3309.0_x64__2p2nqsd0c76g0\app\resources\codex.exe`
+
+	spec, err := resolveCodexCommandSpecFor("windows", func(file string) (string, error) {
+		if file == "codex" {
+			return packagedExe, nil
+		}
+		return "", exec.ErrNotFound
+	})
+	if err != nil {
+		t.Fatalf("resolveCodexCommandSpecFor returned error: %v", err)
+	}
+	if spec.command != "cmd.exe" {
+		t.Fatalf("unexpected command: got %q want cmd.exe", spec.command)
+	}
+	wantPrefix := []string{"/d", "/s", "/c", "codex"}
+	if !reflect.DeepEqual(spec.argsPrefix, wantPrefix) {
+		t.Fatalf("unexpected args prefix: got %v want %v", spec.argsPrefix, wantPrefix)
+	}
+}
+
+func TestResolveCodexCommandSpec_ReturnsNotFoundWhenCodexMissing(t *testing.T) {
+	_, err := resolveCodexCommandSpecFor("linux", func(file string) (string, error) {
+		return "", exec.ErrNotFound
+	})
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestCodeXAgent_ExecuteStream(t *testing.T) {

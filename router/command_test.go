@@ -230,6 +230,16 @@ func TestCommandHandler_Handle_UpgradeWarnsBeforeUnreliableRestartOutput(t *test
 	assert.Contains(t, resp.Content, "systemd-run 安排延迟重启失败")
 }
 
+func TestShellSelfUpdater_WindowsNativeReturnsUnsupported(t *testing.T) {
+	updater := newShellSelfUpdaterForGOOS("windows")
+
+	_, err := updater.Run(nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Windows 11")
+	assert.Contains(t, err.Error(), `scripts\service.ps1 restart`)
+}
+
 func TestCommandHandler_Handle_List(t *testing.T) {
 	isolateNativeSessionSources(t)
 
@@ -1316,6 +1326,12 @@ func TestCommandHandler_Handle_Dir_SetPath_Invalid(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.False(t, resp.Success)
 	assert.Contains(t, resp.Content, "Invalid working directory")
+}
+
+func TestExpandHomePathSupportsWindowsBackslash(t *testing.T) {
+	got := expandHomePath(`~\Desktop\project`, `C:\Users\alice`)
+	want := `C:\Users\alice\Desktop\project`
+	assert.Equal(t, want, got)
 }
 
 func TestCommandHandler_Handle_Dir_FallsBackToProcessCwdWhenUnset(t *testing.T) {

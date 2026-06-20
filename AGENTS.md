@@ -165,6 +165,7 @@
 - `/new [claude|codex|hermes|gemini]`
 - `/list`（展示所有项目的 native 会话列表，带项目名前缀）
 - `/switch [index|claude|codex|hermes|gemini]`
+- `/N`（其中 `N` 是 `/list` 编号，等价于 `/switch N`）
 - `/claude`（等价于 `/switch claude`）
 - `/codex`（等价于 `/switch codex`）
 - `/hermes`（等价于 `/switch hermes`）
@@ -182,6 +183,7 @@
 命令语义备注：
 - `/new` 不直接创建 bridge 自增会话，而是准备下一条消息要使用的新 native 会话
 - `/list` 展示所有项目的 native 会话（不再按当前项目过滤），标题前带项目名前缀（如 `weibo-ai-bridge/会话标题`）
+- `/N` 仅匹配纯数字 slash 命令（如 `/1`、`/12`），用于直接切换到 `/list` 中对应编号的会话
 - `/claude`、`/codex`、`/hermes` 与 `/gemini` 是 `/switch` 的快捷别名（大小写不敏感）
 - `/status` 在 `session_id` 缺失时，会回退到该用户当前 active session
 - `/simple` 在 `session_id` 缺失时，会回退到该用户当前 active session；不带参数时切换开关，`status` 只查看状态；简洁模式按当前会话持久化到 `simple_mode`

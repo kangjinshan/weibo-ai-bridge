@@ -95,6 +95,7 @@ go build -o build\weibo-ai-bridge.exe .\cmd\server
 | `/new [claude\|codex\|hermes\|gemini]` | 准备下一条消息使用的新原生会话 |
 | `/list` | 查看可切换的原生会话列表 |
 | `/switch <编号>` | 切换到 `/list` 中的会话 |
+| `/<编号>` | 等价于 `/switch <编号>` |
 | `/switch <agent>` | 切换当前会话的 Agent 类型 |
 | `/claude`、`/codex`、`/hermes`、`/gemini` | 快速切换 Agent |
 | `/dir [path]` | 查看或设置当前会话工作目录 |

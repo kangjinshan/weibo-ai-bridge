@@ -80,6 +80,10 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 	command := strings.ToLower(parts[0])
 	args := parts[1:]
 
+	if index, ok := parseSlashSwitchNumber(command); ok {
+		return h.handleSwitch(msg.UserID, msg.SessionID, []string{strconv.Itoa(index)})
+	}
+
 	// 路由到不同的处理函数
 	switch command {
 	case "/help":
@@ -116,6 +120,23 @@ func (h *CommandHandler) Handle(msg *Message) (*Response, error) {
 			Content: fmt.Sprintf("Unknown command: %s. Use /help to see available commands.", command),
 		}, nil
 	}
+}
+
+func parseSlashSwitchNumber(command string) (int, bool) {
+	if len(command) < 2 || command[0] != '/' {
+		return 0, false
+	}
+	raw := command[1:]
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	index, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return index, true
 }
 
 // CommandMeta 描述一个 slash 命令的对外可见信息。
@@ -160,6 +181,7 @@ func (h *CommandHandler) handleHelp() (*Response, error) {
 		"- `/new [claude|codex|hermes|gemini]`：准备一个新的原生会话，不传参数时沿用当前 Agent。",
 		"- `/list`：查看当前用户的原生会话。",
 		"- `/switch <编号>`：切换到 `/list` 中对应编号的会话。",
+		"- `/<编号>`：等价于 `/switch <编号>`。",
 		"- `/switch <agent>`：切换当前会话的 Agent 类型。",
 		"",
 		"### Agent 快捷切换",

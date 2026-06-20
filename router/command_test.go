@@ -60,6 +60,7 @@ func TestCommandHandler_Handle_Help(t *testing.T) {
 	assert.Contains(t, resp.Content, "/new")
 	assert.Contains(t, resp.Content, "/list")
 	assert.Contains(t, resp.Content, "/switch")
+	assert.Contains(t, resp.Content, "/<编号>")
 	assert.Contains(t, resp.Content, "/claude")
 	assert.Contains(t, resp.Content, "/codex")
 	assert.Contains(t, resp.Content, "/hermes")
@@ -960,6 +961,40 @@ func TestCommandHandler_Handle_SwitchSessionByNumber(t *testing.T) {
 		ID:        "msg-switch-session",
 		Type:      TypeText,
 		Content:   "/switch 2",
+		UserID:    "user-1",
+		SessionID: "session-2",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Contains(t, resp.Content, "Switched to session 2: 未命名会话")
+	assert.Contains(t, resp.Content, "id=session-1")
+	assert.Equal(t, "session-1", sessionManager.GetActiveSessionID("user-1"))
+}
+
+func TestCommandHandler_Handle_SwitchSessionBySlashNumber(t *testing.T) {
+	isolateNativeSessionSources(t)
+
+	sessionManager := session.NewManager(session.ManagerConfig{
+		Timeout: 3600,
+		MaxSize: 100,
+	})
+	agentManager := agent.NewManager()
+	handler := NewCommandHandler(sessionManager, agentManager)
+
+	first := sessionManager.Create("session-1", "user-1", "codex")
+	second := sessionManager.Create("session-2", "user-1", "codex")
+	assert.NotNil(t, first)
+	assert.NotNil(t, second)
+	first.Update("codex_session_id", "native-thread-1")
+	second.Update("codex_session_id", "native-thread-2")
+	assert.Equal(t, "session-2", sessionManager.GetActiveSessionID("user-1"))
+
+	resp, err := handler.Handle(&Message{
+		ID:        "msg-switch-session",
+		Type:      TypeText,
+		Content:   "/2",
 		UserID:    "user-1",
 		SessionID: "session-2",
 	})

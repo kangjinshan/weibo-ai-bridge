@@ -13,6 +13,9 @@
  *   status             获取用户自己发布的微博列表（支持 --count 参数）
  *   status-show        根据 MID 或 URL 获取单条微博
  *   creator-summary    获取创作者数据摘要（近30天阅读/发博/互动、近7天粉丝铁粉、铁粉画像、热门博文）
+ *   adincentive-summary 获取激励计划数据摘要（在线计划列表、计划高收益博文示例、博主优质博文）
+ *   interactive-comments-to-me  获取收到的评论列表（互动接口，含关注关系和认证状态）
+ *   interactive-comments-show   获取自己某条微博的所有评论（互动接口，含关注关系和认证状态）
  *
  *   【超话互动】
  *   topic-details      查询可互动的超话社区详细信息列表（推荐）
@@ -155,6 +158,48 @@ async function getStatusShow(token, options = {}) {
 async function getCreatorSummary(token) {
   const params = new URLSearchParams({ token });
   const url = `${BASE_URL}/open/creator/summary?${params.toString()}`;
+  return request('GET', url);
+}
+
+// ============================================================================
+// 互动内容 API
+// ============================================================================
+
+/**
+ * 获取收到的评论列表（互动接口）
+ * @param {string} token - 认证令牌
+ * @returns {Promise<object>} 收到的评论列表
+ */
+async function getInteractiveCommentsToMe(token) {
+  const params = new URLSearchParams({ token });
+  const url = `${BASE_URL}/open/interactive/comments/to_me?${params.toString()}`;
+  return request('GET', url);
+}
+
+/**
+ * 获取自己某条微博的所有评论（互动接口）
+ * @param {string} token - 认证令牌
+ * @param {string} weiboId - 微博 ID（博文 ID）
+ * @returns {Promise<object>} 该微博的评论列表
+ */
+async function getInteractiveCommentsShow(token, weiboId) {
+  const params = new URLSearchParams({ token, id: String(weiboId) });
+  const url = `${BASE_URL}/open/interactive/comments/show?${params.toString()}`;
+  return request('GET', url);
+}
+
+// ============================================================================
+// 激励计划数据 API
+// ============================================================================
+
+/**
+ * 获取激励计划数据摘要
+ * @param {string} token - 认证令牌
+ * @returns {Promise<object>} 激励计划数据摘要（AdIncentiveSummary）
+ */
+async function getAdIncentiveSummary(token) {
+  const params = new URLSearchParams({ token });
+  const url = `${BASE_URL}/open/adincentive/summary?${params.toString()}`;
   return request('GET', url);
 }
 
@@ -615,6 +660,14 @@ function printHelp() {
   creator-summary    获取创作者数据摘要
                      （近30天阅读/发博/互动趋势、近7天粉丝铁粉数据、铁粉画像、热门博文、V榜周榜等）
 
+  adincentive-summary 获取激励计划数据摘要
+                     （在线激励计划列表、计划高收益博文示例、博主近7日优质博文及命中计划）
+
+  interactive-comments-to-me  获取收到的评论列表（互动接口，含关注关系和认证状态）
+
+  interactive-comments-show   获取自己某条微博的所有评论（互动接口）
+    --id=<id>          微博 ID / 博文 ID（必填）
+
 【超话互动命令】
   topic-details      查询可互动的超话社区详细信息列表（推荐，包含版块信息）
   topics             查询可互动的超话社区列表（旧版）
@@ -766,6 +819,28 @@ async function main() {
       case 'creator-summary': {
         const token = await getValidTokenForCommand();
         result = await getCreatorSummary(token);
+        break;
+      }
+
+      case 'adincentive-summary': {
+        const token = await getValidTokenForCommand();
+        result = await getAdIncentiveSummary(token);
+        break;
+      }
+
+      case 'interactive-comments-to-me': {
+        const token = await getValidTokenForCommand();
+        result = await getInteractiveCommentsToMe(token);
+        break;
+      }
+
+      case 'interactive-comments-show': {
+        if (!options.id) {
+          Logger.error('需要指定 --id 参数（微博 ID / 博文 ID）');
+          process.exit(1);
+        }
+        const token = await getValidTokenForCommand();
+        result = await getInteractiveCommentsShow(token, options.id);
         break;
       }
 
